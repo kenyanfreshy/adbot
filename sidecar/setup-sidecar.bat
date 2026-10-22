@@ -1,22 +1,33 @@
 @echo off
 REM One-time setup for the read-only trading -> AdBot bridge.
-REM Creates its own Python environment here; does not touch fx_trading_system.
+REM Its Python environment lives in %LOCALAPPDATA%\adbot-sidecar (outside OneDrive, so syncing doesn't slow it down).
+REM Nothing in fx_trading_system is touched.
+setlocal
 cd /d "%~dp0"
-if not exist .venv (
-  py -3 -m venv .venv || (echo Python 3 not found. Install it from python.org first. & pause & exit /b 1)
+set "VENV=%LOCALAPPDATA%\adbot-sidecar\.venv"
+echo.
+echo === AdBot trading bridge setup ===
+echo.
+echo [1/4] Checking Python...
+py -3 --version || (echo Python 3 not found. Install it from python.org, then run this again. & pause & exit /b 1)
+if not exist "%VENV%\Scripts\python.exe" (
+  echo [2/4] Creating its own Python environment in %VENV% ...
+  py -3 -m venv "%VENV%" || (echo Could not create the environment. & pause & exit /b 1)
+) else (
+  echo [2/4] Python environment already exists.
 )
-.venv\Scripts\python -m pip install --quiet --upgrade pip
-.venv\Scripts\pip install --quiet psycopg2-binary duckdb || (echo Install failed. & pause & exit /b 1)
+echo [3/4] Installing psycopg2-binary and duckdb (first time can take a few minutes)...
+"%VENV%\Scripts\python" -m pip install --disable-pip-version-check --progress-bar on psycopg2-binary duckdb || (echo Install failed - see the message above. & pause & exit /b 1)
 if "%MOTHERDUCK_TOKEN%"=="" (
   echo.
-  echo Paste your MotherDuck token (the same one you gave Render) and press Enter.
+  echo Paste your MotherDuck token (the same one you gave Render^) and press Enter.
   set /p MD=Token: 
-  setx MOTHERDUCK_TOKEN "%MD%" >nul
-  set MOTHERDUCK_TOKEN=%MD%
+  call setx MOTHERDUCK_TOKEN "%%MD%%" >nul
+  call set MOTHERDUCK_TOKEN=%%MD%%
 )
 echo.
-echo Running one test pass...
-.venv\Scripts\python trading_sidecar.py --trading-dir "%USERPROFILE%\OneDrive\Desktop\fx_trading_system" --once
+echo [4/4] Running one test pass against the trading database...
+"%VENV%\Scripts\python" trading_sidecar.py --trading-dir "%USERPROFILE%\OneDrive\Desktop\fx_trading_system" --once
 echo.
-echo If you see "pass ok" above, open the Trading tab in AdBot. Then run start-sidecar.bat to keep it running.
+echo If you see "pass ok" above, run start-sidecar.bat to keep it running.
 pause
