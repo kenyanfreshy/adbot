@@ -28,7 +28,7 @@ Database login
 Setup (PowerShell, once):
     cd C:\\Users\\<you>\\adbot-sidecar
     py -3.11 -m venv .venv
-    .venv\\Scripts\\pip install psycopg2-binary duckdb
+    .venv\\Scripts\\pip install psycopg2-binary "duckdb==1.5.6"
     $env:MOTHERDUCK_TOKEN = "<token>"        # or set it permanently in System > Environment Variables
     .venv\\Scripts\\python trading_sidecar.py --trading-dir "C:\\Users\\<you>\\OneDrive\\Desktop\\fx_trading_system" --once
 

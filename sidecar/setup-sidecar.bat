@@ -16,8 +16,8 @@ if not exist "%VENV%\Scripts\python.exe" (
 ) else (
   echo [2/4] Python environment already exists.
 )
-echo [3/4] Installing psycopg2-binary and duckdb (first time can take a few minutes)...
-"%VENV%\Scripts\python" -m pip install --disable-pip-version-check --progress-bar on psycopg2-binary duckdb || (echo Install failed - see the message above. & pause & exit /b 1)
+echo [3/4] Installing psycopg2-binary and duckdb 1.5.6 (first time can take a few minutes)...
+"%VENV%\Scripts\python" -m pip install --disable-pip-version-check --progress-bar on psycopg2-binary "duckdb==1.5.6" || (echo Install failed - see the message above. & pause & exit /b 1)
 if "%MOTHERDUCK_TOKEN%"=="" (
   echo.
   echo Paste your MotherDuck token (the same one you gave Render^) and press Enter.
