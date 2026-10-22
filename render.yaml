@@ -1,0 +1,71 @@
+# Render Blueprint: the Streamlit control panel + an hourly bot job.
+# Both use the same MotherDuck database (Render cron jobs can't share a disk),
+# so create a free MotherDuck account and set MOTHERDUCK_TOKEN on both services.
+# Secrets marked "sync: false" are entered in the Render dashboard, never committed.
+services:
+  - type: web
+    name: adbot-control-panel
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: DRY_RUN
+        value: "true"
+      - key: APP_PASSWORD
+        sync: false
+      - key: MOTHERDUCK_TOKEN
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+
+  - type: cron
+    name: adbot-hourly
+    runtime: python
+    schedule: "7 * * * *"          # every hour at :07 UTC
+    buildCommand: pip install -r requirements.txt
+    startCommand: python dlt_pipeline.py --days 14
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: DRY_RUN
+        value: "true"              # set to "false" when you're happy with the decisions in the Bot log
+      - key: MOTHERDUCK_TOKEN
+        sync: false
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: TELEGRAM_CHAT_ID
+        sync: false
+      # Apple Search Ads (Settings > API in Apple Search Ads)
+      - key: ASA_CLIENT_ID
+        sync: false
+      - key: ASA_TEAM_ID
+        sync: false
+      - key: ASA_KEY_ID
+        sync: false
+      - key: ASA_ORG_ID
+        sync: false
+      - key: ASA_PRIVATE_KEY       # the PEM text; "\n" escapes are accepted
+        sync: false
+      # Meta Ads (system-user token with ads_read + ads_management)
+      - key: META_ACCESS_TOKEN
+        sync: false
+      - key: META_AD_ACCOUNT_IDS   # comma-separated, e.g. 1234567890,9876543210
+        sync: false
+      # Google Ads (OAuth client + developer token)
+      - key: GOOGLE_ADS_DEVELOPER_TOKEN
+        sync: false
+      - key: GOOGLE_ADS_CLIENT_ID
+        sync: false
+      - key: GOOGLE_ADS_CLIENT_SECRET
+        sync: false
+      - key: GOOGLE_ADS_REFRESH_TOKEN
+        sync: false
+      - key: GOOGLE_ADS_CUSTOMER_IDS  # comma-separated, dashes optional
+        sync: false
+      - key: GOOGLE_ADS_LOGIN_CUSTOMER_ID  # manager account ID, only if you use one
+        sync: false

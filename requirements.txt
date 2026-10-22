@@ -1,0 +1,8 @@
+streamlit>=1.39,<2
+altair>=5.4,<6
+pandas>=2.2,<3
+duckdb>=1.1,<2
+dlt[duckdb,motherduck]>=1.4,<2
+requests>=2.32,<3
+PyJWT[crypto]>=2.9,<3
+google-ads>=25.0
