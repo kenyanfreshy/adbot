@@ -538,7 +538,13 @@ def connect():
     import duckdb
     target = db_target()
     if target.startswith("md:"):
-        con = duckdb.connect(target, config={"motherduck_token": os.environ["MOTHERDUCK_TOKEN"]})
+        # connect to MotherDuck itself first, create the database on first run, then switch to it
+        db = target[3:]
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", db):
+            raise ValueError(f"MOTHERDUCK_DATABASE must be letters, digits or _ (got {db!r})")
+        con = duckdb.connect("md:", config={"motherduck_token": os.environ["MOTHERDUCK_TOKEN"]})
+        con.execute(f"CREATE DATABASE IF NOT EXISTS {db}")
+        con.execute(f"USE {db}")
     else:
         con = duckdb.connect(target)
     ensure_tables(con)
