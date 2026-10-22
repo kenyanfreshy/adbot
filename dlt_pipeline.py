@@ -712,6 +712,27 @@ def apply_budgets(plan: dict, agg: dict, sources: dict, con, now, rules: Rules) 
             con.execute("insert into bot_actions values (?,?,?,?,?,?,?,?,?,?)", [now, False, "budget", channel, app, f"{channel}|{cid}", None, f"daily budget ${daily:.2f}", err is None, err])
 
 
+def check_trading(con, rules: Rules) -> None:
+    """Hourly safety net: alert if the trading bot has gone quiet while the FX market is open,
+    or if its kill switch is on. Read-only; it never touches the trading bot."""
+    try:
+        rows = con.execute("select bot_id, max(at) from trading.heartbeat group by bot_id").fetchall()
+    except Exception:
+        return  # trading reporting not set up yet
+    now = dt.datetime.utcnow()
+    wd, h = now.weekday(), now.hour
+    fx_open = not (wd == 5 or (wd == 6 and h < 21) or (wd == 4 and h >= 22))
+    for bot_id, last in rows:
+        if fx_open and last and (now - last).total_seconds() > 20 * 60:
+            telegram(f"⚠️ <b>Trading bot {bot_id}</b> hasn't reported for {int((now - last).total_seconds() // 60)} min while the FX market is open.", rules)
+        try:
+            ks = con.execute("select kill_switch, notes, at from trading.risk where bot_id = ? order by at desc limit 1", [bot_id]).fetchone()
+        except Exception:
+            ks = None
+        if ks and ks[0] and (now - ks[2]).total_seconds() < 3600:
+            telegram(f"🛑 <b>Trading bot {bot_id}</b>: kill switch is ON. {ks[1] or ''}", rules)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--days", type=int, default=int(os.getenv("SYNC_DAYS", "14")))
@@ -733,6 +754,7 @@ def main(argv: list[str] | None = None) -> int:
     con = connect()
     rules = load_rules(con)
     result = run_bot(con, rules, dry_run)
+    check_trading(con, rules)
     log.info("Bot result (dry_run=%s): %s", dry_run, {k: (v if k != "plan" else {a: x['daily'] for a, x in v.items()}) for k, v in result.items()})
     return 0
 

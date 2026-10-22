@@ -152,7 +152,7 @@ cut = dt.date.today() - dt.timedelta(days=days - 1)
 sel = perf[perf["app"].isin(app_sel) & perf["channel"].isin(chan_sel)]
 cur, prev = sel[sel["date"] >= cut], sel[sel["date"] < cut]
 
-tab_dash, tab_kw, tab_rules, tab_log = st.tabs(["📈 Dashboard", "🔑 Keywords", "🛡️ Bot rules & safety", "📜 Bot log"])
+tab_dash, tab_kw, tab_rules, tab_log, tab_trade = st.tabs(["📈 Dashboard", "🔑 Keywords", "🛡️ Bot rules & safety", "📜 Bot log", "💹 Trading"])
 
 
 def totals(df: pd.DataFrame) -> dict:
@@ -351,3 +351,119 @@ with tab_log:
         st.altair_chart(alt.Chart(hist).mark_line(point=True).encode(
             x="at:T", y=alt.Y("daily:Q", title="$/day"), color=alt.Color("app:N", scale=alt.Scale(domain=list(APP_COLORS), range=list(APP_COLORS.values())))),
             use_container_width=True)
+
+
+# --------------------------------------------------------------------------- #
+# Trading tab (read-only view of what the trading bot reports via trading_status.py)
+# --------------------------------------------------------------------------- #
+def tq(sql: str, params=None) -> pd.DataFrame:
+    try:
+        return con.execute(sql, params or []).fetch_df()
+    except Exception:
+        return pd.DataFrame()
+
+
+def money(v, sign=False):
+    if v is None or pd.isna(v):
+        return "—"
+    return f"{'+' if sign and v > 0 else ''}{'-' if v < 0 else ''}${abs(v):,.2f}"
+
+
+def fx_market_open(now_utc: dt.datetime) -> bool:
+    """Spot FX trades from Sunday ~22:00 UTC to Friday ~22:00 UTC (21:00 in northern summer)."""
+    wd, h = now_utc.weekday(), now_utc.hour
+    return not (wd == 5 or (wd == 6 and h < 21) or (wd == 4 and h >= 22))
+
+
+with tab_trade:
+    @st.fragment(run_every="60s")
+    def trading_view():
+        hb = tq("select * from trading.heartbeat order by at desc limit 1")
+        if hb.empty:
+            st.info("No reports from the trading bot yet. Add trading_status.py to the trading bot's monitoring service "
+                    "(see the top of that file), set MOTHERDUCK_TOKEN on the trading machine, then run "
+                    "`python trading_status.py` there once to test.")
+            return
+        bots = tq("select distinct bot_id from trading.heartbeat order by 1")["bot_id"].tolist()
+        bot = st.selectbox("Bot", bots, index=0) if len(bots) > 1 else bots[0]
+        hb = tq("select * from trading.heartbeat where bot_id = ? order by at desc limit 1", [bot]).iloc[0]
+        age = (dt.datetime.utcnow() - pd.Timestamp(hb["at"]).to_pydatetime()).total_seconds() / 60
+        mode = str(hb["mode"]).upper()
+        status_ok = age < 10 and str(hb["status"]).lower() in ("running", "ok", "idle", "test")
+        st.markdown(f"**{bot}** · {'🧪 PAPER' if mode == 'PAPER' else '🔴 LIVE'} · "
+                    + (f"🟢 {hb['status']} · last report {age:.0f} min ago" if status_ok else f"🟠 {hb['status']} · last report {age:.0f} min ago")
+                    + (f" · {hb['message']}" if hb["message"] else ""))
+        if age > 15 and fx_market_open(dt.datetime.utcnow()):
+            st.warning("No report for more than 15 minutes while the FX market is open. Check the trading machine.")
+
+        acct = tq("select * from trading.account where bot_id = ? order by at desc limit 1", [bot])
+        today = dt.datetime.utcnow().date()  # reports are stored in UTC
+        start = tq("select * from trading.account where bot_id = ? and cast(at as date) = ? order by at limit 1", [bot, today])
+        k = st.columns(4)
+        if not acct.empty:
+            a = acct.iloc[0]
+            k[0].metric("Equity", money(a["equity"]), money(a["equity"] - start.iloc[0]["equity"], True) + " today" if not start.empty else None)
+            k[1].metric("Today's P&L", money(a["day_pnl"], True))
+            k[2].metric("Total P&L", money(a["total_pnl"], True))
+            k[3].metric("Margin used", money(a["margin_used"]))
+        risk = tq("select * from trading.risk where bot_id = ? order by at desc limit 1", [bot])
+        if not risk.empty:
+            r = risk.iloc[0]
+            if bool(r["kill_switch"]):
+                st.error(f"🛑 Kill switch is ON. {r['notes'] or ''}")
+            c = st.columns(2)
+            if r["daily_loss_limit"]:
+                used = float(r["daily_loss_used"] or 0) / float(r["daily_loss_limit"])
+                c[0].markdown(f"**Daily loss limit:** {money(r['daily_loss_used'])} of {money(r['daily_loss_limit'])} used")
+                c[0].progress(min(1.0, max(0.0, used)))
+            if r["max_exposure"]:
+                ex = float(r["exposure"] or 0) / float(r["max_exposure"])
+                c[1].markdown(f"**Exposure:** {money(r['exposure'])} of {money(r['max_exposure'])}")
+                c[1].progress(min(1.0, max(0.0, ex)))
+
+        eq = tq("select at, equity from trading.account where bot_id = ? and at > ? order by at", [bot, dt.datetime.utcnow() - dt.timedelta(days=30)])
+        if len(eq) > 1:
+            st.markdown("#### Equity, last 30 days")
+            st.altair_chart(alt.Chart(eq).mark_area(line={"color": "#ff6a2b"}, color=alt.Gradient(
+                gradient="linear", stops=[alt.GradientStop(color="rgba(255,106,43,.35)", offset=0), alt.GradientStop(color="rgba(255,106,43,0)", offset=1)],
+                x1=1, x2=1, y1=0, y2=1)).encode(x="at:T", y=alt.Y("equity:Q", scale=alt.Scale(zero=False))).properties(height=220), use_container_width=True)
+
+        snap = tq("select max(snapshot_at) as s from trading.positions where bot_id = ?", [bot])
+        st.markdown("#### Open positions")
+        if snap.empty or pd.isna(snap.iloc[0]["s"]):
+            st.caption("No position report yet.")
+        else:
+            pos = tq("select symbol, side, qty, entry, price, stop, target, unrealized_pnl, opened_at, strategy from trading.positions "
+                     "where bot_id = ? and snapshot_at = ? and symbol is not null order by abs(unrealized_pnl) desc", [bot, pd.Timestamp(snap.iloc[0]["s"]).to_pydatetime()])
+            if pos.empty:
+                st.caption("Flat: no open positions.")
+            else:
+                st.dataframe(pos, hide_index=True, use_container_width=True,
+                             column_config={"unrealized_pnl": st.column_config.NumberColumn("Unrealised P&L", format="$%.2f")})
+
+        st.markdown("#### Today (UTC)")
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**Closed trades**")
+            tr = tq("select closed_at, symbol, side, qty, entry, exit, pnl, strategy, reason from trading.trades "
+                    "where bot_id = ? and cast(coalesce(closed_at, opened_at) as date) = ? order by coalesce(closed_at, opened_at) desc", [bot, today])
+            if tr.empty:
+                st.caption("None yet today.")
+            else:
+                wins = (tr["pnl"] > 0).sum(); n = tr["pnl"].notna().sum()
+                st.caption(f"{n} trades · {wins} winners · {money(tr['pnl'].sum(), True)}")
+                st.dataframe(tr, hide_index=True, use_container_width=True, column_config={"pnl": st.column_config.NumberColumn("P&L", format="$%.2f")})
+        with c2:
+            st.markdown("**Signals and decisions**")
+            sg = tq("select at, symbol, direction, confidence, decision, reason, source from trading.signals "
+                    "where bot_id = ? and cast(at as date) = ? order by at desc limit 200", [bot, today])
+            if sg.empty:
+                st.caption("No signals today.")
+            else:
+                cnt = sg["decision"].value_counts().to_dict()
+                st.caption(" · ".join(f"{v} {k}" for k, v in cnt.items()))
+                st.dataframe(sg, hide_index=True, use_container_width=True,
+                             column_config={"confidence": st.column_config.ProgressColumn("Confidence", min_value=0, max_value=1, format="%.2f")})
+        st.caption("Read-only. This panel never places, changes or closes trades. Updates every minute.")
+
+    trading_view()
