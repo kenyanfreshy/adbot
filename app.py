@@ -40,7 +40,9 @@ st.markdown("""
 }
 </style>
 """, unsafe_allow_html=True)
-# runs in a same-origin iframe, so it can add the home-screen tags to the main page
+# runs in a same-origin iframe, so it can add the home-screen icon and name to the main page.
+# Deliberately NOT "apple-mobile-web-app-capable": iOS full-screen web-app mode breaks Streamlit's layout,
+# so the home-screen icon opens the panel in Safari, exactly like typing the address.
 components.html("""
 <script>
 (function(){ try{
@@ -49,8 +51,6 @@ components.html("""
   if(!d.querySelector('link[rel="apple-touch-icon"]')){
     add("link", {rel:"apple-touch-icon", href:"app/static/apple-touch-icon.png"});
     add("meta", {name:"apple-mobile-web-app-title", content:"AdBot"});
-    add("meta", {name:"apple-mobile-web-app-capable", content:"yes"});
-    add("meta", {name:"mobile-web-app-capable", content:"yes"});
     add("meta", {name:"theme-color", content:"#0c0911"});
   }
 } catch(e){} })();
