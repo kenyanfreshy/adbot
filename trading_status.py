@@ -54,17 +54,17 @@ log = logging.getLogger("trading_status")
 SCHEMA = "trading"
 DDL = [
     f"create schema if not exists {SCHEMA}",
-    f"""create table if not exists {SCHEMA}.heartbeat (at timestamp, bot_id varchar, mode varchar, status varchar, message varchar)""",
-    f"""create table if not exists {SCHEMA}.account (at timestamp, bot_id varchar, mode varchar, equity double, balance double,
+    f"""create table if not exists {SCHEMA}.heartbeat (ts timestamp, bot_id varchar, mode varchar, status varchar, message varchar)""",
+    f"""create table if not exists {SCHEMA}.account (ts timestamp, bot_id varchar, mode varchar, equity double, balance double,
         margin_used double, day_pnl double, total_pnl double, currency varchar)""",
     f"""create table if not exists {SCHEMA}.positions (snapshot_at timestamp, bot_id varchar, mode varchar, symbol varchar, side varchar,
         qty double, entry double, price double, stop double, target double, unrealized_pnl double, opened_at timestamp, strategy varchar)""",
     f"""create table if not exists {SCHEMA}.trades (trade_id varchar, bot_id varchar, mode varchar, symbol varchar, side varchar, qty double,
         entry double, exit double, pnl double, opened_at timestamp, closed_at timestamp, strategy varchar, reason varchar,
         primary key (bot_id, trade_id))""",
-    f"""create table if not exists {SCHEMA}.signals (at timestamp, bot_id varchar, mode varchar, symbol varchar, direction varchar,
+    f"""create table if not exists {SCHEMA}.signals (ts timestamp, bot_id varchar, mode varchar, symbol varchar, direction varchar,
         confidence double, decision varchar, reason varchar, source varchar)""",
-    f"""create table if not exists {SCHEMA}.risk (at timestamp, bot_id varchar, mode varchar, daily_loss_limit double, daily_loss_used double,
+    f"""create table if not exists {SCHEMA}.risk (ts timestamp, bot_id varchar, mode varchar, daily_loss_limit double, daily_loss_used double,
         max_exposure double, exposure double, kill_switch boolean, notes varchar)""",
 ]
 DECISIONS = {"taken", "skipped", "blocked"}

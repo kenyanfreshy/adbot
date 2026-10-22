@@ -341,15 +341,15 @@ with tab_rules:
 # Log tab
 # --------------------------------------------------------------------------- #
 with tab_log:
-    log_df = con.execute("select * from bot_actions order by at desc limit 500").fetch_df()
+    log_df = con.execute("select * from bot_actions order by ts desc limit 500").fetch_df()
     if log_df.empty:
         st.info("The bot hasn't acted yet.")
     else:
         st.dataframe(log_df, hide_index=True, use_container_width=True)
-    hist = con.execute("select at, app, daily from app_budgets order by at").fetch_df()
+    hist = con.execute("select ts, app, daily from app_budgets order by ts").fetch_df()
     if not hist.empty:
         st.altair_chart(alt.Chart(hist).mark_line(point=True).encode(
-            x="at:T", y=alt.Y("daily:Q", title="$/day"), color=alt.Color("app:N", scale=alt.Scale(domain=list(APP_COLORS), range=list(APP_COLORS.values())))),
+            x="ts:T", y=alt.Y("daily:Q", title="$/day"), color=alt.Color("app:N", scale=alt.Scale(domain=list(APP_COLORS), range=list(APP_COLORS.values())))),
             use_container_width=True)
 
 
@@ -378,7 +378,7 @@ def fx_market_open(now_utc: dt.datetime) -> bool:
 with tab_trade:
     @st.fragment(run_every="60s")
     def trading_view():
-        hb = tq("select * from trading.heartbeat order by at desc limit 1")
+        hb = tq("select * from trading.heartbeat order by ts desc limit 1")
         if hb.empty:
             st.info("No reports from the trading bot yet. Add trading_status.py to the trading bot's monitoring service "
                     "(see the top of that file), set MOTHERDUCK_TOKEN on the trading machine, then run "
@@ -386,8 +386,8 @@ with tab_trade:
             return
         bots = tq("select distinct bot_id from trading.heartbeat order by 1")["bot_id"].tolist()
         bot = st.selectbox("Bot", bots, index=0) if len(bots) > 1 else bots[0]
-        hb = tq("select * from trading.heartbeat where bot_id = ? order by at desc limit 1", [bot]).iloc[0]
-        age = (dt.datetime.utcnow() - pd.Timestamp(hb["at"]).to_pydatetime()).total_seconds() / 60
+        hb = tq("select * from trading.heartbeat where bot_id = ? order by ts desc limit 1", [bot]).iloc[0]
+        age = (dt.datetime.utcnow() - pd.Timestamp(hb["ts"]).to_pydatetime()).total_seconds() / 60
         mode = str(hb["mode"]).upper()
         status_ok = age < 10 and str(hb["status"]).lower() in ("running", "ok", "idle", "test")
         st.markdown(f"**{bot}** · {'🧪 PAPER' if mode == 'PAPER' else '🔴 LIVE'} · "
@@ -396,9 +396,9 @@ with tab_trade:
         if age > 15 and fx_market_open(dt.datetime.utcnow()):
             st.warning("No report for more than 15 minutes while the FX market is open. Check the trading machine.")
 
-        acct = tq("select * from trading.account where bot_id = ? order by at desc limit 1", [bot])
+        acct = tq("select * from trading.account where bot_id = ? order by ts desc limit 1", [bot])
         today = dt.datetime.utcnow().date()  # reports are stored in UTC
-        start = tq("select * from trading.account where bot_id = ? and cast(at as date) = ? order by at limit 1", [bot, today])
+        start = tq("select * from trading.account where bot_id = ? and cast(ts as date) = ? order by ts limit 1", [bot, today])
         k = st.columns(4)
         if not acct.empty:
             a = acct.iloc[0]
@@ -406,7 +406,7 @@ with tab_trade:
             k[1].metric("Today's P&L", money(a["day_pnl"], True))
             k[2].metric("Total P&L", money(a["total_pnl"], True))
             k[3].metric("Margin used", money(a["margin_used"]))
-        risk = tq("select * from trading.risk where bot_id = ? order by at desc limit 1", [bot])
+        risk = tq("select * from trading.risk where bot_id = ? order by ts desc limit 1", [bot])
         if not risk.empty:
             r = risk.iloc[0]
             if bool(r["kill_switch"]):
@@ -421,12 +421,12 @@ with tab_trade:
                 c[1].markdown(f"**Exposure:** {money(r['exposure'])} of {money(r['max_exposure'])}")
                 c[1].progress(min(1.0, max(0.0, ex)))
 
-        eq = tq("select at, equity from trading.account where bot_id = ? and at > ? order by at", [bot, dt.datetime.utcnow() - dt.timedelta(days=30)])
+        eq = tq("select ts, equity from trading.account where bot_id = ? and ts > ? order by ts", [bot, dt.datetime.utcnow() - dt.timedelta(days=30)])
         if len(eq) > 1:
             st.markdown("#### Equity, last 30 days")
             st.altair_chart(alt.Chart(eq).mark_area(line={"color": "#ff6a2b"}, color=alt.Gradient(
                 gradient="linear", stops=[alt.GradientStop(color="rgba(255,106,43,.35)", offset=0), alt.GradientStop(color="rgba(255,106,43,0)", offset=1)],
-                x1=1, x2=1, y1=0, y2=1)).encode(x="at:T", y=alt.Y("equity:Q", scale=alt.Scale(zero=False))).properties(height=220), use_container_width=True)
+                x1=1, x2=1, y1=0, y2=1)).encode(x="ts:T", y=alt.Y("equity:Q", scale=alt.Scale(zero=False))).properties(height=220), use_container_width=True)
 
         snap = tq("select max(snapshot_at) as s from trading.positions where bot_id = ?", [bot])
         st.markdown("#### Open positions")
@@ -455,8 +455,8 @@ with tab_trade:
                 st.dataframe(tr, hide_index=True, use_container_width=True, column_config={"pnl": st.column_config.NumberColumn("P&L", format="$%.2f")})
         with c2:
             st.markdown("**Signals and decisions**")
-            sg = tq("select at, symbol, direction, confidence, decision, reason, source from trading.signals "
-                    "where bot_id = ? and cast(at as date) = ? order by at desc limit 200", [bot, today])
+            sg = tq("select ts, symbol, direction, confidence, decision, reason, source from trading.signals "
+                    "where bot_id = ? and cast(ts as date) = ? order by ts desc limit 200", [bot, today])
             if sg.empty:
                 st.caption("No signals today.")
             else:

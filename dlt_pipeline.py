@@ -555,9 +555,9 @@ def ensure_tables(con) -> None:
     con.execute(f"create schema if not exists {DATASET}")
     con.execute("create table if not exists adbot_rules (updated_at timestamp, rules json)")
     con.execute("create table if not exists keyword_overrides (entity_key varchar primary key, status varchar, note varchar, updated_at timestamp)")
-    con.execute("create table if not exists bot_actions (at timestamp, dry_run boolean, kind varchar, channel varchar, app varchar, "
+    con.execute("create table if not exists bot_actions (ts timestamp, dry_run boolean, kind varchar, channel varchar, app varchar, "
                 "entity_key varchar, keyword varchar, detail varchar, applied boolean, error varchar)")
-    con.execute("create table if not exists app_budgets (at timestamp, app varchar, daily double, share double, efficiency double)")
+    con.execute("create table if not exists app_budgets (ts timestamp, app varchar, daily double, share double, efficiency double)")
 
 
 def run_sync(days: int, rules: Rules) -> dict:
@@ -614,7 +614,7 @@ def run_bot(con, rules: Rules, dry_run: bool) -> dict:
     paused, alerts = [], []
 
     # skip anything already paused by the bot, and don't repeat a dry-run alert more than once a day
-    already = {k for (k,) in con.execute("select distinct entity_key from bot_actions where kind='pause' and (applied or at > ?)",
+    already = {k for (k,) in con.execute("select distinct entity_key from bot_actions where kind='pause' and (applied or ts > ?)",
                                          [now - dt.timedelta(hours=24)]).fetchall()}
     for k, a in agg.items():
         action, reason = keyword_decision(a, rules)
@@ -636,7 +636,7 @@ def run_bot(con, rules: Rules, dry_run: bool) -> dict:
         p = per_app.setdefault(a.get("app") or "Unassigned", {"spend": 0.0, "revenue": 0.0, "installs": 0.0})
         for f in ("spend", "revenue", "installs"):
             p[f] += a[f]
-    last = {app: d for app, d in con.execute("select app, arg_max(daily, at) from app_budgets group by app").fetchall()}
+    last = {app: d for app, d in con.execute("select app, arg_max(daily, ts) from app_budgets group by app").fetchall()}
     plan = rebalance(per_app, rules, last) if rules.auto_rebalance else {}
     for app, v in plan.items():
         con.execute("insert into app_budgets values (?,?,?,?,?)", [now, app, v["daily"], v["share"], v["efficiency"]])
@@ -716,7 +716,7 @@ def check_trading(con, rules: Rules) -> None:
     """Hourly safety net: alert if the trading bot has gone quiet while the FX market is open,
     or if its kill switch is on. Read-only; it never touches the trading bot."""
     try:
-        rows = con.execute("select bot_id, max(at) from trading.heartbeat group by bot_id").fetchall()
+        rows = con.execute("select bot_id, max(ts) from trading.heartbeat group by bot_id").fetchall()
     except Exception:
         return  # trading reporting not set up yet
     now = dt.datetime.utcnow()
@@ -726,7 +726,7 @@ def check_trading(con, rules: Rules) -> None:
         if fx_open and last and (now - last).total_seconds() > 20 * 60:
             telegram(f"⚠️ <b>Trading bot {bot_id}</b> hasn't reported for {int((now - last).total_seconds() // 60)} min while the FX market is open.", rules)
         try:
-            ks = con.execute("select kill_switch, notes, at from trading.risk where bot_id = ? order by at desc limit 1", [bot_id]).fetchone()
+            ks = con.execute("select kill_switch, notes, ts from trading.risk where bot_id = ? order by ts desc limit 1", [bot_id]).fetchone()
         except Exception:
             ks = None
         if ks and ks[0] and (now - ks[2]).total_seconds() < 3600:
