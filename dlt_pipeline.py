@@ -723,6 +723,12 @@ def check_trading(con, rules: Rules) -> None:
     wd, h = now.weekday(), now.hour
     fx_open = not (wd == 5 or (wd == 6 and h < 21) or (wd == 4 and h >= 22))
     for bot_id, last in rows:
+        try:
+            st = con.execute("select status, message from trading.heartbeat where bot_id = ? order by ts desc limit 1", [bot_id]).fetchone()
+        except Exception:
+            st = None
+        if fx_open and st and st[0] in ("stopped", "degraded"):
+            telegram(f"⚠️ <b>Trading bot {bot_id}</b> is {st[0]}: {st[1] or ''}", rules)
         if fx_open and last and (now - last).total_seconds() > 20 * 60:
             telegram(f"⚠️ <b>Trading bot {bot_id}</b> hasn't reported for {int((now - last).total_seconds() // 60)} min while the FX market is open.", rules)
         try:

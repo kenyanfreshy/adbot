@@ -27,3 +27,7 @@ The control panel's **💹 Trading** tab shows what the trading bot reports: equ
 2. On the trading machine set `MOTHERDUCK_TOKEN` (ideally its own MotherDuck token) and run `python trading_status.py` once; the Trading tab should show a test report.
 3. In the Audit/Monitoring service, create `StatusReporter(bot_id="...", mode="paper" or "live")` and call `heartbeat()`, `account()`, `positions()`, `trade()`, `signal()` and `risk()` (examples at the top of the file). Calls return instantly and never raise, so trading can't be slowed or stopped by reporting.
 4. The hourly job sends a Telegram alert if the bot goes quiet for 20+ minutes while the FX market is open, or if its kill switch turns on.
+
+### Trading bridge for fx_trading_system (no changes to the trading code)
+
+`trading_sidecar.py` runs next to the trading system, reads its Postgres in a read-only session plus `.runtime/runtime_status.json`, and feeds the Trading tab. On the trading PC: copy the `sidecar/` folder anywhere, double-click `setup-sidecar.bat` (makes its own Python environment, asks for the MotherDuck token, runs one test pass), then `start-sidecar.bat` to keep it running. Use Task Scheduler (At log on → start-sidecar.bat) to start it automatically. Optional: create a read-only Postgres role and set `TRADING_PG_DSN` to use it instead of the trading system's own login.
