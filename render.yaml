@@ -1,4 +1,4 @@
-# Render Blueprint: the Streamlit control panel + an hourly bot job.
+# Render Blueprint: the AdBot phone web app (web.py + web/) + an hourly bot job.
 # Both use the same MotherDuck database (Render cron jobs can't share a disk),
 # so create a free MotherDuck account and set MOTHERDUCK_TOKEN on both services.
 # Secrets marked "sync: false" are entered in the Render dashboard, never committed.
@@ -8,7 +8,8 @@ services:
     runtime: python
     plan: starter
     buildCommand: pip install -r requirements.txt
-    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
+    startCommand: uvicorn web:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips '*'
+    healthCheckPath: /healthz
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
