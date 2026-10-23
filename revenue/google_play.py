@@ -522,10 +522,13 @@ def run(con, environ=None, client: Optional[Client] = None, today: Optional[dt.d
         return {"skipped": str(e)}
     if sa is None:
         return {"skipped": "Google Play service account key not present"}
-    since = registry.now() - dt.timedelta(hours=20)
-    if not force and con.execute(f"SELECT 1 FROM {SCHEMA}.synchronization_jobs WHERE source = 'google_play' "
-                                 "AND status IN ('succeeded', 'partial') AND finished_at > ?", [since]).fetchall():
-        return {"skipped": "already synced in the last 20 hours"}
+    # a clean run counts for the day; a run with warnings is retried on the next hourly run
+    now = registry.now()
+    if not force and con.execute(
+            f"SELECT 1 FROM {SCHEMA}.synchronization_jobs WHERE source = 'google_play' AND "
+            "((status = 'succeeded' AND finished_at > ?) OR (status = 'partial' AND finished_at > ?))",
+            [now - dt.timedelta(hours=20), now - dt.timedelta(minutes=50)]).fetchall():
+        return {"skipped": "already synced today"}
     client = client or Client(sa)
     today = today or dt.datetime.now(dt.timezone.utc).date()
     job = registry.start_job(con, PLATFORM, "daily")

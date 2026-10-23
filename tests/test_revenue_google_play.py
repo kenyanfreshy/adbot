@@ -232,8 +232,12 @@ class ProductTests(unittest.TestCase):
     def test_daily_guard_and_skip(self):
         con = setup_con()
         self.assertIn("skipped", gp.run(con, environ={"GOOGLE_SECRET_DIR": tempfile.mkdtemp()}))
-        run(con, FakeGoogle())
+        run(con, FakeGoogle())                               # clean run (bucket set, no files) -> done for the day
         self.assertIn("skipped", run(con, FakeGoogle(), force=False))
+        con2 = setup_con()
+        run(con2, FakeGoogle(), e=env(GOOGLE_PLAY_REPORTS_BUCKET=""))      # warning -> retried next hour
+        con2.execute(f"UPDATE {S}.synchronization_jobs SET finished_at = finished_at - INTERVAL 55 MINUTE")
+        self.assertNotIn("skipped", run(con2, FakeGoogle(), e=env(GOOGLE_PLAY_REPORTS_BUCKET=""), force=False))
 
 
 class ReportTests(unittest.TestCase):
