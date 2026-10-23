@@ -117,6 +117,15 @@ class Creds:
                 key = normalize_key(fh.read(), source=f"secret file {os.path.basename(key_file)}")
         else:
             key = normalize_key(vals["ASC_PRIVATE_KEY"])
+        import re
+        if not re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", vals["ASC_ISSUER_ID"]):
+            raise AppleError(f"ASC_ISSUER_ID should look like 57246542-96fe-1a63-e053-0824d011072a (it holds {len(vals['ASC_ISSUER_ID'])} characters)")
+        if not re.fullmatch(r"[A-Z0-9]{10}", vals["ASC_KEY_ID"]):
+            raise AppleError(f"ASC_KEY_ID should be the 10-character Key ID, e.g. 2X9R4HXF34 (it holds {len(vals['ASC_KEY_ID'])} characters)")
+        if key_file and vals["ASC_KEY_ID"] not in os.path.basename(key_file) and re.search(r"AuthKey_[A-Z0-9]{10}", os.path.basename(key_file)):
+            raise AppleError(f"ASC_KEY_ID {vals['ASC_KEY_ID']} doesn't match the key file {os.path.basename(key_file)}")
+        if not vals["ASC_VENDOR_NUMBER"].isdigit():
+            raise AppleError("ASC_VENDOR_NUMBER should be digits only (Payments and Financial Reports, top left)")
         return cls(vals["ASC_ISSUER_ID"], vals["ASC_KEY_ID"], key, vals["ASC_VENDOR_NUMBER"])
 
 
@@ -199,7 +208,8 @@ class Client:
                 self.sleep(min(60, 2 ** attempt))
                 continue
             if r.status_code in (401, 403):
-                raise AppleAuthError(f"HTTP {r.status_code}: {_apple_detail(r)}")
+                raise AppleAuthError(f"HTTP {r.status_code}: {_apple_detail(r)} [signed with key ID {self.creds.key_id}, "
+                                     f"issuer …{self.creds.issuer_id[-4:]}, vendor …{self.creds.vendor_number[-3:]}]")
             if r.status_code == 429 or r.status_code >= 500:
                 last = f"HTTP {r.status_code}: {_apple_detail(r)}"
                 wait = r.headers.get("Retry-After")
