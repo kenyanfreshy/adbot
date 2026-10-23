@@ -61,6 +61,9 @@ services:
         sync: false
       - key: ASC_VENDOR_NUMBER
         sync: false
+      # Google Play (service account key goes in Secret Files as play-service-account.json)
+      - key: GOOGLE_PLAY_REPORTS_BUCKET   # pubsite_prod_… from a Play Console report link
+        sync: false
       # Meta Ads (system-user token with ads_read + ads_management)
       - key: META_ACCESS_TOKEN
         sync: false

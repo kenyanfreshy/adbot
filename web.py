@@ -457,6 +457,10 @@ async def revenue_get(request: Request):
                 counts.setdefault(p, {})[t] = int(n)
     for a in reg["apps"]:
         for p in a["products"]:
+            # the phone only needs the US price; store prices exist for ~170 regions
+            us = [x for x in p["prices"] if x.get("territory") == "US"]
+            p["price_regions"] = len(p["prices"])
+            p["prices"] = us or p["prices"][:1]
             for x in p["prices"]:
                 x["amount"] = _money_str(x["amount"])
     for s in reg["sources"]:

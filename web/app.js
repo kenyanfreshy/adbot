@@ -354,7 +354,7 @@
         const [h1, h2] = APP_HUE[a.app_id] || ["#00C2FF", "#E024C3"];
         const live = new Set(a.products.filter(p => p.verified).map(p => p.platform + ":" + p.plan_code));
         const prods = [...a.products].filter(p => p.verified || !live.has(p.platform + ":" + p.plan_code)).sort((x, y) => Object.keys(PLAN).indexOf(x.plan_code) - Object.keys(PLAN).indexOf(y.plan_code));
-        const price = p => { const pr = (p.prices || []).find(x => x.currency === "USD") || (p.prices || [])[0]; return pr ? +pr.amount : null; };
+        const price = p => { const pr = (p.prices || []).find(x => x.currency === "USD" && x.territory === "US") || (p.prices || []).find(x => x.currency === "USD"); return pr ? +pr.amount : null; };
         const max = Math.max(1, ...prods.map(price).filter(v => v != null));
         return `<article class="appx" style="--h1:${h1};--h2:${h2}">
           <header><div><div class="appx-name">${esc(a.name)}</div><div class="appx-sub">AD BOT · ${esc(a.bot_app_name || "—")}</div></div>
@@ -369,12 +369,12 @@
             <div class="field"><label>Play package</label><input type="text" name="package_name" autocapitalize="off" value="${esc(and.package_name || "")}" placeholder="com.example.app"></div>
             <button class="btn primary block" type="submit">Save IDs</button>
           </form>
-          <div class="ladder-h">PRICE LADDER <small>${prods.some(p => p.verified) ? "✓ = confirmed by App Store Connect · prices are your list" : "iOS reference list · not sales"}</small></div>
+          <div class="ladder-h">PRICE LADDER <small>${prods.some(p => p.verified) ? "✓ = confirmed by the store · US prices" : "iOS reference list · not sales"}</small></div>
           <div class="ladder">${prods.map(p => { const v = price(p); return `<div class="rung">
-              <div class="rung-l"><b>${esc(PLAN[p.plan_code] || p.plan_code)}${p.verified ? ' <i class="vchk" title="Confirmed by App Store Connect">✓</i>' : ""}</b><small>${esc(TYPE[p.product_type] || p.product_type)}</small></div>
+              <div class="rung-l"><b>${esc(PLAN[p.plan_code] || p.plan_code)}${p.verified ? ' <i class="vchk" title="Confirmed by App Store Connect">✓</i>' : ""}</b><small>${p.platform === "google_play" ? "Android · " : "iOS · "}${esc(TYPE[p.product_type] || p.product_type)}</small></div>
               <div class="rung-bar"><i style="width:${v != null ? Math.max(6, v / max * 100) : 0}%"></i></div>
               <div class="rung-v">${v != null ? money(v) : "—"}</div></div>`; }).join("")}
-            <div class="rung nil"><div class="rung-l"><b>Android</b><small>read from Google Play</small></div><div class="rung-bar"><i style="width:0"></i></div><div class="rung-v">UNAVAILABLE</div></div>
+            ${prods.some(p => p.platform === "google_play") ? "" : `<div class="rung nil"><div class="rung-l"><b>Android</b><small>read from Google Play</small></div><div class="rung-bar"><i style="width:0"></i></div><div class="rung-v">UNAVAILABLE</div></div>`}
           </div></article>`; }).join("")}
 
       <div class="hx-h"><span>AD PLATFORMS</span><small>spend + return on ad spend</small></div>

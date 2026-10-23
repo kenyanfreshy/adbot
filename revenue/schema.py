@@ -337,6 +337,11 @@ MIGRATIONS.append((2, "Apple sales detail columns + raw report archive", [
         stored_at     TIMESTAMP NOT NULL)""",
 ]))
 
+MIGRATIONS.append((3, "Google Play: transaction type on financial lines", [
+    # Google earnings files list each money movement on its own line (Charge, Google fee, Charge refund, ...)
+    f"ALTER TABLE {SCHEMA}.financial_reports ADD COLUMN IF NOT EXISTS transaction_type VARCHAR",
+]))
+
 LATEST = max(v for v, _, _ in MIGRATIONS)
 
 

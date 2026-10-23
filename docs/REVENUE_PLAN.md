@@ -45,7 +45,7 @@ Official references:
 | A | Inspection and this plan | Done |
 | B | Application registry, revenue database schema, Decimal money handling, audit and sync-job logs, Revenue tab (registry plus source status) | **Done, tested offline, not deployed** |
 | C | App Store Connect connector: JWT, product verification, daily sales, monthly finance detail, backfill plus incremental sync, gzip parsing, retries, raw-file archive | **Built and tested offline; first live run on the next hourly job.** Subscription-event and analytics reports come next, once real files can be inspected |
-| D | Google Play connector: bucket reports, monetization API for products and prices, optional RTDN | Needs a service account plus a Play Console invite |
+| D | Google Play connector: monetization API for products, types and regional prices (dated history); bucket reports for estimated sales and earnings | **Built and tested offline; first live run on the next hourly job** |
 | E | Normalization and reconciliation (estimated vs finalized, refunds, FX with documented rates) and the metric definitions | Needs C or D data |
 | F | Dashboard: executive overview, app and store comparison, subscriptions, lifetime purchases, reconciliation | |
 | G | Ad spend into `revenue.advertising_spend` (reusing the existing ad connectors), plus TikTok | |
@@ -116,3 +116,34 @@ Official references:
 - finance parsing and the unknown-layout path
 
 **Not yet verified live:** the first real run confirms the key, the role, the vendor number and the finance file layout. Until the apps are on sale, Apple returns no sales, and the tab will show *Connected* with no data.
+
+## Stage D report (Google Play)
+
+**What runs once a day** (`revenue/google_play.py`, called by `dlt_pipeline.py` after Apple):
+- **Sign-in:** the job uses the service account key from the Render Secret File (any single `*.json`, preferably `play-service-account.json`) and signs in to Google with the read-only Android Publisher and Cloud Storage scopes.
+- **Products and prices:**
+  - For every Play package on the Revenue tab, the job reads its subscriptions (each base plan) and one-time products (each purchase option).
+  - Each one is stored with its real type. An auto-renewing plan becomes `auto_renewable_subscription`. A prepaid plan becomes `non_renewing_subscription`, which is how a non-renewing 3-month pass shows up. One-time products become `one_time_product`.
+  - The billing period comes from Google (P1M, P3M, P1Y).
+  - Regional prices are kept as a dated history: unchanged prices are left alone, and a changed price closes the old row and opens a new one.
+- **Reports, when `GOOGLE_PLAY_REPORTS_BUCKET` is set:**
+  - `sales/salesreport_YYYYMM.zip` goes into `sales_reports` as estimated sales, one line per order.
+  - `earnings/earnings_YYYYMM.zip` goes into `financial_reports` as finalized money, one line per money movement (Charge, Google fee, refunds).
+  - A file is re-read only when Google publishes a new version of it. Orders already stored are not counted again.
+  - A file with columns the parser doesn't recognize is archived and the job is flagged, rather than guessing at its contents.
+- **When something is missing or refused:**
+  - A missing bucket, a refused bucket (the invite needs "View financial data", which can take a day), or a refused products request is recorded in plain words.
+  - These problems don't stop the other steps or the ad bot.
+  - A bad key marks Google Play as *Error*.
+
+**Tests:** 12 new tests run against a fake Google with a throwaway key and synthetic files, for 48 tests in total. They cover:
+- loading the key, accepting the bucket as a name, `gs://` path or link
+- the sign-in token's contents
+- Google's price format (`units` plus `nanos`)
+- product types and regional prices, and the price history
+- refused products and a bad key
+- importing both report files, and adding only new orders when a file is updated
+- UTF-16 files, an unknown layout, and bucket problems
+- the once-a-day guard
+
+**Not yet verified live:** the first real run confirms the Play Console invite, that the API is enabled, and the column names in real report files. There are no money reports yet because nothing has sold.
