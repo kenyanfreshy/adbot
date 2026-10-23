@@ -603,6 +603,28 @@ def run_sync(days: int, rules: Rules) -> dict:
     return counts
 
 
+AD_PLATFORM = {"Apple Search Ads": "apple_ads", "Meta Ads": "meta_ads", "Google Ads": "google_ads"}
+
+
+def report_ad_status(con, counts: dict) -> None:
+    """Tell the Revenue tab which ad accounts synced (the keys live on this job, not the web app)."""
+    try:
+        from revenue import registry as rreg
+        from revenue.schema import SCHEMA as R
+        for name, platform in AD_PLATFORM.items():
+            if name not in counts and f"{name} error" not in counts:
+                continue  # credentials not set: nothing to report
+            err = counts.get(f"{name} error")
+            job = rreg.start_job(con, platform, "ad_sync")
+            rreg.finish_job(con, job, "failed" if err else "succeeded", int(counts.get(name, 0) or 0), 0,
+                            message=err or f"{counts.get(name, 0)} rows")
+            con.execute(f"UPDATE {R}.store_accounts SET status = ?, last_error = ?, last_verified_at = CASE WHEN ? THEN ? ELSE last_verified_at END, "
+                        "updated_at = ? WHERE platform = ? AND purpose = 'reporting'",
+                        ["error" if err else "verified", rreg.scrub_text(err)[:500] if err else None, not err, rreg.now(), rreg.now(), platform])
+    except Exception:  # noqa: BLE001
+        log.exception("could not record ad sync status")
+
+
 # --------------------------------------------------------------------------- #
 # Bot run
 # --------------------------------------------------------------------------- #
@@ -765,6 +787,8 @@ def main(argv: list[str] | None = None) -> int:
         log.info("Rows per source: %s", counts)
     con = connect()
     rules = load_rules(con)
+    if not args.no_sync:
+        report_ad_status(con, counts)
     result = run_bot(con, rules, dry_run)
     check_trading(con, rules)
     # App Store revenue (read-only). Skipped quietly until the ASC_* settings exist; never stops the ad bot.
