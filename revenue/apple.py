@@ -109,10 +109,29 @@ class Creds:
         vals = {k: str(env.get(k, "") or "").strip() for k in ENV}
         if not all(vals.values()):
             return None
-        key = vals["ASC_PRIVATE_KEY"].strip().strip('"').strip("'").replace("\\n", "\n")
-        if "BEGIN" not in key:
-            raise AppleError("ASC_PRIVATE_KEY must be the full .p8 text including the BEGIN/END lines")
-        return cls(vals["ASC_ISSUER_ID"], vals["ASC_KEY_ID"], key, vals["ASC_VENDOR_NUMBER"])
+        return cls(vals["ASC_ISSUER_ID"], vals["ASC_KEY_ID"], normalize_key(vals["ASC_PRIVATE_KEY"]), vals["ASC_VENDOR_NUMBER"])
+
+
+def normalize_key(raw: str) -> str:
+    """Accept the .p8 text however it was pasted: with or without the BEGIN/END lines,
+    on one line, with literal \\n escapes or surrounding quotes. Never echoes the key."""
+    import binascii
+    k = raw.strip().strip('"').strip("'").replace("\\n", "\n").replace("\r", "")
+    if "BEGIN" in k and "END" in k:
+        body = k.split("-----")[2] if k.count("-----") >= 4 else ""
+    else:
+        body = k
+    body = "".join(body.split())
+    try:
+        der = base64.b64decode(body, validate=True)
+    except (binascii.Error, ValueError):
+        der = b""
+    if len(der) < 60 or der[:1] != b"\x30":
+        hint = "it looks like a file name or path" if (".p8" in k or "AuthKey" in k) and len(k) < 80 else \
+               "it is too short to be a key" if len(body) < 80 else "it isn't the key text"
+        raise AppleError(f"ASC_PRIVATE_KEY isn't a usable .p8 key ({hint}). Open the AuthKey_….p8 file in Notepad and paste everything in it")
+    lines = [body[i:i + 64] for i in range(0, len(body), 64)]
+    return "-----BEGIN PRIVATE KEY-----\n" + "\n".join(lines) + "\n-----END PRIVATE KEY-----\n"
 
 
 def make_token(creds: Creds, now: Optional[float] = None, lifetime: int = 19 * 60) -> str:

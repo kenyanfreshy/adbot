@@ -147,8 +147,18 @@ class TokenTests(unittest.TestCase):
     def test_credentials(self):
         self.assertIsNone(apple.Creds.from_env({}))
         self.assertIsNone(apple.Creds.from_env({**ENV, "ASC_VENDOR_NUMBER": " "}))
-        with self.assertRaises(apple.AppleError):
-            apple.Creds.from_env({**ENV, "ASC_PRIVATE_KEY": "not-a-key"})
+        for bad, hint in (("not-a-key", "too short"), ("AuthKey_2X9R4HXF34.p8", "file name"), ("x" * 120, "isn't the key")):
+            with self.subTest(bad=bad):
+                with self.assertRaises(apple.AppleError) as cm:
+                    apple.Creds.from_env({**ENV, "ASC_PRIVATE_KEY": bad})
+                self.assertIn(hint, str(cm.exception))
+                self.assertNotIn(bad if len(bad) > 30 else "§", str(cm.exception))
+        # the same key pasted without the BEGIN/END lines, on one line, or with Windows line endings still works
+        body = "".join(PEM.split("-----")[2].split())
+        for pasted in (body, PEM.replace("\n", "\r\n"), PEM.replace("\n", " "), '"' + PEM + '"'):
+            with self.subTest(form=pasted[:12]):
+                c = apple.Creds.from_env({**ENV, "ASC_PRIVATE_KEY": pasted})
+                jwt.decode(apple.make_token(c), PUB, algorithms=["ES256"], audience="appstoreconnect-v1")
         creds = apple.Creds.from_env(ENV)
         self.assertIn("BEGIN PRIVATE KEY", creds.private_key)
         self.assertNotIn("PRIVATE", repr(creds))
