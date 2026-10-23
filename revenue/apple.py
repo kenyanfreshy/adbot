@@ -85,6 +85,10 @@ class AppleError(Exception):
 class AppleAuthError(AppleError):
     """401/403: the key, its role or the vendor number is wrong. Retrying won't help."""
 
+    def __init__(self, msg: str, status: int = 401, path: str = ""):
+        super().__init__(msg)
+        self.status, self.path = status, path
+
 
 class AppleFormatError(AppleError):
     """A report arrived in a shape we don't recognise. The raw file is kept."""
@@ -208,8 +212,10 @@ class Client:
                 self.sleep(min(60, 2 ** attempt))
                 continue
             if r.status_code in (401, 403):
-                raise AppleAuthError(f"HTTP {r.status_code}: {_apple_detail(r)} [signed with key ID {self.creds.key_id}, "
-                                     f"issuer …{self.creds.issuer_id[-4:]}, vendor …{self.creds.vendor_number[-3:]}]")
+                where = url.replace(API, "").split("?")[0]
+                raise AppleAuthError(f"HTTP {r.status_code} on {where}: {_apple_detail(r)} [signed with key ID {self.creds.key_id}, "
+                                     f"issuer …{self.creds.issuer_id[-4:]}, vendor …{self.creds.vendor_number[-3:]}]",
+                                     status=r.status_code, path=where)
             if r.status_code == 429 or r.status_code >= 500:
                 last = f"HTTP {r.status_code}: {_apple_detail(r)}"
                 wait = r.headers.get("Retry-After")
@@ -596,8 +602,14 @@ def sync_products(con, client: Client) -> dict:
                     if not a.get("productId") or not period:
                         continue
                     upsert(app_id, a["productId"], a.get("name"), "auto_renewable_subscription", period[0], period[1], a.get("state"))
-        except AppleAuthError:
-            raise
+        except AppleAuthError as e:
+            if e.status != 403:
+                raise
+            # the key's role can't read product setup (Finance can't): sales and finance still work
+            stats["errors"].append("product types not verified: this key's role can't read in-app purchase setup "
+                                   "(needs App Manager or Admin access); sales and finance are unaffected")
+            stats["forbidden"] = True
+            break
         except AppleError as e:
             stats["errors"].append(f"{app_id}: {e}")
     return stats

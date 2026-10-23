@@ -251,6 +251,24 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(job[0], "failed")
         self.assertIn("refused the key", job[1])
 
+    def test_finance_role_without_product_access(self):
+        con = setup_con()
+
+        class NoProducts(FakeApple):
+            def get(self, url, params=None, timeout=None, headers=None):
+                if "/inAppPurchasesV2" in url or "/subscriptionGroups" in url:
+                    self.calls.append((url, dict(params or {}), headers))
+                    return Resp(403, body={"errors": [{"code": "FORBIDDEN_ERROR", "detail": "The API key in use does not allow this request"}]})
+                return super().get(url, params, timeout, headers)
+
+        res = self.run_sync(con, NoProducts(sales={DAY1.isoformat(): sales_file(DAY1, DAY1_ROWS)}))
+        self.assertEqual(res["sales"]["files"], 1)                      # sales still imported
+        self.assertTrue(res["products"]["forbidden"])
+        job = q(con, f"SELECT status, message FROM {S}.synchronization_jobs")[0]
+        self.assertEqual(job[0], "partial")
+        self.assertIn("App Manager", job[1])
+        self.assertEqual(q(con, f"SELECT status FROM {S}.store_accounts WHERE platform = 'apple_app_store'")[0][0], "verified")
+
     def test_rate_limit_and_outage(self):
         con = setup_con()
         files = {DAY1.isoformat(): sales_file(DAY1, DAY1_ROWS)}
