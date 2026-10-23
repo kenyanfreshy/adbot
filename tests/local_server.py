@@ -40,9 +40,18 @@ class Cur:
     def __init__(s, rows): s._r = rows; s.description = [(k,) for k in (rows[0].keys() if rows else [])]
     def fetchall(s): return [tuple(r.values()) for r in s._r]
     def fetchone(s): r = s.fetchall(); return r[0] if r else None
+try:
+    import duckdb as _duck
+except ImportError:  # sandbox without the duckdb package: DuckDB CLI shim
+    sys.path.insert(0, os.path.dirname(__file__)); import duckdb_cli_shim as _duck
+import revenue
+REVCON = _duck.connect(":memory:")
+revenue.ensure(REVCON)
+
 class FakeCon:
     def execute(self, sql, p=None):
         l = sql.lower()
+        if "revenue." in l or "information_schema" in l: return REVCON.execute(sql, p)
         if l.startswith("insert into adbot_rules"): STORE["rules"] = p[1]; return Cur([])
         if "keyword_overrides" in l and l.startswith("insert"): STORE["overrides"][p[0]] = p[1]; return Cur([])
         if l.startswith("delete from keyword_overrides"): STORE["overrides"].pop(p[0], None); return Cur([])

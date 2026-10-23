@@ -5,7 +5,7 @@
   const SHORT = {"Rapid Nursing Review": "RNR", "CCRN Adult": "CCRN", "NurseBound": "NurseBound", "Unassigned": "Other"};
   const COLOR = {"Rapid Nursing Review": "var(--rnr)", "CCRN Adult": "var(--ccrn)", "NurseBound": "var(--nb)", "Unassigned": "var(--ink-4)"};
   const HEX = {"Rapid Nursing Review": "#ff6a2b", "CCRN Adult": "#2dd4bf", "NurseBound": "#8b5cf6", "Unassigned": "#5f5770"};
-  const TITLES = {ads: "Ads", keywords: "Keywords", rules: "Bot rules", trading: "Trading", log: "Bot log"};
+  const TITLES = {ads: "Ads", revenue: "Revenue", keywords: "Keywords", rules: "Bot rules", trading: "Trading", log: "Bot log"};
 
   const $ = id => document.getElementById(id);
   const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
@@ -77,7 +77,7 @@
     if (!quiet) v.innerHTML = `<div class="skel"></div><div class="skel" style="margin-top:10px"></div><div class="skel" style="margin-top:10px;height:200px"></div>`;
     if (manual) $("refresh").classList.add("spin");
     try {
-      const fn = {ads: viewAds, keywords: viewKeywords, rules: viewRules, trading: viewTrading, log: viewLog}[S.tab];
+      const fn = {ads: viewAds, revenue: viewRevenue, keywords: viewKeywords, rules: viewRules, trading: viewTrading, log: viewLog}[S.tab];
       await fn(my);
     } catch (e) {
       if (e.message !== "signin" && my === seq) v.innerHTML = `<div class="banner bad"><b>Couldn't load.</b> ${esc(e.message)}</div>`;
@@ -267,6 +267,77 @@
       <div class="h">Signals <small>24 hours</small></div>
       <div class="card list">${d.signals.length ? d.signals.map(s => `<div class="item"><div class="main"><div class="name">${esc(s.symbol)} ${s.direction ? esc(String(s.direction).toUpperCase()) : ""} <span class="badge ${s.decision === "taken" ? "good" : s.decision === "blocked" ? "bad" : "mute"}">${esc(s.decision)}</span></div><div class="meta">${esc(s.reason || "")}</div></div><div class="right">${s.confidence != null ? pct(s.confidence, 0) : ""}<small>${new Date(s.ts + "Z").toLocaleTimeString("en-US", {hour: "numeric", minute: "2-digit"})}</small></div></div>`).join("") : `<div class="empty" style="padding:12px">No signals in the last 24 hours.</div>`}</div>
       <p class="sub" style="text-align:center;margin-top:14px">Read-only. AdBot never places, changes or closes trades.</p>`;
+  }
+
+  /* ---------- Revenue (Stage B: registry + data sources; numbers arrive once store reports are imported) ---------- */
+  const PLAT = {apple_app_store: "App Store", google_play: "Google Play", apple_ads: "Apple Ads", google_ads: "Google Ads", meta_ads: "Meta Ads", tiktok_ads: "TikTok Ads"};
+  const PLAN = {monthly: "Monthly", three_month: "Three-month pass", annual: "Annual", lifetime: "Lifetime", other: "Other"};
+  const TYPE = {unverified: "Type not verified", auto_renewable_subscription: "Auto-renewing subscription", non_renewing_subscription: "Non-renewing subscription",
+                non_consumable: "One-time (non-consumable)", consumable: "Consumable", one_time_product: "One-time product"};
+  const UNAV = `<span class="unav">Unavailable</span>`;
+  const when = t => t ? new Date(String(t).replace(" ", "T") + (String(t).endsWith("Z") ? "" : "Z")).toLocaleString("en-US", {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"}) : "Never";
+  function srcBadge(s) {
+    if (s.status === "verified") return `<span class="badge good">Connected</span>`;
+    if (s.status === "error" || s.last_status === "failed") return `<span class="badge bad">Error</span>`;
+    if (s.status === "configured") return `<span class="badge warn">Keys set · not verified</span>`;
+    return `<span class="badge mute">Not connected</span>`;
+  }
+  async function viewRevenue(my) {
+    const d = await api("/api/revenue"); if (my !== seq) return;
+    const stores = d.sources.filter(s => s.platform === "apple_app_store" || s.platform === "google_play");
+    const ads = d.sources.filter(s => !(s.platform === "apple_app_store" || s.platform === "google_play"));
+    const why = d.has_revenue_data ? "" : "no store reports imported yet";
+    const tile = (k, sub) => `<div class="kpi"><div class="k">${k}</div><div class="v">${UNAV}</div><div class="d">${esc(sub)}</div></div>`;
+    const srcRow = s => `<div class="item"><div class="main"><div class="name">${esc(s.name)}</div>
+        <div class="meta">Last successful sync: <b>${when(s.last_success)}</b>${s.period_end ? ` · data through ${esc(String(s.period_end).slice(0, 10))}` : ""}</div>
+        ${s.credentials.missing.length ? `<div class="meta">Render needs: ${s.credentials.missing.map(v => `<code>${esc(v)}</code>`).join(" ")}</div>` : ""}
+        ${s.last_status === "failed" && s.last_message ? `<div class="meta" style="color:var(--red)">${esc(s.last_message)}</div>` : ""}</div>
+        <div class="right">${srcBadge(s)}</div></div>`;
+    const idRow = (label, val) => `<div class="lrow">${label}<b class="${val ? "" : "muted"}">${val ? esc(val) : "Not set"}</b></div>`;
+    $("view").innerHTML = `
+      ${d.has_revenue_data ? "" : `<div class="banner"><b>No earnings to show yet.</b> Revenue appears here once App Store Connect and Google Play reports are imported. Until then every figure reads <i>Unavailable</i>, never $0. Prices below are the reference list you supplied, not sales.</div>`}
+      <div class="kpis">
+        ${tile("Yesterday's sales", why || "App Store + Google Play")}
+        ${tile("Last 30 days", why || "gross sales")}
+        ${tile("Month-to-date proceeds", why || "estimated")}
+        ${tile("Ad spend this month", "ad accounts not synced")}
+      </div>
+      <div class="h">Store reports <small>read-only</small></div>
+      <div class="card list">${stores.map(srcRow).join("")}</div>
+      <div class="h">Apps</div>
+      ${d.apps.map(a => {
+        const ios = a.listings.apple_app_store || {}, and = a.listings.google_play || {};
+        return `<div class="card appcard">
+          <div class="apphead"><div><div class="name">${esc(a.name)}</div><div class="sub">Ad bot name: ${esc(a.bot_app_name || "—")}</div></div>
+            <button class="btn sm" data-edit="${esc(a.app_id)}">Edit IDs</button></div>
+          <div class="cols">
+            <div><div class="colh">App Store</div>${idRow("Apple ID", ios.apple_app_id)}${idRow("Bundle ID", ios.bundle_id)}<div class="lrow">Status<b class="muted">${esc(ios.publication_status === "unknown" ? "Not checked" : ios.publication_status)}</b></div></div>
+            <div><div class="colh">Google Play</div>${idRow("Package", and.package_name)}<div class="lrow">Status<b class="muted">${esc(and.publication_status === "unknown" ? "Not checked" : and.publication_status)}</b></div></div>
+          </div>
+          <form class="idform" data-app="${esc(a.app_id)}" hidden>
+            <div class="field"><label>Apple ID<small>App Store Connect → App Information</small></label><input type="text" name="apple_app_id" inputmode="numeric" value="${esc(ios.apple_app_id || "")}" placeholder="1234567890"></div>
+            <div class="field"><label>Bundle ID</label><input type="text" name="bundle_id" autocapitalize="off" value="${esc(ios.bundle_id || "")}" placeholder="com.example.app"></div>
+            <div class="field"><label>Play package</label><input type="text" name="package_name" autocapitalize="off" value="${esc(and.package_name || "")}" placeholder="com.example.app"></div>
+            <button class="btn primary block" type="submit">Save IDs</button>
+          </form>
+          <div class="colh" style="margin-top:12px">Plans</div>
+          <div class="plans">${[...a.products].sort((x, y) => Object.keys(PLAN).indexOf(x.plan_code) - Object.keys(PLAN).indexOf(y.plan_code)).map(p => { const pr = (p.prices || []).find(x => x.currency === "USD") || (p.prices || [])[0];
+            return `<div class="planrow"><div><div>${esc(PLAN[p.plan_code] || p.plan_code)} <small>${esc(PLAT[p.platform] || p.platform)}</small></div><div class="sub">${esc(TYPE[p.product_type] || p.product_type)}${p.verified ? "" : " · from your price list"}</div></div>
+              <b>${pr ? money(+pr.amount) : UNAV}${pr && pr.source === "reference" ? `<small>reference</small>` : ""}</b></div>`; }).join("")}
+            <div class="planrow"><div><div>Android prices</div><div class="sub">Read from Google Play once connected, not copied from iOS</div></div><b>${UNAV}</b></div>
+          </div></div>`; }).join("")}
+      <div class="h">Ad platforms <small>for spend and return on ad spend</small></div>
+      <div class="card list">${ads.map(srcRow).join("")}</div>
+      <p class="sub" style="text-align:center;margin-top:14px">Read-only. Nothing here changes store products, prices or purchases.</p>`;
+    document.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => { const f = document.querySelector(`.idform[data-app="${b.dataset.edit}"]`); f.hidden = !f.hidden; b.textContent = f.hidden ? "Edit IDs" : "Close"; });
+    document.querySelectorAll(".idform").forEach(f => f.onsubmit = async e => {
+      e.preventDefault(); const btn = f.querySelector("button"); btn.disabled = true; const val = n => f.elements[n].value.trim();
+      try {
+        await api("/api/revenue/listing", {method: "POST", body: JSON.stringify({app_id: f.dataset.app, platform: "apple_app_store", fields: {apple_app_id: val("apple_app_id"), bundle_id: val("bundle_id")}})});
+        await api("/api/revenue/listing", {method: "POST", body: JSON.stringify({app_id: f.dataset.app, platform: "google_play", fields: {package_name: val("package_name")}})});
+        toast("Saved."); load(false, true);
+      } catch (err) { if (err.message !== "signin") toast(err.message); } finally { btn.disabled = false; }
+    });
   }
 
   /* ---------- Log ---------- */

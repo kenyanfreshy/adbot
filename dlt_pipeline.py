@@ -558,6 +558,12 @@ def ensure_tables(con) -> None:
     con.execute("create table if not exists bot_actions (ts timestamp, dry_run boolean, kind varchar, channel varchar, app varchar, "
                 "entity_key varchar, keyword varchar, detail varchar, applied boolean, error varchar)")
     con.execute("create table if not exists app_budgets (ts timestamp, app varchar, daily double, share double, efficiency double)")
+    # Revenue intelligence tables (schema "revenue"). A failure here must never stop the ad bot.
+    try:
+        import revenue
+        revenue.ensure(con)
+    except Exception:  # noqa: BLE001
+        log.exception("revenue schema setup failed; the ad bot carries on without it")
 
 
 def run_sync(days: int, rules: Rules) -> dict:

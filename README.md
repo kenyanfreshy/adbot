@@ -31,3 +31,11 @@ The phone app's **Trading** tab shows what the trading bot reports: equity and P
 ### Trading bridge for fx_trading_system (no changes to the trading code)
 
 `trading_sidecar.py` runs next to the trading system, reads its Postgres in a read-only session plus `.runtime/runtime_status.json`, and feeds the Trading tab. On the trading PC: copy the `sidecar/` folder anywhere, double-click `setup-sidecar.bat` (makes its own Python environment, asks for the MotherDuck token, runs one test pass), then `start-sidecar.bat` to keep it running. Use Task Scheduler (At log on → start-sidecar.bat) to start it automatically. Optional: create a read-only Postgres role and set `TRADING_PG_DSN` to use it instead of the trading system's own login.
+
+## Revenue intelligence (Stage B)
+
+App Store and Google Play revenue for NurseBound Pro, Rapid Nursing Review Pro and CCRN Adult
+lives in the `revenue` schema of the same database and on the **Revenue** tab of the web app.
+See `docs/REVENUE_PLAN.md` for sources, stages and what each stage needs.
+
+Tests (synthetic data, no network): `python -m unittest discover -s tests -v`

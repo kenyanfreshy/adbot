@@ -39,6 +39,8 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 import dlt_pipeline as bot
+from revenue import registry as rev_registry
+from revenue.schema import SCHEMA as REV
 
 ROOT = Path(__file__).parent
 WEB = ROOT / "web"
@@ -434,6 +436,49 @@ async def run_bot_now(request: Request):
 
 
 # --------------------------------------------------------------------------- #
+# Revenue (Stage B: registry + data-source status; numbers arrive with Stage C/D)
+# --------------------------------------------------------------------------- #
+def _money_str(v):
+    return None if v is None else str(v)
+
+
+FACT_TABLES = ("sales_reports", "financial_reports", "subscription_events", "refund_events", "advertising_spend")
+
+
+@guarded
+async def revenue_get(request: Request):
+    with _db_lock:
+        reg = rev_registry.registry(con())
+        counts = {}
+        for t in FACT_TABLES:
+            plat = "platform" if t == "advertising_spend" else "source_platform"
+            cur = con().execute(f"select {plat} as p, count(*) as n from {REV}.{t} group by 1")
+            for p, n in cur.fetchall():
+                counts.setdefault(p, {})[t] = int(n)
+    for a in reg["apps"]:
+        for p in a["products"]:
+            for x in p["prices"]:
+                x["amount"] = _money_str(x["amount"])
+    for s in reg["sources"]:
+        s["rows"] = counts.get(s["platform"], {})
+    return J({**reg, "has_revenue_data": any(counts.get(p, {}).get(t) for p in ("apple_app_store", "google_play")
+                                             for t in ("sales_reports", "financial_reports")),
+              "stage": "B", "dry_run": dry_run()})
+
+
+@guarded
+async def revenue_listing(request: Request):
+    body = await request.json()
+    try:
+        with _db_lock:
+            changed = rev_registry.update_listing(con(), str(body.get("app_id", "")), str(body.get("platform", "")),
+                                                  dict(body.get("fields") or {}), actor="admin")
+    except rev_registry.RegistryError as e:
+        return J({"error": str(e)}, 400)
+    return J({"ok": True, "changed": changed})
+
+
+# --------------------------------------------------------------------------- #
 # Front end
 # --------------------------------------------------------------------------- #
 async def index(request: Request):
@@ -470,6 +515,8 @@ routes = [
     Route("/api/trading", trading),
     Route("/api/telegram-test", telegram_test, methods=["POST"]),
     Route("/api/run-bot", run_bot_now, methods=["POST"]),
+    Route("/api/revenue", revenue_get),
+    Route("/api/revenue/listing", revenue_listing, methods=["POST"]),
     Mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static"),
     Mount("/web", StaticFiles(directory=str(WEB)), name="web"),
 ]
