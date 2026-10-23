@@ -333,6 +333,8 @@ select option{background:#0F172A}
 .rev .src-meta{font:600 9.5px var(--mono);letter-spacing:.06em;color:#64748B;margin-top:7px}
 .rev .src-meta b{color:#CBD5E1}
 .rev .src-err{color:var(--cor);font-size:11.5px;margin-top:6px}
+.rev .src-warn{color:var(--amb);font-size:11.5px;margin-top:6px}
+.rev .vchk{font-style:normal;color:var(--mint);text-shadow:0 0 8px var(--mint);font-size:11px}
 .rev details{margin-top:7px}
 .rev summary{cursor:pointer;font-size:11.5px;color:color-mix(in srgb,var(--hue) 70%,#fff);list-style:none}
 .rev summary::-webkit-details-marker{display:none}

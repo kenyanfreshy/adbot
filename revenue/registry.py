@@ -203,7 +203,7 @@ def registry(con, environ=None) -> dict:
     accounts = _dicts(con.execute(f"SELECT * FROM {SCHEMA}.store_accounts ORDER BY account_id"))
     last_ok = {r["source"]: r for r in _dicts(con.execute(
         f"SELECT source, max(finished_at) AS last_success, max(period_end) AS period_end FROM {SCHEMA}.synchronization_jobs "
-        "WHERE status = 'succeeded' GROUP BY source"))}
+        "WHERE status IN ('succeeded', 'partial') GROUP BY source"))}
     last_any = {r["source"]: r for r in _dicts(con.execute(
         f"SELECT source, status, message, started_at FROM {SCHEMA}.synchronization_jobs j "
         f"WHERE started_at = (SELECT max(started_at) FROM {SCHEMA}.synchronization_jobs k WHERE k.source = j.source)"))}
@@ -222,12 +222,16 @@ def registry(con, environ=None) -> dict:
     sources = []
     for acc in accounts:
         cred = credential_state([v for v in acc["credential_env_vars"].split(",") if v], environ)
+        if acc["status"] in ("verified", "error"):
+            # credentials live on the hourly job, not this web service: trust what the job reported
+            cred = {**cred, "missing": [], "present": True}
         ok, last = last_ok.get(acc["platform"]), last_any.get(acc["platform"])
         sources.append({
             "account_id": acc["account_id"], "platform": acc["platform"], "name": acc["display_name"], "purpose": acc["purpose"],
             "credentials": cred, "status": acc["status"] if acc["status"] != "not_configured" else ("configured" if cred["present"] else "not_configured"),
             "last_success": ok["last_success"] if ok else None, "period_end": ok["period_end"] if ok else None,
             "last_status": last["status"] if last else None, "last_message": last["message"] if last else None,
+            "last_error": acc.get("last_error"),
         })
     return {"apps": out_apps, "sources": sources}
 

@@ -321,6 +321,22 @@ MIGRATIONS: list[tuple[int, str, list[str]]] = [
     ]),
 ]
 
+MIGRATIONS.append((2, "Apple sales detail columns + raw report archive", [
+    # Apple pays proceeds in 'Currency of Proceeds', which can differ from the customer's currency,
+    # so proceeds get their own currency column (gross stays in `currency`).
+    f"ALTER TABLE {SCHEMA}.sales_reports ADD COLUMN IF NOT EXISTS proceeds_currency VARCHAR",
+    f"ALTER TABLE {SCHEMA}.sales_reports ADD COLUMN IF NOT EXISTS sku VARCHAR",          # Apple SKU column
+    f"ALTER TABLE {SCHEMA}.sales_reports ADD COLUMN IF NOT EXISTS parent_ref VARCHAR",   # Apple 'Parent Identifier' (app SKU of an IAP)
+    f"ALTER TABLE {SCHEMA}.sales_reports ADD COLUMN IF NOT EXISTS subscription_kind VARCHAR",  # Apple 'Subscription': New / Renewal
+    f"ALTER TABLE {SCHEMA}.sales_reports ADD COLUMN IF NOT EXISTS sub_period VARCHAR",        # Apple 'Period': 1 Month, 3 Months, 1 Year, ...
+    # every downloaded report file kept as received (gzip, base64) so it can be re-parsed later
+    f"""CREATE TABLE IF NOT EXISTS {SCHEMA}.report_blobs (
+        report_id     VARCHAR PRIMARY KEY,
+        encoding      VARCHAR NOT NULL,
+        content_b64   VARCHAR NOT NULL,
+        stored_at     TIMESTAMP NOT NULL)""",
+]))
+
 LATEST = max(v for v, _, _ in MIGRATIONS)
 
 
@@ -354,5 +370,5 @@ TABLES = [
     "applications", "store_listings", "store_accounts", "store_products", "product_prices", "report_files",
     "sales_reports", "purchase_events", "subscription_events", "subscription_snapshots", "refund_events",
     "financial_reports", "exchange_rates", "advertising_campaigns", "advertising_spend", "attribution_records",
-    "synchronization_jobs", "audit_logs", "risk_decisions",
+    "synchronization_jobs", "audit_logs", "risk_decisions", "report_blobs",
 ]

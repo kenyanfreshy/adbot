@@ -767,6 +767,12 @@ def main(argv: list[str] | None = None) -> int:
     rules = load_rules(con)
     result = run_bot(con, rules, dry_run)
     check_trading(con, rules)
+    # App Store revenue (read-only). Skipped quietly until the ASC_* settings exist; never stops the ad bot.
+    try:
+        from revenue import apple
+        log.info("App Store Connect sync: %s", apple.run(con))
+    except Exception:  # noqa: BLE001
+        log.exception("App Store Connect sync failed")
     log.info("Bot result (dry_run=%s): %s", dry_run, {k: (v if k != "plan" else {a: x['daily'] for a, x in v.items()}) for k, v in result.items()})
     return 0
 

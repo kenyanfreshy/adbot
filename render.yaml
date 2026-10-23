@@ -52,6 +52,15 @@ services:
         sync: false
       - key: ASA_PRIVATE_KEY       # the PEM text; "\n" escapes are accepted
         sync: false
+      # App Store Connect revenue reports (Team API key, Finance role). Read-only.
+      - key: ASC_ISSUER_ID
+        sync: false
+      - key: ASC_KEY_ID
+        sync: false
+      - key: ASC_PRIVATE_KEY       # the whole .p8 text
+        sync: false
+      - key: ASC_VENDOR_NUMBER
+        sync: false
       # Meta Ads (system-user token with ads_read + ads_management)
       - key: META_ACCESS_TOKEN
         sync: false

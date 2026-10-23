@@ -44,7 +44,7 @@ Official references:
 |---|---|---|
 | A | Inspection and this plan | Done |
 | B | Application registry, revenue database schema, Decimal money handling, audit and sync-job logs, Revenue tab (registry plus source status) | **Done, tested offline, not deployed** |
-| C | App Store Connect connector: JWT, sales, subscription, finance and analytics reports, backfill plus daily incremental sync, gzip parsing, retries, report versioning | Needs a Team API key |
+| C | App Store Connect connector: JWT, product verification, daily sales, monthly finance detail, backfill plus incremental sync, gzip parsing, retries, raw-file archive | **Built and tested offline; first live run on the next hourly job.** Subscription-event and analytics reports come next, once real files can be inspected |
 | D | Google Play connector: bucket reports, monetization API for products and prices, optional RTDN | Needs a service account plus a Play Console invite |
 | E | Normalization and reconciliation (estimated vs finalized, refunds, FX with documented rates) and the metric definitions | Needs C or D data |
 | F | Dashboard: executive overview, app and store comparison, subscriptions, lifetime purchases, reconciliation | |
@@ -87,3 +87,32 @@ Official references:
 **Credentials needed for Stage C/D.** These are set in Render only, never in chat:
 - `ASC_ISSUER_ID`, `ASC_KEY_ID`, `ASC_PRIVATE_KEY`, `ASC_VENDOR_NUMBER`: an App Store Connect **Team** key with the Sales and Finance roles.
 - `GOOGLE_PLAY_SERVICE_ACCOUNT_JSON`, `GOOGLE_PLAY_REPORTS_BUCKET`: a service account invited in Play Console with View app information and View financial data.
+
+## Stage C report (App Store Connect)
+
+**What runs each hour** (`revenue/apple.py`, called by `dlt_pipeline.py` after the ad bot):
+- **Products, once a day:** reads each app's in-app purchases and subscription groups and marks every product with its real type and period. This settles whether the three-month passes are auto-renewing or non-renewing.
+- **Sales, every hour until each day is in:**
+  - Each run fetches any of the last 365 days still missing (Apple keeps daily reports for a year), as the daily `SALES/SUMMARY` report.
+  - Amounts are units × per-unit price or proceeds. Refunds stay negative, and proceeds keep their own currency.
+  - Rows are matched to apps only by the Apple ID, the app SKU learned from its download rows, or a bundle-ID prefix. Titles are never used.
+  - Unmatched rows are kept, and the job is marked *partial*.
+- **Finance, once a day:** fetches the `FINANCE_DETAIL` report (region Z1) for the last 12 fiscal months. It's parsed when the header row is recognized. Otherwise the file is archived and flagged, and nothing is guessed.
+- **Record-keeping:**
+  - Every file is archived (`report_blobs`).
+  - Every run is logged (`synchronization_jobs`, `audit_logs`).
+  - Re-running inserts nothing twice.
+  - A bad key marks the source as *Error* with Apple's message, with tokens removed. The ad bot keeps running.
+
+**Tests:** 11 new tests run against a fake App Store Connect with synthetic files and a throwaway key, for 35 tests in total, all passing. They cover:
+- JWT claims
+- credential handling
+- parsing (UTF-8 and UTF-16)
+- refunds and currencies
+- app matching
+- idempotent re-runs
+- 401 handling, 429/503 retries, and giving up during an outage
+- product verification
+- finance parsing and the unknown-layout path
+
+**Not yet verified live:** the first real run confirms the key, the role, the vendor number and the finance file layout. Until the apps are on sale, Apple returns no sales, and the tab will show *Connected* with no data.
