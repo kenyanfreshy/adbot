@@ -91,6 +91,7 @@
     return `<span class="delta ${Math.abs(v) < .05 ? "flat" : good ? "" : "down"}">${v > 0 ? "▲" : "▼"} ${Math.abs(v).toFixed(Math.abs(v) >= 100 ? 0 : 1)}%</span>`;
   }
   const compact = v => Math.abs(v) >= 1e4 ? (v / 1e3).toFixed(Math.abs(v) >= 1e5 ? 0 : 1) + "K" : Math.abs(v) >= 10 ? Math.round(v).toLocaleString("en-US") : (+v).toFixed(v % 1 ? 1 : 0);
+  let chartSeq = 0;
   function lineChart(series, keys, colors, rightKey, opts = {}) {
     const W = 340, H = 190, pl = 44, pr = rightKey ? 40 : 8, pt = 10, pb = 22, n = series.length;
     if (!n || !series.some(s => keys.some(k => s[k]))) return `<div class="empty">Nothing to chart yet.</div>`;
@@ -103,11 +104,15 @@
     const x = i => pl + (n < 2 ? 0 : i / (n - 1)) * (W - pl - pr);
     const y = (v, m) => m === mL ? pt + (H - pt - pb) * (1 - (v - lo) / (hi - lo)) : pt + (H - pt - pb) * (1 - v / m);
     let g = "";
-    for (let k = 0; k <= 3; k++) { const yy = pt + (H - pt - pb) * k / 3; g += `<line x1="${pl}" x2="${W - pr}" y1="${yy}" y2="${yy}" stroke="rgba(167,139,250,.09)"/><text class="axis" x="${pl - 5}" y="${yy + 3.5}" text-anchor="end">${(opts.money ? "$" : "") + compact(hi - (hi - lo) * k / 3)}</text>${rightKey ? `<text class="axis" x="${W - pr + 5}" y="${yy + 3.5}">${money(mR * (1 - k / 3), 0)}</text>` : ""}`; }
+    for (let k = 0; k <= 3; k++) { const yy = pt + (H - pt - pb) * k / 3; g += `<line x1="${pl}" x2="${W - pr}" y1="${yy}" y2="${yy}" stroke="rgba(0,194,255,.09)" stroke-dasharray="2 4"/><text class="axis" x="${pl - 5}" y="${yy + 3.5}" text-anchor="end">${(opts.money ? "$" : "") + compact(hi - (hi - lo) * k / 3)}</text>${rightKey ? `<text class="axis" x="${W - pr + 5}" y="${yy + 3.5}">${money(mR * (1 - k / 3), 0)}</text>` : ""}`; }
     const every = Math.ceil(n / 5); let xl = "";
     for (let i = 0; i < n; i += every) { const d = String(series[i].date || series[i].ts || ""); xl += `<text class="axis" x="${x(i)}" y="${H - 6}" text-anchor="middle">${+d.slice(5, 7)}/${+d.slice(8, 10)}</text>`; }
     const path = k => series.map((s, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(+s[k] || 0, k === rightKey ? mR : mL).toFixed(1)}`).join(" ");
-    return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Chart">${g}${xl}${keys.map((k, i) => `<path d="${path(k)}" fill="none" stroke="${colors[i]}" stroke-width="2.2" stroke-linejoin="round" ${k === rightKey ? 'stroke-dasharray="5 4"' : ""} vector-effect="non-scaling-stroke"/>`).join("")}</svg>`;
+    const id = "c" + (++chartSeq), base = (H - pb).toFixed(1);
+    const defs = `<defs><filter id="${id}g" x="-10%" y="-30%" width="120%" height="160%"><feGaussianBlur stdDeviation="2.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>${keys.map((k, i) =>
+      `<linearGradient id="${id}a${i}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="${colors[i]}" stop-opacity=".28"/><stop offset="1" stop-color="${colors[i]}" stop-opacity="0"/></linearGradient>`).join("")}</defs>`;
+    const area = (k, i) => k === rightKey || i > 0 ? "" : `<path d="${path(k)} L${x(n - 1).toFixed(1)},${base} L${x(0).toFixed(1)},${base} Z" fill="url(#${id}a${i})"/>`;
+    return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Chart">${defs}${g}${xl}${keys.map(area).join("")}${keys.map((k, i) => `<path d="${path(k)}" fill="none" stroke="${colors[i]}" stroke-width="2.2" stroke-linejoin="round" stroke-linecap="round" ${k === rightKey ? 'stroke-dasharray="5 4"' : `filter="url(#${id}g)"`} vector-effect="non-scaling-stroke"/>`).join("")}</svg>`;
   }
   function donut(parts) {
     const tot = parts.reduce((s, p) => s + p.v, 0) || 1; let a0 = -Math.PI / 2; const R = 50, r = 34, c = 55;
@@ -142,12 +147,12 @@
       <div class="card"><div class="plan"><div class="donut">${donut(planParts)}<div class="mid"><div>${money(planTot)}<small>per day</small></div></div></div>
         <div>${planParts.map(p => `<div class="lrow"><span class="dot" style="background:${p.c}"></span>${esc(SHORT[p.a] || p.a)}<b>${money(p.v)}<small> · cap ${money(d.caps[p.a])}</small></b></div>`).join("")}</div></div></div>
       <div class="h">Taps, installs &amp; spend <small>last ${d.days} days</small></div>
-      <div class="card"><div class="legend"><span><i style="background:#8b5cf6"></i>Taps</span><span><i style="background:#34d399"></i>Installs</span><span><i style="background:#fbbf24"></i>Spend (right)</span></div>
-        <div class="chart">${lineChart(d.series, ["taps", "installs", "spend"], ["#8b5cf6", "#34d399", "#fbbf24"], "spend")}</div></div>
+      <div class="card"><div class="legend"><span><i style="background:#00C2FF"></i>Taps</span><span><i style="background:#00E5A3"></i>Installs</span><span><i style="background:#FFB020"></i>Spend (right)</span></div>
+        <div class="chart">${lineChart(d.series, ["taps", "installs", "spend"], ["#00C2FF", "#00E5A3", "#FFB020"], "spend")}</div></div>
       ${d.by_app.length ? `<div class="h">By app &amp; channel</div><div class="card list">${d.by_app.map(b => `<div class="item"><span class="dot" style="background:${COLOR[b.app] || "#666"};margin-top:6px"></span><div class="main"><div class="name">${esc(SHORT[b.app] || b.app)} · ${esc(b.channel)}</div><div class="meta">${num(b.taps)} taps · ${num(b.installs)} installs · CPT ${money(b.taps ? b.spend / b.taps : null)}</div></div><div class="right">${money(b.spend)}<small>${b.revenue ? "ACoS " + pct(b.spend / b.revenue, 0) : ""}</small></div></div>`).join("")}</div>` : ""}
       ${geoShow ? `<div class="h">NurseBound countries <small>${money(d.plan.NurseBound ? d.plan.NurseBound.daily : 0)}/day</small></div>
         <div class="card list">${d.geo.filter(g => g.enabled !== false).map(g => `<div class="item"><span class="flag">${flag(g.code)}</span><div class="main"><div class="name">${esc(regionName(g.code))} ${g.flag === "who_safeguards" ? '<span class="badge warn">WHO list</span>' : ""}${g.flag === "china_reach" ? '<span class="badge mute">limited reach</span>' : ""}</div>
-          <div class="bar" style="margin-top:6px"><i style="width:${(g.plan || 0) / geoMax * 100}%;background:#8b5cf6"></i></div><div class="meta">${g.spend ? money(g.spend) + " spent · " + num(g.installs) + " installs" : "no spend yet"} · going to ${(g.dest || []).map(flag).join(" ")}</div></div><div class="right">${money(g.plan)}<small>${g.plan && g.plan < 1 ? "under $1" : "per day"}</small></div></div>`).join("")}</div>
+          <div class="bar" style="margin-top:6px"><i style="width:${(g.plan || 0) / geoMax * 100}%"></i></div><div class="meta">${g.spend ? money(g.spend) + " spent · " + num(g.installs) + " installs" : "no spend yet"} · going to ${(g.dest || []).map(flag).join(" ")}</div></div><div class="right">${money(g.plan)}<small>${g.plan && g.plan < 1 ? "under $1" : "per day"}</small></div></div>`).join("")}</div>
         ${d.geo_untagged_spend ? `<p class="sub" style="margin:8px 2px">${money(d.geo_untagged_spend)} of NurseBound spend has no country code in the campaign name.</p>` : ""}` : ""}`;
   }
 
@@ -259,7 +264,7 @@
         <div class="kpi"><div class="k">Margin used</div><div class="v">${money(a.margin_used)}</div><div class="d">balance ${money(a.balance)}</div></div>
       </div>
       ${r ? `<div class="card" style="margin-top:10px">${limitUsed != null ? `<div class="lrow" style="padding-top:0">Daily loss limit<b>${money(r.daily_loss_used)} of ${money(r.daily_loss_limit)}</b></div><div class="bar"><i style="width:${limitUsed * 100}%;background:${limitUsed > .8 ? "var(--red)" : limitUsed > .5 ? "var(--amber)" : "var(--green)"}"></i></div>` : ""}<div class="sub" style="margin-top:8px">${esc(r.notes || "")}</div></div>` : ""}
-      ${d.equity.length > 1 ? `<div class="h">Equity <small>30 days</small></div><div class="card"><div class="chart">${lineChart(d.equity.map(e => ({date: e.ts, equity: e.equity})), ["equity"], ["#ff6a2b"], null, {fit: true, money: true})}</div></div>` : ""}
+      ${d.equity.length > 1 ? `<div class="h">Equity <small>30 days</small></div><div class="card"><div class="chart">${lineChart(d.equity.map(e => ({date: e.ts, equity: e.equity})), ["equity"], ["#00E5A3"], null, {fit: true, money: true})}</div></div>` : ""}
       <div class="h">Open positions <small>${d.positions.length}</small></div>
       <div class="card list">${d.positions.length ? d.positions.map(p => `<div class="item"><div class="main"><div class="name">${esc(p.symbol)} <span class="badge ${p.side === "buy" || p.side === "long" ? "good" : "bad"}">${esc(String(p.side || "").toUpperCase())}</span> ${p.strategy ? `<span class="badge warn">${esc(p.strategy)}</span>` : ""}</div><div class="meta">${p.qty} lots · in ${p.entry} · now ${p.price ?? "—"} · SL ${p.stop ?? "—"} · TP ${p.target ?? "—"}</div></div><div class="right" style="color:${(p.unrealized_pnl || 0) < 0 ? "var(--red)" : "var(--green)"}">${smoney(p.unrealized_pnl)}</div></div>`).join("") : `<div class="empty" style="padding:12px">Flat: no open positions.</div>`}</div>
       <div class="h">Closed trades <small>7 days</small></div>
