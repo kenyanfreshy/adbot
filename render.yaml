@@ -69,7 +69,8 @@ services:
         sync: false
       - key: META_AD_ACCOUNT_IDS   # comma-separated, e.g. 1234567890,9876543210
         sync: false
-      # Google Ads (OAuth client + developer token)
+      # Google Ads (OAuth client from the Cloud project that has Google Ads API access;
+      # developer tokens were retired by Google on 2026-09-09 and are optional)
       - key: GOOGLE_ADS_DEVELOPER_TOKEN
         sync: false
       - key: GOOGLE_ADS_CLIENT_ID

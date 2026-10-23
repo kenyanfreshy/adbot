@@ -466,19 +466,22 @@ class GoogleAds:
     def __init__(self):
         self.customer_ids = [c.strip().replace("-", "") for c in os.getenv("GOOGLE_ADS_CUSTOMER_IDS", "").split(",") if c.strip()]
         self.cfg = {
-            "developer_token": os.getenv("GOOGLE_ADS_DEVELOPER_TOKEN", ""),
+            # Since 2026-09-09 Google ties API access to the Cloud project behind the OAuth client;
+            # developer tokens are optional and ignored. Sent only if one is still set.
             "client_id": os.getenv("GOOGLE_ADS_CLIENT_ID", ""),
             "client_secret": os.getenv("GOOGLE_ADS_CLIENT_SECRET", ""),
             "refresh_token": os.getenv("GOOGLE_ADS_REFRESH_TOKEN", ""),
             "use_proto_plus": True,
         }
+        if os.getenv("GOOGLE_ADS_DEVELOPER_TOKEN"):
+            self.cfg["developer_token"] = os.getenv("GOOGLE_ADS_DEVELOPER_TOKEN", "")
         if os.getenv("GOOGLE_ADS_LOGIN_CUSTOMER_ID"):
             self.cfg["login_customer_id"] = os.getenv("GOOGLE_ADS_LOGIN_CUSTOMER_ID", "").replace("-", "")
         self._client = None
 
     @property
     def configured(self) -> bool:
-        return bool(self.customer_ids and all(self.cfg[k] for k in ("developer_token", "client_id", "client_secret", "refresh_token")))
+        return bool(self.customer_ids and all(self.cfg[k] for k in ("client_id", "client_secret", "refresh_token")))
 
     @property
     def client(self):

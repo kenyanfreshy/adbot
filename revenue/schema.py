@@ -342,6 +342,12 @@ MIGRATIONS.append((3, "Google Play: transaction type on financial lines", [
     f"ALTER TABLE {SCHEMA}.financial_reports ADD COLUMN IF NOT EXISTS transaction_type VARCHAR",
 ]))
 
+MIGRATIONS.append((4, "Google Ads no longer needs a developer token (Google change, 2026-09-09)", [
+    f"UPDATE {SCHEMA}.store_accounts SET credential_env_vars = "
+    "'GOOGLE_ADS_CLIENT_ID,GOOGLE_ADS_CLIENT_SECRET,GOOGLE_ADS_REFRESH_TOKEN,GOOGLE_ADS_CUSTOMER_IDS' "
+    "WHERE account_id = 'google_ads_reporting'",
+]))
+
 LATEST = max(v for v, _, _ in MIGRATIONS)
 
 

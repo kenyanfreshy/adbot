@@ -62,7 +62,7 @@ ACCOUNTS = [
     ("apple_ads_reporting", "apple_ads", "Apple Ads", "reporting",
      ["ASA_CLIENT_ID", "ASA_TEAM_ID", "ASA_KEY_ID", "ASA_ORG_ID", "ASA_PRIVATE_KEY"]),
     ("google_ads_reporting", "google_ads", "Google Ads", "reporting",
-     ["GOOGLE_ADS_DEVELOPER_TOKEN", "GOOGLE_ADS_CLIENT_ID", "GOOGLE_ADS_CLIENT_SECRET", "GOOGLE_ADS_REFRESH_TOKEN", "GOOGLE_ADS_CUSTOMER_IDS"]),
+     ["GOOGLE_ADS_CLIENT_ID", "GOOGLE_ADS_CLIENT_SECRET", "GOOGLE_ADS_REFRESH_TOKEN", "GOOGLE_ADS_CUSTOMER_IDS"]),
     ("meta_ads_reporting", "meta_ads", "Meta Ads (Facebook + Instagram)", "reporting",
      ["META_ACCESS_TOKEN", "META_AD_ACCOUNT_IDS"]),
     ("tiktok_ads_reporting", "tiktok_ads", "TikTok Ads", "reporting",
