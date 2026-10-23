@@ -107,12 +107,36 @@ class Creds:
     def from_env(cls, environ=None) -> Optional["Creds"]:
         env = os.environ if environ is None else environ
         vals = {k: str(env.get(k, "") or "").strip() for k in ENV}
+        key_file = find_key_file(env)
+        if key_file and not vals["ASC_PRIVATE_KEY"]:
+            vals["ASC_PRIVATE_KEY"] = "(file)"
         if not all(vals.values()):
             return None
-        return cls(vals["ASC_ISSUER_ID"], vals["ASC_KEY_ID"], normalize_key(vals["ASC_PRIVATE_KEY"]), vals["ASC_VENDOR_NUMBER"])
+        if key_file:  # a Render Secret File holds a multi-line key safely; prefer it
+            with open(key_file, encoding="utf-8", errors="replace") as fh:
+                key = normalize_key(fh.read(), source=f"secret file {os.path.basename(key_file)}")
+        else:
+            key = normalize_key(vals["ASC_PRIVATE_KEY"])
+        return cls(vals["ASC_ISSUER_ID"], vals["ASC_KEY_ID"], key, vals["ASC_VENDOR_NUMBER"])
 
 
-def normalize_key(raw: str) -> str:
+SECRET_DIR = "/etc/secrets"  # where Render mounts Secret Files
+
+
+def find_key_file(env) -> Optional[str]:
+    """ASC_PRIVATE_KEY_FILE, else a single *.p8 among Render Secret Files."""
+    path = str(env.get("ASC_PRIVATE_KEY_FILE", "") or "").strip()
+    if path:
+        return path if os.path.isfile(path) else None
+    secret_dir = env.get("ASC_SECRET_DIR", SECRET_DIR)
+    try:
+        p8 = sorted(f for f in os.listdir(secret_dir) if f.lower().endswith(".p8"))
+    except OSError:
+        return None
+    return os.path.join(secret_dir, p8[0]) if len(p8) == 1 else None
+
+
+def normalize_key(raw: str, source: str = "ASC_PRIVATE_KEY") -> str:
     """Accept the .p8 text however it was pasted: with or without the BEGIN/END lines,
     on one line, with literal \\n escapes or surrounding quotes. Never echoes the key."""
     import binascii
@@ -129,7 +153,8 @@ def normalize_key(raw: str) -> str:
     if len(der) < 60 or der[:1] != b"\x30":
         hint = "it looks like a file name or path" if (".p8" in k or "AuthKey" in k) and len(k) < 80 else \
                "it is too short to be a key" if len(body) < 80 else "it isn't the key text"
-        raise AppleError(f"ASC_PRIVATE_KEY isn't a usable .p8 key ({hint}). Open the AuthKey_….p8 file in Notepad and paste everything in it")
+        raise AppleError(f"{source} isn't a usable .p8 key ({hint}; it holds {len(k)} characters, a key is about 240). "
+                         "Add the AuthKey_….p8 file under Secret Files on adbot-hourly, or paste its whole text into ASC_PRIVATE_KEY")
     lines = [body[i:i + 64] for i in range(0, len(body), 64)]
     return "-----BEGIN PRIVATE KEY-----\n" + "\n".join(lines) + "\n-----END PRIVATE KEY-----\n"
 

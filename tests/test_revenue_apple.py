@@ -153,6 +153,18 @@ class TokenTests(unittest.TestCase):
                     apple.Creds.from_env({**ENV, "ASC_PRIVATE_KEY": bad})
                 self.assertIn(hint, str(cm.exception))
                 self.assertNotIn(bad if len(bad) > 30 else "§", str(cm.exception))
+        # a Render Secret File (*.p8 in /etc/secrets) is used when present, even with ASC_PRIVATE_KEY empty or wrong
+        import tempfile
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, "AuthKey_2X9R4HXF34.p8"), "w") as fh:
+            fh.write(PEM)
+        for val in ("", "2X9R4HXF34"):
+            c = apple.Creds.from_env({**ENV, "ASC_PRIVATE_KEY": val, "ASC_SECRET_DIR": d})
+            jwt.decode(apple.make_token(c), PUB, algorithms=["ES256"], audience="appstoreconnect-v1")
+        self.assertIsNone(apple.Creds.from_env({**ENV, "ASC_PRIVATE_KEY": "", "ASC_SECRET_DIR": tempfile.mkdtemp()}))
+        with self.assertRaises(apple.AppleError) as cm:
+            apple.Creds.from_env({**ENV, "ASC_PRIVATE_KEY": "2X9R4HXF34", "ASC_SECRET_DIR": tempfile.mkdtemp()})
+        self.assertIn("10 characters", str(cm.exception))
         # the same key pasted without the BEGIN/END lines, on one line, or with Windows line endings still works
         body = "".join(PEM.split("-----")[2].split())
         for pasted in (body, PEM.replace("\n", "\r\n"), PEM.replace("\n", " "), '"' + PEM + '"'):
