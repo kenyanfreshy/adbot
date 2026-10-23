@@ -309,6 +309,31 @@ def http(method: str, url: str, *, retries: int = 4, **kw) -> requests.Response:
 # --------------------------------------------------------------------------- #
 # Apple Search Ads (Campaign Management API v5)
 # --------------------------------------------------------------------------- #
+def _rewrap_pem(raw: str) -> str:
+    """Rebuild a PEM key that lost its line breaks in a one-line settings box."""
+    k = raw.strip().strip('"').strip("'").replace("\\n", "\n").replace("\r", "")
+    m = re.search(r"-----BEGIN ([A-Z ]+)-----(.*?)-----END \1-----", k, re.S)
+    if not m:
+        return k
+    body = "".join(m.group(2).split())
+    return f"-----BEGIN {m.group(1)}-----\n" + "\n".join(body[i:i + 64] for i in range(0, len(body), 64)) + f"\n-----END {m.group(1)}-----\n"
+
+
+def asa_private_key() -> str:
+    """ASA_PRIVATE_KEY, or a Render Secret File (ASA_PRIVATE_KEY_FILE, or /etc/secrets/*.pem with 'asa' in the name)."""
+    path = os.getenv("ASA_PRIVATE_KEY_FILE", "")
+    if not path:
+        try:
+            pems = [f for f in os.listdir("/etc/secrets") if f.lower().endswith(".pem") and "asa" in f.lower()]
+            path = os.path.join("/etc/secrets", pems[0]) if len(pems) == 1 else ""
+        except OSError:
+            path = ""
+    if path and os.path.isfile(path):
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return _rewrap_pem(fh.read())
+    return _rewrap_pem(os.getenv("ASA_PRIVATE_KEY", "")) if os.getenv("ASA_PRIVATE_KEY") else ""
+
+
 class AppleSearchAds:
     BASE = "https://api.searchads.apple.com/api/v5"
 
@@ -317,7 +342,7 @@ class AppleSearchAds:
         self.team_id = os.getenv("ASA_TEAM_ID", "")
         self.key_id = os.getenv("ASA_KEY_ID", "")
         self.org_id = os.getenv("ASA_ORG_ID", "")
-        self.private_key = os.getenv("ASA_PRIVATE_KEY", "").replace("\\n", "\n")
+        self.private_key = asa_private_key()
         self._token, self._exp = None, 0
 
     @property
