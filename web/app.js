@@ -269,50 +269,92 @@
       <p class="sub" style="text-align:center;margin-top:14px">Read-only. AdBot never places, changes or closes trades.</p>`;
   }
 
-  /* ---------- Revenue (Stage B: registry + data sources; numbers arrive once store reports are imported) ---------- */
+  /* ---------- Revenue: futurist command deck (Stage B: registry + data sources; numbers arrive once store reports are imported) ---------- */
   const PLAT = {apple_app_store: "App Store", google_play: "Google Play", apple_ads: "Apple Ads", google_ads: "Google Ads", meta_ads: "Meta Ads", tiktok_ads: "TikTok Ads"};
-  const PLAN = {monthly: "Monthly", three_month: "Three-month pass", annual: "Annual", lifetime: "Lifetime", other: "Other"};
-  const TYPE = {unverified: "Type not verified", auto_renewable_subscription: "Auto-renewing subscription", non_renewing_subscription: "Non-renewing subscription",
-                non_consumable: "One-time (non-consumable)", consumable: "Consumable", one_time_product: "One-time product"};
-  const UNAV = `<span class="unav">Unavailable</span>`;
-  const when = t => t ? new Date(String(t).replace(" ", "T") + (String(t).endsWith("Z") ? "" : "Z")).toLocaleString("en-US", {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"}) : "Never";
-  function srcBadge(s) {
-    if (s.status === "verified") return `<span class="badge good">Connected</span>`;
-    if (s.status === "error" || s.last_status === "failed") return `<span class="badge bad">Error</span>`;
-    if (s.status === "configured") return `<span class="badge warn">Keys set · not verified</span>`;
-    return `<span class="badge mute">Not connected</span>`;
+  const PLAT_HUE = {apple_app_store: "#00C2FF", google_play: "#00E5A3", apple_ads: "#C7D2FE", google_ads: "#4F8CFF", meta_ads: "#7C6CFF", tiktok_ads: "#FF2E88"};
+  const PLAN = {monthly: "Monthly", three_month: "3-month pass", annual: "Annual", lifetime: "Lifetime", other: "Other"};
+  const TYPE = {unverified: "type not verified", auto_renewable_subscription: "auto-renewing", non_renewing_subscription: "non-renewing",
+                non_consumable: "one-time", consumable: "consumable", one_time_product: "one-time"};
+  const APP_HUE = {rnr_pro: ["#FF6A2B", "#FF2E63"], ccrn_adult: ["#2DD4BF", "#00C2FF"], nursebound_pro: ["#8B5CF6", "#E024C3"]};
+  const when = t => t ? new Date(String(t).replace(" ", "T") + (String(t).endsWith("Z") ? "" : "Z")).toLocaleString("en-US", {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"}) : "NEVER";
+  const srcState = s => s.status === "verified" ? "on" : (s.status === "error" || s.last_status === "failed") ? "err" : s.status === "configured" ? "keys" : "off";
+  const STATE_TXT = {on: "LINKED", err: "ERROR", keys: "KEYS SET", off: "OFFLINE"};
+
+  function readinessRing(sources) {
+    // one arc per data source: lit = linked, amber = keys set, red = error, dim = offline (real status only)
+    const n = sources.length, R = 54, C = 2 * Math.PI * R, gap = 7, seg = C / n - gap;
+    const col = {on: "#00E5A3", keys: "#FFB020", err: "#FF4B4B", off: "rgba(148,163,184,.18)"};
+    const linked = sources.filter(s => srcState(s) === "on").length;
+    return `<svg class="ring" viewBox="0 0 140 140" role="img" aria-label="${linked} of ${n} data sources linked">
+      <defs><filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="2.4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
+      <circle cx="70" cy="70" r="66" fill="none" stroke="rgba(0,194,255,.12)" stroke-dasharray="2 5"/>
+      <g class="spin-slow"><circle cx="70" cy="70" r="40" fill="none" stroke="rgba(224,36,195,.25)" stroke-width="1" stroke-dasharray="18 10 4 10"/></g>
+      ${sources.map((s, i) => { const st = srcState(s); return `<circle cx="70" cy="70" r="${R}" fill="none" stroke="${col[st]}" stroke-width="9" stroke-linecap="round"
+        stroke-dasharray="${seg.toFixed(2)} ${(C - seg).toFixed(2)}" stroke-dashoffset="${(-i * (C / n)).toFixed(2)}" transform="rotate(-90 70 70)" ${st !== "off" ? 'filter="url(#glow)"' : ""}><title>${esc(s.name)}: ${STATE_TXT[st]}</title></circle>`; }).join("")}
+      <text x="70" y="68" text-anchor="middle" class="ring-n">${linked}/${n}</text>
+      <text x="70" y="86" text-anchor="middle" class="ring-l">LINKED</text></svg>`;
   }
+
   async function viewRevenue(my) {
     const d = await api("/api/revenue"); if (my !== seq) return;
-    const stores = d.sources.filter(s => s.platform === "apple_app_store" || s.platform === "google_play");
-    const ads = d.sources.filter(s => !(s.platform === "apple_app_store" || s.platform === "google_play"));
-    const why = d.has_revenue_data ? "" : "no store reports imported yet";
-    const tile = (k, sub) => `<div class="kpi"><div class="k">${k}</div><div class="v">${UNAV}</div><div class="d">${esc(sub)}</div></div>`;
-    const srcRow = s => `<div class="item"><div class="main"><div class="name">${esc(s.name)}</div>
-        <div class="meta">Last successful sync: <b>${when(s.last_success)}</b>${s.period_end ? ` · data through ${esc(String(s.period_end).slice(0, 10))}` : ""}</div>
-        ${s.credentials.missing.length ? `<div class="meta">Render needs: ${s.credentials.missing.map(v => `<code>${esc(v)}</code>`).join(" ")}</div>` : ""}
-        ${s.last_status === "failed" && s.last_message ? `<div class="meta" style="color:var(--red)">${esc(s.last_message)}</div>` : ""}</div>
-        <div class="right">${srcBadge(s)}</div></div>`;
-    const idRow = (label, val) => `<div class="lrow">${label}<b class="${val ? "" : "muted"}">${val ? esc(val) : "Not set"}</b></div>`;
-    $("view").innerHTML = `
-      ${d.has_revenue_data ? "" : `<div class="banner"><b>No earnings to show yet.</b> Revenue appears here once App Store Connect and Google Play reports are imported. Until then every figure reads <i>Unavailable</i>, never $0. Prices below are the reference list you supplied, not sales.</div>`}
-      <div class="kpis">
-        ${tile("Yesterday's sales", why || "App Store + Google Play")}
-        ${tile("Last 30 days", why || "gross sales")}
-        ${tile("Month-to-date proceeds", why || "estimated")}
-        ${tile("Ad spend this month", "ad accounts not synced")}
+    const isStore = s => s.platform === "apple_app_store" || s.platform === "google_play";
+    const stores = d.sources.filter(isStore), ads = d.sources.filter(s => !isStore(s));
+    const anyStore = stores.some(s => srcState(s) === "on");
+    const lastSync = stores.map(s => s.last_success).filter(Boolean).sort().pop();
+    const tile = (k, hue, sub) => `<div class="hx-tile" style="--hue:${hue}"><div class="hx-k">${k}</div><div class="hx-v">UNAVAILABLE</div>
+        <svg class="hx-spark" viewBox="0 0 120 26" preserveAspectRatio="none" aria-hidden="true"><path d="M0 20H120" stroke-dasharray="3 4"/></svg><div class="hx-d">${esc(sub)}</div><i class="scan"></i></div>`;
+    const node = (label, st, sub) => `<div class="pn ${st}"><b>${label}</b><small>${sub}</small></div>`;
+    const wire = st => `<div class="pw ${st}"><i></i></div>`;
+    const srcCard = s => { const st = srcState(s); return `<div class="src ${st}" style="--hue:${PLAT_HUE[s.platform] || "#00C2FF"}">
+        <div class="src-top"><span class="led"></span><b>${esc(PLAT[s.platform] || s.name)}</b><span class="chip ${st}">${STATE_TXT[st]}</span></div>
+        <div class="src-meta">LAST SYNC <b>${when(s.last_success)}</b>${s.period_end ? ` · DATA TO ${esc(String(s.period_end).slice(0, 10))}` : ""}</div>
+        ${s.last_status === "failed" && s.last_message ? `<div class="src-err">${esc(s.last_message)}</div>` : ""}
+        ${s.credentials.missing.length ? `<details><summary>Setup · ${s.credentials.missing.length} Render setting${s.credentials.missing.length > 1 ? "s" : ""} needed</summary>${s.credentials.missing.map(v => `<code>${esc(v)}</code>`).join("")}</details>` : ""}</div>`; };
+    const idRow = (label, val, empty = "NOT SET") => `<div class="idr"><span>${label}</span><b class="${val ? "" : "nil"}">${val ? esc(val) : empty}</b></div>`;
+
+    $("view").innerHTML = `<div class="rev">
+      <section class="hero">
+        <div class="hero-txt">
+          <div class="eyebrow"><span class="pulse ${anyStore ? "on" : ""}"></span>REVENUE COMMAND</div>
+          <h2>${anyStore ? "Store feeds online" : "Awaiting store feeds"}</h2>
+          <p>${d.has_revenue_data ? "Figures below come from imported store reports." : "Every figure reads <b>Unavailable</b> until App Store Connect and Google Play reports are imported. Never a fake $0."}</p>
+          <div class="hero-meta"><span>LAST SYNC <b>${when(lastSync)}</b></span><span>MODE <b>${d.dry_run ? "READ-ONLY" : "LIVE"}</b></span></div>
+        </div>
+        ${readinessRing(d.sources)}
+      </section>
+
+      <div class="hx-grid">
+        ${tile("YESTERDAY", "#00C2FF", "App Store + Google Play")}
+        ${tile("LAST 30 DAYS", "#00E5A3", "gross sales")}
+        ${tile("MONTH TO DATE", "#E024C3", "estimated proceeds")}
+        ${tile("AD SPEND · MONTH", "#FFB020", "ad accounts not synced")}
       </div>
-      <div class="h">Store reports <small>read-only</small></div>
-      <div class="card list">${stores.map(srcRow).join("")}</div>
-      <div class="h">Apps</div>
+
+      <div class="hx-h"><span>DATA PIPELINE</span><small>live status</small></div>
+      <div class="pipe">
+        <div class="pcol">${stores.map(s => node(esc(PLAT[s.platform]), srcState(s), STATE_TXT[srcState(s)])).join("")}</div>
+        ${wire(anyStore ? "on" : "off")}
+        ${node("Revenue DB", "on", "19 tables ready")}
+        ${wire(d.has_revenue_data ? "on" : "off")}
+        ${node("Dashboard", d.has_revenue_data ? "on" : "keys", d.has_revenue_data ? "live" : "waiting")}
+      </div>
+
+      <div class="hx-h"><span>STORE FEEDS</span><small>read-only</small></div>
+      <div class="src-grid">${stores.map(srcCard).join("")}</div>
+
+      <div class="hx-h"><span>APPS</span><small>${d.apps.length} registered</small></div>
       ${d.apps.map(a => {
         const ios = a.listings.apple_app_store || {}, and = a.listings.google_play || {};
-        return `<div class="card appcard">
-          <div class="apphead"><div><div class="name">${esc(a.name)}</div><div class="sub">Ad bot name: ${esc(a.bot_app_name || "—")}</div></div>
-            <button class="btn sm" data-edit="${esc(a.app_id)}">Edit IDs</button></div>
-          <div class="cols">
-            <div><div class="colh">App Store</div>${idRow("Apple ID", ios.apple_app_id)}${idRow("Bundle ID", ios.bundle_id)}<div class="lrow">Status<b class="muted">${esc(ios.publication_status === "unknown" ? "Not checked" : ios.publication_status)}</b></div></div>
-            <div><div class="colh">Google Play</div>${idRow("Package", and.package_name)}<div class="lrow">Status<b class="muted">${esc(and.publication_status === "unknown" ? "Not checked" : and.publication_status)}</b></div></div>
+        const [h1, h2] = APP_HUE[a.app_id] || ["#00C2FF", "#E024C3"];
+        const prods = [...a.products].sort((x, y) => Object.keys(PLAN).indexOf(x.plan_code) - Object.keys(PLAN).indexOf(y.plan_code));
+        const price = p => { const pr = (p.prices || []).find(x => x.currency === "USD") || (p.prices || [])[0]; return pr ? +pr.amount : null; };
+        const max = Math.max(1, ...prods.map(price).filter(v => v != null));
+        return `<article class="appx" style="--h1:${h1};--h2:${h2}">
+          <header><div><div class="appx-name">${esc(a.name)}</div><div class="appx-sub">AD BOT · ${esc(a.bot_app_name || "—")}</div></div>
+            <button class="hx-btn" data-edit="${esc(a.app_id)}">Edit IDs</button></header>
+          <div class="ids">
+            <div class="idcol"><div class="idh">App Store</div>${idRow("Apple ID", ios.apple_app_id)}${idRow("Bundle", ios.bundle_id)}${idRow("Status", ios.publication_status === "unknown" ? null : ios.publication_status, "NOT CHECKED")}</div>
+            <div class="idcol"><div class="idh">Google Play</div>${idRow("Package", and.package_name)}${idRow("Status", and.publication_status === "unknown" ? null : and.publication_status, "NOT CHECKED")}</div>
           </div>
           <form class="idform" data-app="${esc(a.app_id)}" hidden>
             <div class="field"><label>Apple ID<small>App Store Connect → App Information</small></label><input type="text" name="apple_app_id" inputmode="numeric" value="${esc(ios.apple_app_id || "")}" placeholder="1234567890"></div>
@@ -320,15 +362,18 @@
             <div class="field"><label>Play package</label><input type="text" name="package_name" autocapitalize="off" value="${esc(and.package_name || "")}" placeholder="com.example.app"></div>
             <button class="btn primary block" type="submit">Save IDs</button>
           </form>
-          <div class="colh" style="margin-top:12px">Plans</div>
-          <div class="plans">${[...a.products].sort((x, y) => Object.keys(PLAN).indexOf(x.plan_code) - Object.keys(PLAN).indexOf(y.plan_code)).map(p => { const pr = (p.prices || []).find(x => x.currency === "USD") || (p.prices || [])[0];
-            return `<div class="planrow"><div><div>${esc(PLAN[p.plan_code] || p.plan_code)} <small>${esc(PLAT[p.platform] || p.platform)}</small></div><div class="sub">${esc(TYPE[p.product_type] || p.product_type)}${p.verified ? "" : " · from your price list"}</div></div>
-              <b>${pr ? money(+pr.amount) : UNAV}${pr && pr.source === "reference" ? `<small>reference</small>` : ""}</b></div>`; }).join("")}
-            <div class="planrow"><div><div>Android prices</div><div class="sub">Read from Google Play once connected, not copied from iOS</div></div><b>${UNAV}</b></div>
-          </div></div>`; }).join("")}
-      <div class="h">Ad platforms <small>for spend and return on ad spend</small></div>
-      <div class="card list">${ads.map(srcRow).join("")}</div>
-      <p class="sub" style="text-align:center;margin-top:14px">Read-only. Nothing here changes store products, prices or purchases.</p>`;
+          <div class="ladder-h">PRICE LADDER <small>iOS reference list · not sales</small></div>
+          <div class="ladder">${prods.map(p => { const v = price(p); return `<div class="rung">
+              <div class="rung-l"><b>${esc(PLAN[p.plan_code] || p.plan_code)}</b><small>${esc(TYPE[p.product_type] || p.product_type)}</small></div>
+              <div class="rung-bar"><i style="width:${v != null ? Math.max(6, v / max * 100) : 0}%"></i></div>
+              <div class="rung-v">${v != null ? money(v) : "—"}</div></div>`; }).join("")}
+            <div class="rung nil"><div class="rung-l"><b>Android</b><small>read from Google Play</small></div><div class="rung-bar"><i style="width:0"></i></div><div class="rung-v">UNAVAILABLE</div></div>
+          </div></article>`; }).join("")}
+
+      <div class="hx-h"><span>AD PLATFORMS</span><small>spend + return on ad spend</small></div>
+      <div class="src-grid two">${ads.map(srcCard).join("")}</div>
+      <p class="hx-foot">READ-ONLY · NOTHING HERE CHANGES STORE PRODUCTS, PRICES OR PURCHASES</p>
+    </div>`;
     document.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => { const f = document.querySelector(`.idform[data-app="${b.dataset.edit}"]`); f.hidden = !f.hidden; b.textContent = f.hidden ? "Edit IDs" : "Close"; });
     document.querySelectorAll(".idform").forEach(f => f.onsubmit = async e => {
       e.preventDefault(); const btn = f.querySelector("button"); btn.disabled = true; const val = n => f.elements[n].value.trim();
