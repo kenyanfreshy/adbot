@@ -97,7 +97,7 @@ _TOKENISH = re.compile(
     r"eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]*"          # JWTs (Apple/ASA client secrets)
     r"|(?i:bearer)\s+[A-Za-z0-9_\-\.=+/]+"                           # Authorization headers
     r"|-----BEGIN[^-]*-----[\s\S]*?(?:-----END[^-]*-----|$)"           # PEM keys
-    r"|(?<![A-Za-z0-9])[A-Za-z0-9_\-\.=+/]{40,}(?![A-Za-z0-9])")        # long opaque strings (access tokens)
+    r"|(?<![A-Za-z0-9/])[A-Za-z0-9_\-\.=+]{40,}(?![A-Za-z0-9/])")       # long opaque strings (access tokens); URL paths are left readable
 
 
 def scrub_text(text: str) -> str:

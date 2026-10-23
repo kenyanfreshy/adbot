@@ -106,6 +106,8 @@ class FakeGoogle:
         for d in self.deny:
             if d in url:
                 return Resp(403, {"error": {"code": 403, "message": "The caller does not have permission"}})
+        if url.endswith("/applications/com.alexkorir.ccrn/oneTimeProducts") or url.endswith("/applications/com.alexkorir.ccrn/subscriptions"):
+            return Resp(204)                                   # Google's answer for an empty list
         if url.endswith(f"/applications/{PKG}/subscriptions"):
             return Resp(200, {"subscriptions": SUBS})
         if url.endswith(f"/applications/{PKG}/oneTimeProducts"):
@@ -217,6 +219,15 @@ class ProductTests(unittest.TestCase):
         self.assertEqual(acc[0], "error")
         self.assertIn("Invalid JWT Signature", acc[1])
         self.assertNotIn("BEGIN PRIVATE KEY", acc[1])
+
+    def test_empty_lists_are_not_errors(self):
+        con = setup_con()
+        registry.update_listing(con, "ccrn_adult", "google_play", {"package_name": "com.alexkorir.ccrn"})
+        res = run(con, FakeGoogle())
+        self.assertEqual(res["products"]["apps"], 2)
+        self.assertEqual(q(con, f"SELECT status FROM {S}.synchronization_jobs")[0][0], "succeeded")   # empty lists are fine
+        msg = q(con, f"SELECT message FROM {S}.synchronization_jobs")[0][0]
+        self.assertNotIn("204", msg)
 
     def test_daily_guard_and_skip(self):
         con = setup_con()

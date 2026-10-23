@@ -222,6 +222,9 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(msg, "Meta said: Invalid OAuth access token [redacted] (code 190); Authorization: [redacted]")
         self.assertEqual(registry.scrub_text("pem -----BEGIN PRIVATE KEY-----\nMIGT\n-----END PRIVATE KEY----- end"), "pem [redacted] end")
         self.assertEqual(registry.scrub_text("No Sales data for 2026-10-19 (vendor 85012345)"), "No Sales data for 2026-10-19 (vendor 85012345)")
+        path = "HTTP 403 on androidpublisher/applications/com.alexkorir.nursebound/oneTimeProducts"
+        self.assertEqual(registry.scrub_text(path), path)                    # API paths stay readable
+        self.assertIn("[redacted]", registry.scrub_text("token ya29.a0AfB_byC" + "q" * 60))
         self.assertEqual(registry.sha256_ref("tok"), registry.sha256_ref("tok"))
         self.assertNotIn("tok", registry.sha256_ref("tok"))
         self.assertIsNone(registry.sha256_ref(""))

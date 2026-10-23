@@ -175,6 +175,8 @@ class Client:
                 continue
             if r.status_code == 404:
                 return None
+            if r.status_code == 204:          # Google answers "No Content" when a list is empty
+                return b"" if raw else {}
             if r.status_code != 200:
                 raise PlayError(f"HTTP {r.status_code} on {where}: {_detail(r)}")
             return r.content if raw else r.json()
