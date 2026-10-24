@@ -192,6 +192,8 @@ def aggregate(rows: Iterable[dict], rules: Rules) -> dict[str, dict]:
 
 def keyword_decision(a: dict, rules: Rules) -> tuple[str, str]:
     """Return (action, reason). action is 'pause', 'keep' or 'protected'."""
+    if a.get("channel") == "Apple Search Ads" and a.get("entity_type") == "campaign":
+        return "keep", "Campaign-level Apple reporting is monitor-only"
     ov = rules.overrides.get(entity_key(a))
     if ov == "protected":
         return "protected", "Protected by manual override"
@@ -374,8 +376,66 @@ class AppleSearchAds:
             if offset >= total:
                 return out
 
+    @staticmethod
+    def supports_keywords(campaign: dict) -> bool:
+        # Missing or unknown placement metadata must not trigger keyword requests.
+        return "APPSTORE_SEARCH_RESULTS" in (campaign.get("supplySources") or [])
+
+    def campaign_rows(self, campaigns: list[dict], start: dt.date, end: dt.date,
+                      rules: Rules) -> Iterator[dict]:
+        """Campaign totals only for placements excluded from keyword reporting.
+
+        Keep these in the existing performance schema, with namespaced IDs so
+        campaign IDs cannot collide with keyword IDs. These rows are monitor-only.
+        """
+        selected = {str(c["id"]): c for c in campaigns}
+        if not selected:
+            return
+        offset = 0
+        while True:
+            body = {"startTime": start.isoformat(), "endTime": end.isoformat(),
+                    "granularity": "DAILY", "timeZone": "ORTZ",
+                    "returnRecordsWithNoMetrics": False, "returnRowTotals": False,
+                    "selector": {"orderBy": [{"field": "localSpend", "sortOrder": "DESCENDING"}],
+                                 "pagination": {"offset": offset, "limit": 1000}}}
+            j = http("POST", f"{self.BASE}/reports/campaigns", json=body, headers=self.headers()).json()
+            rows = (((j.get("data") or {}).get("reportingDataResponse") or {}).get("row")) or []
+            for row in rows:
+                m = row.get("metadata") or {}
+                cid = str(m.get("campaignId"))
+                c = selected.get(cid)
+                if c is None:
+                    continue  # Search Results are already represented by keyword rows.
+                name = c.get("name") or m.get("campaignName") or ""
+                for g in row.get("granularity") or []:
+                    installs = g.get("totalInstalls", g.get("tapInstalls", g.get("installs", 0))) or 0
+                    yield {"date": g.get("date"), "channel": "Apple Search Ads",
+                           "entity_type": "campaign", "entity_id": f"campaign:{cid}",
+                           "keyword": name, "campaign_id": cid, "campaign": name,
+                           "adgroup_id": None, "app": app_for(name, rules),
+                           "status": c.get("status") or m.get("campaignStatus"),
+                           "impressions": int(g.get("impressions") or 0),
+                           "taps": int(g.get("taps") or 0), "installs": float(installs),
+                           "spend": float((g.get("localSpend") or {}).get("amount") or 0),
+                           "revenue": 0.0}
+            if len(rows) < 1000:
+                break
+            offset += 1000
+
     def keyword_rows(self, start: dt.date, end: dt.date, rules: Rules) -> Iterator[dict]:
-        for c in self.campaigns():
+        """Compatibility entry point: one reporting level per campaign."""
+        campaigns = []
+        for campaign in self.campaigns():
+            app = app_for(campaign.get("name", ""), rules)
+            if app not in APPS:
+                log.info("Apple Search Ads: skipping campaign %s (not mapped to a supported app)", campaign["id"])
+                continue
+            campaigns.append(campaign)
+        yield from self.campaign_rows(
+            [c for c in campaigns if not self.supports_keywords(c)], start, end, rules)
+        for c in campaigns:
+            if not self.supports_keywords(c):
+                continue
             app = app_for(c.get("name", ""), rules)
             offset = 0
             while True:
@@ -400,6 +460,8 @@ class AppleSearchAds:
                 offset += 1000
 
     def pause_keyword(self, a: dict) -> None:
+        if a.get("entity_type") != "keyword":
+            raise ValueError("Apple keyword pause requires a keyword entity")
         http("PUT", f"{self.BASE}/campaigns/{a['campaign_id']}/adgroups/{a['adgroup_id']}/targetingkeywords/bulk",
              json=[{"id": int(a["entity_id"]), "status": "PAUSED"}], headers=self.headers())
 
@@ -664,6 +726,9 @@ def run_bot(con, rules: Rules, dry_run: bool) -> dict:
         log.warning("No performance data yet. Run a sync first.")
         return {}
     rows = df.to_dict("records")
+    # Exclude previously stored out-of-scope Apple campaigns from decisions and totals.
+    rows = [r for r in rows if r.get("channel") != "Apple Search Ads"
+            or app_for(r.get("campaign") or "", rules) in APPS]
     agg = aggregate(rows, rules)
     sources = {"Apple Search Ads": AppleSearchAds(), "Meta Ads": MetaAds(), "Google Ads": GoogleAds()}
     now = dt.datetime.utcnow()
@@ -721,6 +786,8 @@ def apply_budgets(plan: dict, agg: dict, sources: dict, con, now, rules: Rules) 
     """Split each app's daily budget across its active campaigns in proportion to their recent spend."""
     camp: dict[tuple, float] = {}
     for a in agg.values():
+        if a.get("channel") == "Apple Search Ads" and a.get("entity_type") == "campaign":
+            continue  # Newly supported placements are reporting-only.
         if a.get("app") not in plan or str(a.get("status") or "").upper() in ("PAUSED", "REMOVED"):
             continue
         # Apple and Google budgets live on the campaign; Meta budgets on the ad set
