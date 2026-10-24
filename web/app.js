@@ -93,7 +93,7 @@
   const compact = v => Math.abs(v) >= 1e4 ? (v / 1e3).toFixed(Math.abs(v) >= 1e5 ? 0 : 1) + "K" : Math.abs(v) >= 10 ? Math.round(v).toLocaleString("en-US") : (+v).toFixed(v % 1 ? 1 : 0);
   let chartSeq = 0;
   function lineChart(series, keys, colors, rightKey, opts = {}) {
-    const W = 340, H = 190, pl = 44, pr = rightKey ? 40 : 8, pt = 10, pb = 22, n = series.length;
+    const wide = window.innerWidth >= 1024, W = wide ? 900 : 340, H = wide ? 280 : 190, pl = 44, pr = rightKey ? 40 : 8, pt = 10, pb = 22, n = series.length;
     if (!n || !series.some(s => keys.some(k => s[k]))) return `<div class="empty">Nothing to chart yet.</div>`;
     const left = keys.filter(k => k !== rightKey);
     const vals = series.flatMap(s => left.map(k => +s[k] || 0));
@@ -349,7 +349,7 @@
       <div class="src-grid">${stores.map(srcCard).join("")}</div>
 
       <div class="hx-h"><span>APPS</span><small>${d.apps.length} registered</small></div>
-      ${d.apps.map(a => {
+      <div class="appgrid">${d.apps.map(a => {
         const ios = a.listings.apple_app_store || {}, and = a.listings.google_play || {};
         const [h1, h2] = APP_HUE[a.app_id] || ["#00C2FF", "#E024C3"];
         const live = new Set(a.products.filter(p => p.verified).map(p => p.platform + ":" + p.plan_code));
@@ -375,7 +375,7 @@
               <div class="rung-bar"><i style="width:${v != null ? Math.max(6, v / max * 100) : 0}%"></i></div>
               <div class="rung-v">${v != null ? money(v) : "—"}</div></div>`; }).join("")}
             ${prods.some(p => p.platform === "google_play") ? "" : `<div class="rung nil"><div class="rung-l"><b>Android</b><small>read from Google Play</small></div><div class="rung-bar"><i style="width:0"></i></div><div class="rung-v">UNAVAILABLE</div></div>`}
-          </div></article>`; }).join("")}
+          </div></article>`; }).join("")}</div>
 
       <div class="hx-h"><span>AD PLATFORMS</span><small>spend + return on ad spend</small></div>
       <div class="src-grid two">${ads.map(srcCard).join("")}</div>
