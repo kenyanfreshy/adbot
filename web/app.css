@@ -337,10 +337,10 @@ select option{background:#0F172A}
 .rev .src-warn{color:var(--amb);font-size:11.5px;margin-top:6px}
 .rev .vchk{font-style:normal;color:var(--mint);text-shadow:0 0 8px var(--mint);font-size:11px}
 .rev details{margin-top:7px}
-.rev summary{cursor:pointer;font-size:11.5px;color:color-mix(in srgb,var(--hue) 70%,#fff);list-style:none}
+.rev .src summary{cursor:pointer;font-size:11.5px;color:color-mix(in srgb,var(--hue) 70%,#fff);list-style:none}
 .rev summary::-webkit-details-marker{display:none}
-.rev summary::before{content:"+ ";font-family:var(--mono)}
-.rev details[open] summary::before{content:"− "}
+.rev .src summary::before{content:"+ ";font-family:var(--mono)}
+.rev .src details[open] summary::before{content:"− "}
 .rev code{font:500 10px var(--mono);background:rgba(2,6,23,.7);border:1px solid rgba(148,163,184,.18);border-radius:6px;padding:2px 6px;margin:5px 4px 0 0;display:inline-block;color:#BFEFFF;word-break:break-all}
 
 /* app cards */
@@ -431,3 +431,22 @@ details.fold>summary .chev{width:9px;height:9px;flex:none;margin-left:10px;borde
 details.fold[open]>summary .chev{transform:rotate(45deg) translate(-2px,-2px)}
 details.fold>summary:hover{color:#fff}
 details.fold:not([open])>summary{margin-bottom:4px}
+
+/* collapsible app cards (Revenue tab) */
+.rev details.appfold>summary{list-style:none;cursor:pointer;user-select:none;-webkit-user-select:none}
+.rev details.appfold>summary::-webkit-details-marker{display:none}
+.rev .appx-brief{font:600 10.5px var(--mono);letter-spacing:.04em;color:color-mix(in srgb,var(--h1) 70%,#fff);margin-top:6px}
+.rev details.appfold[open] .appx-brief{display:none}
+.rev .appx-right{display:flex;align-items:center;gap:12px;flex:none}
+.rev details.appfold .chev{width:9px;height:9px;border-right:2px solid var(--h1);border-bottom:2px solid var(--h1);transform:rotate(-45deg);transition:transform .2s;filter:drop-shadow(0 0 4px var(--h1))}
+.rev details.appfold[open] .chev{transform:rotate(45deg) translate(-2px,-2px)}
+.rev details.appfold:not([open])>summary header{align-items:center}
+
+/* collapsible Rules groups */
+details.fold-group>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:10px;padding:2px 0;user-select:none;-webkit-user-select:none}
+details.fold-group>summary::-webkit-details-marker{display:none}
+details.fold-group>summary h3{margin:12px 0}
+details.fold-group .fold-sum{margin-left:auto;font:600 11px var(--mono);color:var(--ink-3);white-space:nowrap}
+details.fold-group .chev{width:9px;height:9px;flex:none;border-right:2px solid var(--cyan);border-bottom:2px solid var(--cyan);transform:rotate(-45deg);transition:transform .2s;margin-right:4px}
+details.fold-group[open] .chev{transform:rotate(45deg) translate(-2px,-2px)}
+details.fold-group[open] .fold-sum{display:none}

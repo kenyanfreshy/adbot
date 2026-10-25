@@ -212,8 +212,8 @@
         ${n("max_budget_step", Math.round(R.max_budget_step * 100), "1", "Biggest change per run", "", "%")}</div>
       <div class="group"><h3>Value per install</h3><p class="hint">Used to estimate revenue when an ad platform reports none.</p>
         ${APPS.map((a, i) => n("vpi" + i, (R.value_per_install || {})[a] ?? 0, "0.01", esc(a), "", "$")).join("")}</div>
-      <div class="group"><h3>NurseBound countries</h3><p class="hint">Weight is each country's share of NurseBound's budget. Put the code in campaign names, e.g. “NurseBound | PH | Prospecting”.</p>
-        ${geo.map((g, i) => `<div class="field"><label for="gw${i}"><span class="flag">${flag(g.code)}</span> ${esc(regionName(g.code))}${g.flag === "who_safeguards" ? "<small>On WHO's 2023 safeguards list: advertise the study app, not recruitment</small>" : g.flag === "china_reach" ? "<small>Meta and Google ads don't serve in mainland China</small>" : ""}</label><input id="gw${i}" type="number" inputmode="decimal" step="1" min="0" value="${g.weight}" style="width:70px"><span class="switch"><input id="ge${i}" type="checkbox" ${g.enabled !== false ? "checked" : ""} aria-label="${esc(regionName(g.code))} on"><i></i></span></div>`).join("")}</div>
+      <details class="group fold-group" id="rulesGeo" ${store.get("adbot-rules-geo-open", false) ? "open" : ""}><summary><h3>NurseBound countries</h3><span class="fold-sum">${geo.filter(g => g.enabled !== false).length} on · ${geo.filter(g => g.enabled !== false).sort((a, b) => b.weight - a.weight).slice(0, 4).map(g => flag(g.code)).join(" ")}</span><i class="chev" aria-hidden="true"></i></summary><p class="hint">Weight is each country's share of NurseBound's budget. Put the code in campaign names, e.g. “NurseBound | PH | Prospecting”.</p>
+        ${geo.map((g, i) => `<div class="field"><label for="gw${i}"><span class="flag">${flag(g.code)}</span> ${esc(regionName(g.code))}${g.flag === "who_safeguards" ? "<small>On WHO's 2023 safeguards list: advertise the study app, not recruitment</small>" : g.flag === "china_reach" ? "<small>Meta and Google ads don't serve in mainland China</small>" : ""}</label><input id="gw${i}" type="number" inputmode="decimal" step="1" min="0" value="${g.weight}" style="width:70px"><span class="switch"><input id="ge${i}" type="checkbox" ${g.enabled !== false ? "checked" : ""} aria-label="${esc(regionName(g.code))} on"><i></i></span></div>`).join("")}</details>
       <div class="group"><h3>Telegram alerts</h3><p class="hint">The bot token stays on Render (TELEGRAM_BOT_TOKEN), never in the app.</p>
         <div class="field"><label for="telegram_chat_id">Chat ID</label><input id="telegram_chat_id" type="text" inputmode="numeric" value="${esc(R.telegram_chat_id || "")}" placeholder="123456789"></div>
         ${sw("al_daily_summary", R.alerts.daily_summary, "Daily summary")}${sw("al_kill_switch", R.alerts.kill_switch, "Kill-switch alerts")}${sw("al_rebalance", R.alerts.rebalance, "Rebalance logs")}${sw("al_high_cpt", R.alerts.high_cpt, "High CPT warnings")}</div>
@@ -224,6 +224,7 @@
         <label class="btn" for="importFile">Import rules.json from the dashboard</label><input id="importFile" type="file" accept=".json,application/json" hidden>
         <button class="btn" id="signOut">Sign out</button>
       </div>`;
+    const rg = $("rulesGeo"); if (rg) rg.addEventListener("toggle", () => store.set("adbot-rules-geo-open", rg.open));
     const v = id => +$(id).value;
     $("saveRules").onclick = async () => {
       const body = {global_daily_cap: v("global_daily_cap"), max_cpt: v("max_cpt"), min_taps_for_cpt: v("min_taps_for_cpt"), zero_install_taps: v("zero_install_taps"),
@@ -360,9 +361,14 @@
         const prods = [...a.products].filter(p => p.verified || !live.has(p.platform + ":" + p.plan_code)).sort((x, y) => Object.keys(PLAN).indexOf(x.plan_code) - Object.keys(PLAN).indexOf(y.plan_code));
         const price = p => { const pr = (p.prices || []).find(x => x.currency === "USD" && x.territory === "US") || (p.prices || []).find(x => x.currency === "USD"); return pr ? +pr.amount : null; };
         const max = Math.max(1, ...prods.map(price).filter(v => v != null));
-        return `<article class="appx" style="--h1:${h1};--h2:${h2}">
-          <header><div><div class="appx-name">${esc(a.name)}</div><div class="appx-sub">AD BOT · ${esc(a.bot_app_name || "—")}</div></div>
-            <button class="hx-btn" data-edit="${esc(a.app_id)}">Edit IDs</button></header>
+        const openApps = store.get("adbot-apps-open", {});
+        const okIos = !!(ios.apple_app_id && ios.bundle_id), okAnd = !!and.package_name;
+        const verified = prods.filter(p => p.verified).length;
+        const brief = `${okIos ? "iOS ✓" : "iOS IDs missing"} · ${okAnd ? "Android ✓" : "Android ID missing"} · ${prods.length} plan${prods.length === 1 ? "" : "s"}${verified ? ` (${verified} ✓)` : ""}`;
+        return `<article class="appx" style="--h1:${h1};--h2:${h2}"><details class="appfold" data-app="${esc(a.app_id)}" ${openApps[a.app_id] ? "open" : ""}>
+          <summary><header><div><div class="appx-name">${esc(a.name)}</div><div class="appx-sub">AD BOT · ${esc(a.bot_app_name || "—")}</div>
+              <div class="appx-brief">${esc(brief)}</div></div>
+            <span class="appx-right"><button class="hx-btn" type="button" data-edit="${esc(a.app_id)}">Edit IDs</button><i class="chev" aria-hidden="true"></i></span></header></summary>
           <div class="ids">
             <div class="idcol"><div class="idh">App Store</div>${idRow("Apple ID", ios.apple_app_id)}${idRow("Bundle", ios.bundle_id)}${idRow("Status", ios.publication_status === "unknown" ? null : ios.publication_status, "NOT CHECKED")}</div>
             <div class="idcol"><div class="idh">Google Play</div>${idRow("Package", and.package_name)}${idRow("Status", and.publication_status === "unknown" ? null : and.publication_status, "NOT CHECKED")}</div>
@@ -379,13 +385,20 @@
               <div class="rung-bar"><i style="width:${v != null ? Math.max(6, v / max * 100) : 0}%"></i></div>
               <div class="rung-v">${v != null ? money(v) : "—"}</div></div>`; }).join("")}
             ${prods.some(p => p.platform === "google_play") ? "" : `<div class="rung nil"><div class="rung-l"><b>Android</b><small>read from Google Play</small></div><div class="rung-bar"><i style="width:0"></i></div><div class="rung-v">UNAVAILABLE</div></div>`}
-          </div></article>`; }).join("")}</div>
+          </div></details></article>`; }).join("")}</div>
 
       <div class="hx-h"><span>AD PLATFORMS</span><small>spend + return on ad spend</small></div>
       <div class="src-grid two">${ads.map(srcCard).join("")}</div>
       <p class="hx-foot">READ-ONLY · NOTHING HERE CHANGES STORE PRODUCTS, PRICES OR PURCHASES</p>
     </div>`;
-    document.querySelectorAll("[data-edit]").forEach(b => b.onclick = () => { const f = document.querySelector(`.idform[data-app="${b.dataset.edit}"]`); f.hidden = !f.hidden; b.textContent = f.hidden ? "Edit IDs" : "Close"; });
+    document.querySelectorAll("[data-edit]").forEach(b => b.onclick = e => {
+      e.preventDefault(); e.stopPropagation();   // the button sits in the card header: don't also fold/unfold the card
+      const f = document.querySelector(`.idform[data-app="${b.dataset.edit}"]`); f.hidden = !f.hidden; b.textContent = f.hidden ? "Edit IDs" : "Close";
+      const card = b.closest("details"); if (!f.hidden && card) card.open = true;
+    });
+    document.querySelectorAll("details.appfold").forEach(dd => dd.addEventListener("toggle", () => {
+      const m = store.get("adbot-apps-open", {}); m[dd.dataset.app] = dd.open; store.set("adbot-apps-open", m);
+    }));
     document.querySelectorAll(".idform").forEach(f => f.onsubmit = async e => {
       e.preventDefault(); const btn = f.querySelector("button"); btn.disabled = true; const val = n => f.elements[n].value.trim();
       try {
