@@ -49,10 +49,9 @@
     renderChips(); $("channel").value = S.channel; $("days").value = String(S.days);
     go(S.tab);
   }
-  // the Trading tab only shows a live account; a demo/paper account stays hidden unless switched on in Rules
-  const showDemo = () => !!store.get("adbot-show-demo", false);
+  // the Trading tab appears whenever a trading bot (live or demo) reports in
   function applyTradingVisibility() {
-    const visible = !!ME.trading_live || (showDemo() && !!ME.trading_demo);
+    const visible = !!ME.trading_live || !!ME.trading_demo;
     const btn = document.querySelector('.tabs button[data-tab="trading"]');
     if (btn) btn.hidden = !visible;
     document.querySelector(".tabs").style.setProperty("--tabcount", visible ? 6 : 5);
@@ -227,8 +226,6 @@
       <div class="group"><h3>Telegram alerts</h3><p class="hint">The bot token stays on Render (TELEGRAM_BOT_TOKEN), never in the app.</p>
         <div class="field"><label for="telegram_chat_id">Chat ID</label><input id="telegram_chat_id" type="text" inputmode="numeric" value="${esc(R.telegram_chat_id || "")}" placeholder="123456789"></div>
         ${sw("al_daily_summary", R.alerts.daily_summary, "Daily summary")}${sw("al_kill_switch", R.alerts.kill_switch, "Kill-switch alerts")}${sw("al_rebalance", R.alerts.rebalance, "Rebalance logs")}${sw("al_high_cpt", R.alerts.high_cpt, "High CPT warnings")}</div>
-      ${ME.trading_demo ? `<div class="group"><h3>Trading tab</h3><p class="hint">Your forex bot is on a demo (practice) account, so the Trading tab is hidden. Switch on to look at it anyway. This only affects this device.</p>
-        ${sw("show_demo", showDemo(), "Show demo trading account")}</div>` : ""}
       <div class="actions">
         <button class="btn primary block" id="saveRules">Save rules</button>
         <button class="btn" id="tgTest">Send test notification</button>
@@ -246,7 +243,6 @@
       "Rebalancing": R.auto_rebalance ? `auto · ${Math.round(R.min_share * 100)}–${Math.round(R.max_share * 100)}%` : "manual",
       "Value per install": APPS.map(a => `${shortName(a)} ${money((R.value_per_install || {})[a] ?? 0)}`).join(" · "),
       "Telegram alerts": R.telegram_chat_id ? "chat set" : "no chat ID",
-      "Trading tab": showDemo() ? "demo shown" : "demo hidden",
     };
     const openMap = store.get("adbot-rules-open", {});
     $("view").querySelectorAll("div.group").forEach(g => {
@@ -260,7 +256,6 @@
       g.replaceWith(d);
       d.addEventListener("toggle", () => { const m = store.get("adbot-rules-open", {}); m[title] = d.open; store.set("adbot-rules-open", m); });
     });
-    if ($("show_demo")) $("show_demo").onchange = () => { store.set("adbot-show-demo", $("show_demo").checked); applyTradingVisibility(); toast($("show_demo").checked ? "Trading tab shown (demo account)." : "Demo trading hidden."); };
     const v = id => +$(id).value;
     $("saveRules").onclick = async () => {
       const body = {global_daily_cap: v("global_daily_cap"), max_cpt: v("max_cpt"), min_taps_for_cpt: v("min_taps_for_cpt"), zero_install_taps: v("zero_install_taps"),
@@ -282,7 +277,7 @@
 
   /* ---------- Trading ---------- */
   async function viewTrading(my) {
-    const d = await api("/api/trading" + (showDemo() ? "?demo=1" : "")); if (my !== seq) return;
+    const d = await api("/api/trading?demo=1"); if (my !== seq) return;
     if (!d.connected) {
       $("view").innerHTML = `<div class="banner"><b>Trading isn't reporting yet.</b> On the trading PC, open the <b>adbot-sidecar</b> folder, run <b>setup-sidecar.bat</b> once, then <b>start-sidecar.bat</b>. This tab updates every minute after that.</div>`;
       return;
@@ -293,11 +288,7 @@
     const dayChange = a.equity != null && d.day_start_equity != null ? a.equity - d.day_start_equity : null;
     const limitUsed = r && r.daily_loss_limit ? Math.min(1, (r.daily_loss_used || 0) / r.daily_loss_limit) : null;
     $("view").innerHTML = `
-      <div class="card" style="display:flex;align-items:center;gap:12px"><span class="dot" style="width:12px;height:12px;background:${ok ? "var(--green)" : st === "stopped" ? "var(--red)" : "var(--amber)"};box-shadow:0 0 0 4px ${ok ? "rgba(52,211,153,.18)" : "rgba(251,191,36,.15)"}"></span>
-        <div style="flex:1;min-width:0"><div style="font-weight:700">${esc(d.bot_id)} · ${esc(st)}</div><div class="sub">${esc(hb.message || "")}${age != null ? ` · ${age < 1 ? "just now" : Math.round(age) + " min ago"}` : ""}</div></div>
-        <span class="pill ${hb.mode === "live" ? "live" : "dry"}">${hb.mode === "live" ? "LIVE" : "DEMO"}</span></div>
       ${r && r.kill_switch ? `<div class="banner bad" style="margin-top:10px"><b>Trading is halted.</b> ${esc(r.notes || "")}</div>` : ""}
-      ${age != null && age > 15 ? `<div class="banner warn" style="margin-top:10px">No report for ${Math.round(age)} minutes. Check that start-sidecar.bat is running on the trading PC.</div>` : ""}
       <div class="kpis" style="margin-top:10px">
         <div class="kpi"><div class="k">Equity</div><div class="v">${money(a.equity)}</div><div class="d">${dayChange != null ? smoney(dayChange) + " today" : "&nbsp;"}</div></div>
         <div class="kpi"><div class="k">Today's P&amp;L</div><div class="v" style="color:${(a.day_pnl || 0) < 0 ? "var(--red)" : (a.day_pnl || 0) > 0 ? "var(--green)" : "inherit"}">${smoney(a.day_pnl)}</div><div class="d">realised</div></div>
