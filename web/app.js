@@ -225,6 +225,28 @@
         <button class="btn" id="signOut">Sign out</button>
       </div>`;
     const rg = $("rulesGeo"); if (rg) rg.addEventListener("toggle", () => store.set("adbot-rules-geo-open", rg.open));
+    // fold every other rules group into a tappable header with a one-line summary
+    const shortName = a => SHORT[a] || a;
+    const SUMMARY = {
+      "Daily spend limits": `${money(R.global_daily_cap)}/day · ${APPS.map(a => shortName(a) + " " + money(R.app_caps[a], 0)).join(" · ")}`,
+      "Priority": APPS.map(a => `${shortName(a)} ${(R.app_priority || {})[a] ?? 1}`).join(" · "),
+      "Kill switch": `CPT > ${money(R.max_cpt)} · ACoS > ${Math.round(R.max_acos * 100)}%`,
+      "Rebalancing": R.auto_rebalance ? `auto · ${Math.round(R.min_share * 100)}–${Math.round(R.max_share * 100)}%` : "manual",
+      "Value per install": APPS.map(a => `${shortName(a)} ${money((R.value_per_install || {})[a] ?? 0)}`).join(" · "),
+      "Telegram alerts": R.telegram_chat_id ? "chat set" : "no chat ID",
+    };
+    const openMap = store.get("adbot-rules-open", {});
+    $("view").querySelectorAll("div.group").forEach(g => {
+      const h = g.querySelector(":scope > h3"); if (!h) return;
+      const title = h.textContent.trim();
+      const d = document.createElement("details"); d.className = "group fold-group"; d.open = !!openMap[title];
+      const sm = document.createElement("summary");
+      sm.innerHTML = `<h3>${esc(title)}</h3><span class="fold-sum">${esc(SUMMARY[title] || "")}</span><i class="chev" aria-hidden="true"></i>`;
+      h.remove(); d.appendChild(sm);
+      while (g.firstChild) d.appendChild(g.firstChild);
+      g.replaceWith(d);
+      d.addEventListener("toggle", () => { const m = store.get("adbot-rules-open", {}); m[title] = d.open; store.set("adbot-rules-open", m); });
+    });
     const v = id => +$(id).value;
     $("saveRules").onclick = async () => {
       const body = {global_daily_cap: v("global_daily_cap"), max_cpt: v("max_cpt"), min_taps_for_cpt: v("min_taps_for_cpt"), zero_install_taps: v("zero_install_taps"),

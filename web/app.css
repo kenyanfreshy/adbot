@@ -446,7 +446,7 @@ details.fold:not([open])>summary{margin-bottom:4px}
 details.fold-group>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:10px;padding:2px 0;user-select:none;-webkit-user-select:none}
 details.fold-group>summary::-webkit-details-marker{display:none}
 details.fold-group>summary h3{margin:12px 0}
-details.fold-group .fold-sum{margin-left:auto;font:600 11px var(--mono);color:var(--ink-3);white-space:nowrap}
+details.fold-group .fold-sum{margin-left:auto;font:600 11px var(--mono);color:var(--ink-3);text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;max-width:62%}
 details.fold-group .chev{width:9px;height:9px;flex:none;border-right:2px solid var(--cyan);border-bottom:2px solid var(--cyan);transform:rotate(-45deg);transition:transform .2s;margin-right:4px}
 details.fold-group[open] .chev{transform:rotate(45deg) translate(-2px,-2px)}
 details.fold-group[open] .fold-sum{display:none}
@@ -456,3 +456,4 @@ details.fold-group[open] .fold-sum{display:none}
 .rev details.hx-fold>summary.hx-h small{margin-left:auto}
 .rev details.hx-fold>summary .chev{margin-left:12px;align-self:center}
 .rev details.hx-fold:not([open]){margin-bottom:6px}
+details.fold-group>summary h3{flex:none}
