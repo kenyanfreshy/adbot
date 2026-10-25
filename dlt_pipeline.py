@@ -839,9 +839,12 @@ def check_trading(con, rules: Rules) -> None:
     """Hourly safety net: alert if the trading bot has gone quiet while the FX market is open,
     or if its kill switch is on. Read-only; it never touches the trading bot."""
     try:
-        rows = con.execute("select bot_id, max(ts) from trading.heartbeat group by bot_id").fetchall()
+        rows = con.execute("select bot_id, max(ts), arg_max(mode, ts) from trading.heartbeat group by bot_id").fetchall()
     except Exception:
         return  # trading reporting not set up yet
+    demo_alerts = os.getenv("TRADING_ALERT_DEMO", "").lower() in ("1", "true", "yes")
+    rows = [(b, last) for b, last, mode in rows
+            if demo_alerts or str(mode or "").strip().lower() not in ("paper", "demo", "practice", "sim", "simulation", "test")]
     now = dt.datetime.utcnow()
     wd, h = now.weekday(), now.hour
     fx_open = not (wd == 5 or (wd == 6 and h < 21) or (wd == 4 and h >= 22))

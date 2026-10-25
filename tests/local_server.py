@@ -60,7 +60,7 @@ class FakeCon:
         if "ad_performance" in l: return Cur([r for r in PERF if r["date"] >= p[0]])
         if "from bot_actions" in l: return Cur(STORE["actions"])
         if "from app_budgets" in l: return Cur([])
-        if "group by bot_id" in l: return Cur([{"bot_id": "fx-trading-system", "last": now}])
+        if "group by bot_id" in l: return Cur([{"bot_id": "fx-trading-system", "mode": TR["heartbeat"][0]["mode"], "last": now}])
         m = re.search(r"from trading\.(\w+)", l)
         if m:
             t = m.group(1)

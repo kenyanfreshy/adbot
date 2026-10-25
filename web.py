@@ -221,7 +221,20 @@ def totals(rs: list[dict], rules: bot.Rules) -> dict:
 # --------------------------------------------------------------------------- #
 @guarded
 async def me(request: Request):
-    return J({"ok": True, "dry_run": dry_run(), "apps": APPS, "channels": CHANNELS})
+    bots = trading_bots()
+    return J({"ok": True, "dry_run": dry_run(), "apps": APPS, "channels": CHANNELS,
+              "trading_live": any(b["live"] for b in bots), "trading_demo": any(not b["live"] for b in bots)})
+
+
+DEMO_MODES = ("paper", "demo", "practice", "sim", "simulation", "test")
+
+
+def trading_bots() -> list[dict]:
+    """Bots reporting to the Trading tab, newest first, each marked live or demo (by its latest heartbeat's mode)."""
+    out = rows("select bot_id, arg_max(mode, ts) as mode, max(ts) as last from trading.heartbeat group by bot_id order by last desc")
+    for b in out:
+        b["live"] = str(b.get("mode") or "").strip().lower() not in DEMO_MODES
+    return out
 
 
 @guarded
@@ -392,7 +405,12 @@ async def log(request: Request):
 
 @guarded
 async def trading(request: Request):
-    hb_all = rows("select bot_id, max(ts) as last from trading.heartbeat group by bot_id order by last desc")
+    hb_all = trading_bots()
+    if request.query_params.get("demo") != "1":   # demo / paper accounts are hidden unless asked for
+        hidden = sum(1 for b in hb_all if not b["live"])
+        hb_all = [b for b in hb_all if b["live"]]
+        if not hb_all:
+            return J({"connected": False, "demo_hidden": hidden})
     if not hb_all:
         return J({"connected": False})
     bot_id = request.query_params.get("bot") or hb_all[0]["bot_id"]

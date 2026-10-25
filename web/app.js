@@ -45,8 +45,18 @@
     $("boot").hidden = true; $("login").hidden = true; $("app").hidden = false;
     $("modePill").className = "pill " + (ME.dry_run ? "dry" : "live"); $("modePill").textContent = ME.dry_run ? "DRY RUN" : "LIVE";
     $("modePill").title = ME.dry_run ? "The bot only reports what it would do" : "The bot pauses keywords and changes budgets";
+    applyTradingVisibility();
     renderChips(); $("channel").value = S.channel; $("days").value = String(S.days);
     go(S.tab);
+  }
+  // the Trading tab only shows a live account; a demo/paper account stays hidden unless switched on in Rules
+  const showDemo = () => !!store.get("adbot-show-demo", false);
+  function applyTradingVisibility() {
+    const visible = !!ME.trading_live || (showDemo() && !!ME.trading_demo);
+    const btn = document.querySelector('.tabs button[data-tab="trading"]');
+    if (btn) btn.hidden = !visible;
+    document.querySelector(".tabs").style.setProperty("--tabcount", visible ? 6 : 5);
+    if (!visible && S.tab === "trading") S.tab = "ads";
   }
   function renderChips() {
     $("appChips").innerHTML = [["all", "All apps"], ...APPS.map(a => [a, SHORT[a]])].map(([v, l]) =>
@@ -217,6 +227,8 @@
       <div class="group"><h3>Telegram alerts</h3><p class="hint">The bot token stays on Render (TELEGRAM_BOT_TOKEN), never in the app.</p>
         <div class="field"><label for="telegram_chat_id">Chat ID</label><input id="telegram_chat_id" type="text" inputmode="numeric" value="${esc(R.telegram_chat_id || "")}" placeholder="123456789"></div>
         ${sw("al_daily_summary", R.alerts.daily_summary, "Daily summary")}${sw("al_kill_switch", R.alerts.kill_switch, "Kill-switch alerts")}${sw("al_rebalance", R.alerts.rebalance, "Rebalance logs")}${sw("al_high_cpt", R.alerts.high_cpt, "High CPT warnings")}</div>
+      ${ME.trading_demo ? `<div class="group"><h3>Trading tab</h3><p class="hint">Your forex bot is on a demo (practice) account, so the Trading tab is hidden. Switch on to look at it anyway. This only affects this device.</p>
+        ${sw("show_demo", showDemo(), "Show demo trading account")}</div>` : ""}
       <div class="actions">
         <button class="btn primary block" id="saveRules">Save rules</button>
         <button class="btn" id="tgTest">Send test notification</button>
@@ -234,6 +246,7 @@
       "Rebalancing": R.auto_rebalance ? `auto · ${Math.round(R.min_share * 100)}–${Math.round(R.max_share * 100)}%` : "manual",
       "Value per install": APPS.map(a => `${shortName(a)} ${money((R.value_per_install || {})[a] ?? 0)}`).join(" · "),
       "Telegram alerts": R.telegram_chat_id ? "chat set" : "no chat ID",
+      "Trading tab": showDemo() ? "demo shown" : "demo hidden",
     };
     const openMap = store.get("adbot-rules-open", {});
     $("view").querySelectorAll("div.group").forEach(g => {
@@ -247,6 +260,7 @@
       g.replaceWith(d);
       d.addEventListener("toggle", () => { const m = store.get("adbot-rules-open", {}); m[title] = d.open; store.set("adbot-rules-open", m); });
     });
+    if ($("show_demo")) $("show_demo").onchange = () => { store.set("adbot-show-demo", $("show_demo").checked); applyTradingVisibility(); toast($("show_demo").checked ? "Trading tab shown (demo account)." : "Demo trading hidden."); };
     const v = id => +$(id).value;
     $("saveRules").onclick = async () => {
       const body = {global_daily_cap: v("global_daily_cap"), max_cpt: v("max_cpt"), min_taps_for_cpt: v("min_taps_for_cpt"), zero_install_taps: v("zero_install_taps"),
@@ -268,7 +282,7 @@
 
   /* ---------- Trading ---------- */
   async function viewTrading(my) {
-    const d = await api("/api/trading"); if (my !== seq) return;
+    const d = await api("/api/trading" + (showDemo() ? "?demo=1" : "")); if (my !== seq) return;
     if (!d.connected) {
       $("view").innerHTML = `<div class="banner"><b>Trading isn't reporting yet.</b> On the trading PC, open the <b>adbot-sidecar</b> folder, run <b>setup-sidecar.bat</b> once, then <b>start-sidecar.bat</b>. This tab updates every minute after that.</div>`;
       return;
