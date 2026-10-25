@@ -31,6 +31,7 @@ from pathlib import Path
 
 from itsdangerous import BadSignature, SignatureExpired, TimestampSigner
 from starlette.applications import Starlette
+from starlette.concurrency import run_in_threadpool
 from starlette.middleware import Middleware
 from starlette.middleware.gzip import GZipMiddleware
 from starlette.requests import Request
@@ -40,6 +41,7 @@ from starlette.staticfiles import StaticFiles
 
 import dlt_pipeline as bot
 from revenue import registry as rev_registry
+from revenue import store_check
 from revenue.schema import SCHEMA as REV
 
 ROOT = Path(__file__).parent
@@ -500,6 +502,40 @@ async def revenue_listing(request: Request):
     return J({"ok": True, "changed": changed})
 
 
+@guarded
+async def revenue_check_ids(request: Request):
+    """'Check store IDs': confirm each app's Apple ID / bundle ID / Play package with the stores. Read-only.
+
+    The store keys normally live on adbot-hourly only. A store whose key is also set on this
+    web service is checked right now; the other is left as a request for the next hourly run."""
+    def work() -> dict:
+        with _db_lock:
+            n = store_check.request(con(), actor="admin")
+            todo = {p: store_check.targets(con(), p) for p in ("apple_app_store", "google_play")}
+        if not n:
+            return {"error": "Enter the Apple ID or Play package for at least one app first (Edit IDs)."}
+        cl = store_check.clients(quick=True)
+        done, queued = [], {}
+        for platform, rows in todo.items():
+            if not rows:
+                continue
+            if cl[platform] == "no_keys":
+                queued[platform] = len(rows)      # adbot-hourly has the keys: it answers at :07
+                continue
+            done += store_check.check_rows(cl[platform], rows)
+        checked: dict = {}
+        with _db_lock:
+            for row, res in done:
+                store_check.save(con(), row, res, "admin")
+                checked.setdefault(row["platform"], {}).setdefault(res["result"], 0)
+                checked[row["platform"]][res["result"]] += 1
+        return {"ok": True, "checked": checked, "queued": queued,
+                "next_run": store_check.next_hourly_run().isoformat() if queued else None}
+
+    out = await run_in_threadpool(work)
+    return J(out, 400 if out.get("error") else 200)
+
+
 # --------------------------------------------------------------------------- #
 # Front end
 # --------------------------------------------------------------------------- #
@@ -539,6 +575,7 @@ routes = [
     Route("/api/run-bot", run_bot_now, methods=["POST"]),
     Route("/api/revenue", revenue_get),
     Route("/api/revenue/listing", revenue_listing, methods=["POST"]),
+    Route("/api/revenue/check-ids", revenue_check_ids, methods=["POST"]),
     Mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static"),
     Mount("/web", StaticFiles(directory=str(WEB)), name="web"),
 ]

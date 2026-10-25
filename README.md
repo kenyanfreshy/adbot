@@ -38,4 +38,12 @@ App Store and Google Play revenue for NurseBound Pro, Rapid Nursing Review Pro a
 lives in the `revenue` schema of the same database and on the **Revenue** tab of the web app.
 See `docs/REVENUE_PLAN.md` for sources, stages and what each stage needs.
 
+**Check store IDs** (Revenue tab, above the app cards) confirms each app's Apple ID, bundle ID and Play
+package with the stores, read-only (`revenue/store_check.py`). App Store Connect must return the same bundle ID
+for the Apple ID (an empty bundle ID is filled in from the store); Google Play must answer for the package in
+your Play Console. Each row then shows VERIFIED, MISMATCH, NOT FOUND, NO ACCESS or NEEDS KEY, plus the store
+state (Live, In review, ...). The store keys live on `adbot-hourly`, so a press is answered by the next hourly
+run at :07; if you also add the keys to `adbot-control-panel` the check runs instantly. The hourly job re-checks
+every listing once a day.
+
 Tests (synthetic data, no network): `python -m unittest discover -s tests -v`

@@ -348,6 +348,13 @@ MIGRATIONS.append((4, "Google Ads no longer needs a developer token (Google chan
     "WHERE account_id = 'google_ads_reporting'",
 ]))
 
+MIGRATIONS.append((5, "Store ID check: result of the last check and pending requests", [
+    # check_result: verified | mismatch | not_found | no_access | no_keys | error (NULL = never checked)
+    f"ALTER TABLE {SCHEMA}.store_listings ADD COLUMN IF NOT EXISTS check_result VARCHAR",
+    f"ALTER TABLE {SCHEMA}.store_listings ADD COLUMN IF NOT EXISTS check_detail VARCHAR",
+    f"ALTER TABLE {SCHEMA}.store_listings ADD COLUMN IF NOT EXISTS check_requested_at TIMESTAMP",
+]))
+
 LATEST = max(v for v, _, _ in MIGRATIONS)
 
 

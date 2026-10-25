@@ -349,6 +349,25 @@
         ${s.last_status === "partial" && s.last_message ? `<div class="src-warn">${esc(String(s.last_message).split(" | ")[0])}</div>` : ""}
         ${s.credentials.missing.length ? `<details><summary>Setup · ${s.credentials.missing.length} Render setting${s.credentials.missing.length > 1 ? "s" : ""} needed</summary>${s.credentials.missing.map(v => `<code>${esc(v)}</code>`).join("")}</details>` : ""}</div>`; };
     const idRow = (label, val, empty = "NOT SET") => `<div class="idr"><span>${label}</span><b class="${val ? "" : "nil"}">${val ? esc(val) : empty}</b></div>`;
+    // result of "Check store IDs" (revenue/store_check.py)
+    const CHK = {verified: ["ok", "VERIFIED ✓"], mismatch: ["bad", "MISMATCH"], not_found: ["bad", "NOT FOUND"],
+                 no_access: ["warn", "NO ACCESS"], no_keys: ["warn", "NEEDS KEY"], error: ["bad", "ERROR"]};
+    const STORE_STATE = {READY_FOR_SALE: "Live", READY_FOR_DISTRIBUTION: "Live", PREPARE_FOR_SUBMISSION: "Not submitted",
+                 WAITING_FOR_REVIEW: "Waiting for review", IN_REVIEW: "In review", PENDING_DEVELOPER_RELEASE: "Approved, not released",
+                 PENDING_APPLE_RELEASE: "Approved, releasing", PROCESSING_FOR_APP_STORE: "Processing", REJECTED: "Rejected",
+                 METADATA_REJECTED: "Metadata rejected", DEVELOPER_REJECTED: "Pulled from review", INVALID_BINARY: "Invalid build",
+                 REMOVED_FROM_SALE: "Removed from sale", DEVELOPER_REMOVED_FROM_SALE: "Removed from sale", NO_VERSION: "No version yet",
+                 in_play_console: "In Play Console"};
+    const hhmm = t => new Date(t + (String(t).endsWith("Z") ? "" : "Z")).toLocaleTimeString("en-US", {hour: "numeric", minute: "2-digit"});
+    const checkRows = (l, hasId) => {
+      if (!hasId) return idRow("Check", null, "ENTER IDS FIRST");
+      if (l.check_requested_at) return `<div class="idr"><span>Check</span><b class="warn">QUEUED</b></div><div class="idnote">Runs on the hourly job at :07${l.check_result ? ` · last: ${esc((CHK[l.check_result] || [])[1] || l.check_result)}` : ""}</div>`;
+      if (!l.check_result) return idRow("Check", null, "NOT CHECKED");
+      const [cls, txt] = CHK[l.check_result] || ["warn", l.check_result.toUpperCase()];
+      const st = l.publication_status && l.publication_status !== "unknown" && l.publication_status !== "not_found" ? (STORE_STATE[l.publication_status] || l.publication_status) : null;
+      return `<div class="idr"><span>Check</span><b class="${cls}">${txt}</b></div>${st ? idRow("Store", st) : ""}
+        <div class="idnote">${esc(l.check_detail || "")}${l.status_checked_at ? ` · ${esc(when(l.status_checked_at))}` : ""}</div>`;
+    };
 
     $("view").innerHTML = `<div class="rev">
       <section class="hero">
@@ -380,7 +399,7 @@
       <div class="hx-h"><span>STORE FEEDS</span><small>read-only</small></div>
       <div class="src-grid">${stores.map(srcCard).join("")}</div>
 
-      <div class="hx-h"><span>APPS</span><small>${d.apps.length} registered</small></div>
+      <div class="hx-h withbtn"><span>APPS</span><small>${d.apps.length} registered</small><button class="hx-btn" type="button" id="checkIds" style="--h1:#00C2FF">Check store IDs</button></div>
       <div class="appgrid">${d.apps.map(a => {
         const ios = a.listings.apple_app_store || {}, and = a.listings.google_play || {};
         const [h1, h2] = APP_HUE[a.app_id] || ["#00C2FF", "#E024C3"];
@@ -397,8 +416,8 @@
               <div class="appx-brief">${esc(brief)}</div></div>
             <span class="appx-right"><button class="hx-btn" type="button" data-edit="${esc(a.app_id)}">Edit IDs</button><i class="chev" aria-hidden="true"></i></span></header></summary>
           <div class="ids">
-            <div class="idcol"><div class="idh">App Store</div>${idRow("Apple ID", ios.apple_app_id)}${idRow("Bundle", ios.bundle_id)}${idRow("Status", ios.publication_status === "unknown" ? null : ios.publication_status, "NOT CHECKED")}</div>
-            <div class="idcol"><div class="idh">Google Play</div>${idRow("Package", and.package_name)}${idRow("Status", and.publication_status === "unknown" ? null : and.publication_status, "NOT CHECKED")}</div>
+            <div class="idcol"><div class="idh">App Store</div>${idRow("Apple ID", ios.apple_app_id)}${idRow("Bundle", ios.bundle_id)}${checkRows(ios, !!ios.apple_app_id)}</div>
+            <div class="idcol"><div class="idh">Google Play</div>${idRow("Package", and.package_name)}${checkRows(and, !!and.package_name)}</div>
           </div>
           <form class="idform" data-app="${esc(a.app_id)}" hidden>
             <div class="field"><label>Apple ID<small>App Store Connect → App Information</small></label><input type="text" name="apple_app_id" inputmode="numeric" value="${esc(ios.apple_app_id || "")}" placeholder="1234567890"></div>
@@ -425,6 +444,17 @@
       const f = document.querySelector(`.idform[data-app="${b.dataset.edit}"]`); f.hidden = !f.hidden; b.textContent = f.hidden ? "Edit IDs" : "Close";
       const card = b.closest("details"); if (!f.hidden && card) card.open = true;
     });
+    const cb = $("checkIds"); if (cb) cb.onclick = async () => {
+      cb.disabled = true; cb.textContent = "Checking…";
+      const NAME = {apple_app_store: "App Store", google_play: "Google Play"};
+      try {
+        const r = await api("/api/revenue/check-ids", {method: "POST"});
+        const parts = Object.entries(r.checked || {}).map(([p, c]) => `${NAME[p]}: ${Object.entries(c).map(([k, n]) => `${n} ${(CHK[k] || [, k])[1].replace(" ✓", "").toLowerCase()}`).join(", ")}`);
+        const q = Object.keys(r.queued || {}).map(p => NAME[p]);
+        if (q.length) parts.push(`${q.join(" + ")} queued for the hourly job (${hhmm(r.next_run)})`);
+        toast(parts.join(" · ") || "Checked."); load(false, true);
+      } catch (err) { if (err.message !== "signin") toast(err.message); cb.disabled = false; cb.textContent = "Check store IDs"; }
+    };
     const af = $("adsFold"); if (af) af.addEventListener("toggle", () => store.set("adbot-adplat-open", af.open));
     document.querySelectorAll("details.appfold").forEach(dd => dd.addEventListener("toggle", () => {
       const m = store.get("adbot-apps-open", {}); m[dd.dataset.app] = dd.open; store.set("adbot-apps-open", m);

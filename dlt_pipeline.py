@@ -889,6 +889,12 @@ def main(argv: list[str] | None = None) -> int:
         report_ad_status(con, counts)
     result = run_bot(con, rules, dry_run)
     check_trading(con, rules)
+    # Store ID check (read-only): answers "Check store IDs" from the phone app and re-checks once a day.
+    try:
+        from revenue import store_check
+        log.info("Store ID check: %s", store_check.run(con))
+    except Exception:  # noqa: BLE001
+        log.exception("Store ID check failed")
     # App Store revenue (read-only). Skipped quietly until the ASC_* settings exist; never stops the ad bot.
     try:
         from revenue import apple

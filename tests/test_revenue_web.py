@@ -105,6 +105,30 @@ class RevenueWebTests(unittest.TestCase):
         ccrn = next(a for a in d["apps"] if a["app_id"] == "ccrn_adult")
         self.assertEqual(ccrn["listings"]["google_play"]["package_name"], "com.example.ccrn")
 
+    def test_check_store_ids(self):
+        self.assertEqual(call("POST", "/api/revenue/check-ids")[0], 401)
+        for k in ("ASC_ISSUER_ID", "ASC_KEY_ID", "ASC_PRIVATE_KEY", "ASC_VENDOR_NUMBER", "GOOGLE_PLAY_SERVICE_ACCOUNT_JSON"):
+            os.environ.pop(k, None)
+        status, d, _ = call("GET", "/api/revenue", cookie=self.cookie)
+        if not any(a["listings"]["apple_app_store"].get("apple_app_id") or a["listings"]["google_play"].get("package_name") for a in d["apps"]):
+            status, d, _ = call("POST", "/api/revenue/check-ids", cookie=self.cookie)
+            self.assertEqual(status, 400)
+            self.assertIn("Edit IDs", d["error"])
+        call("POST", "/api/revenue/listing", {"app_id": "ccrn_adult", "platform": "apple_app_store",
+                                              "fields": {"apple_app_id": "6823854842", "bundle_id": "com.alexkorir.ccrn"}}, cookie=self.cookie)
+        call("POST", "/api/revenue/listing", {"app_id": "ccrn_adult", "platform": "google_play",
+                                              "fields": {"package_name": "com.alexkorir.ccrn"}}, cookie=self.cookie)
+        status, d, _ = call("POST", "/api/revenue/check-ids", cookie=self.cookie)
+        self.assertEqual(status, 200, d)
+        # the keys live on adbot-hourly, so both stores are left for the next hourly run
+        self.assertEqual(set(d["queued"]), {"apple_app_store", "google_play"})
+        self.assertEqual(d["checked"], {})
+        self.assertTrue(d["next_run"].endswith(":07:00"))
+        _, d, _ = call("GET", "/api/revenue", cookie=self.cookie)
+        ccrn = next(a for a in d["apps"] if a["app_id"] == "ccrn_adult")
+        self.assertIsNotNone(ccrn["listings"]["apple_app_store"]["check_requested_at"])
+        self.assertIsNotNone(ccrn["listings"]["google_play"]["check_requested_at"])
+
     def test_existing_screens_still_work(self):
         for path in ("/api/me", "/api/rules", "/api/log"):
             with self.subTest(path=path):

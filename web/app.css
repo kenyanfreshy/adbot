@@ -359,6 +359,14 @@ select option{background:#0F172A}
 .rev .idr{display:flex;justify-content:space-between;gap:10px;font-size:12.5px;padding:3px 0;color:#94A3B8}
 .rev .idr b{font:600 12px var(--mono);color:#E2E8F0;text-align:right;overflow-wrap:anywhere}
 .rev .idr b.nil{color:#475569;letter-spacing:.06em;font-size:10.5px}
+.rev .idr b.ok{color:var(--mint);text-shadow:0 0 8px rgba(0,229,163,.35);letter-spacing:.04em}
+.rev .idr b.bad{color:var(--cor);letter-spacing:.04em}
+.rev .idr b.warn{color:var(--amb);letter-spacing:.04em}
+.rev .idnote{font-size:11px;line-height:1.35;color:#64748B;margin-top:2px;overflow-wrap:anywhere}
+.rev .hx-h.withbtn{align-items:center}
+.rev .hx-h.withbtn small{margin-left:auto}
+.rev .hx-h .hx-btn{height:30px;font-size:12px}
+.rev .hx-btn:disabled{opacity:.6;cursor:default}
 .rev .idform{margin-top:10px;border-top:1px solid rgba(148,163,184,.15);padding-top:6px}
 .rev .ladder-h{font:700 9.5px var(--hud);letter-spacing:.16em;color:#CBD5E1;margin:14px 0 6px;display:flex;justify-content:space-between;gap:8px}
 .rev .ladder-h small{font:600 9px var(--mono);letter-spacing:.04em;color:#64748B;text-transform:none}
