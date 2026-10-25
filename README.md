@@ -46,4 +46,12 @@ state (Live, In review, ...). The store keys live on `adbot-hourly`, so a press 
 run at :07; if you also add the keys to `adbot-control-panel` the check runs instantly. The hourly job re-checks
 every listing once a day.
 
+**Google Play reports** are tracked apart from Google Play products (`revenue/google_play.py`): products sync once a
+day; the reports bucket has its own status (Not configured, Never checked, Bucket readable but empty, Reports imported,
+Access denied, Bucket not found, Failed) and its own "last success", which a failed attempt never moves. A 403/404 is
+retried once a day, other failures back off 1 h → 2 h → 4 h → 8 h → 24 h. To retry now without re-syncing products:
+press **Retry reports** on the Google Play card (runs at the next :07), or run `python -m revenue.google_play retry-reports`
+where the key is available. To test bucket access alone (lists at most one object, writes nothing, prints only the
+service account email, bucket, result and a sanitized error): `python -m revenue.google_play diagnose-reports`.
+
 Tests (synthetic data, no network): `python -m unittest discover -s tests -v`

@@ -314,13 +314,15 @@
                 non_consumable: "one-time", consumable: "consumable", one_time_product: "one-time"};
   const APP_HUE = {rnr_pro: ["#FF6A2B", "#FF2E63"], ccrn_adult: ["#2DD4BF", "#00C2FF"], nursebound_pro: ["#8B5CF6", "#E024C3"]};
   const when = t => t ? new Date(String(t).replace(" ", "T") + (String(t).endsWith("Z") ? "" : "Z")).toLocaleString("en-US", {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"}) : "NEVER";
-  const srcState = s => s.status === "verified" ? "on" : (s.status === "error" || s.last_status === "failed") ? "err" : s.status === "configured" ? "keys" : "off";
-  const STATE_TXT = {on: "LINKED", err: "ERROR", keys: "KEYS SET", off: "OFFLINE"};
+  const REP_BAD = ["access_denied", "not_found", "error"];
+  const srcState = s => s.status === "verified" ? (s.reports && REP_BAD.includes(s.reports.state) ? "part" : "on")
+    : (s.status === "error" || s.last_status === "failed") ? "err" : s.status === "configured" ? "keys" : "off";
+  const STATE_TXT = {on: "LINKED", part: "PARTIAL", err: "ERROR", keys: "KEYS SET", off: "OFFLINE"};
 
   function readinessRing(sources) {
     // one arc per data source: lit = linked, amber = keys set, red = error, dim = offline (real status only)
     const n = sources.length, R = 54, C = 2 * Math.PI * R, gap = 7, seg = C / n - gap;
-    const col = {on: "#00E5A3", keys: "#FFB020", err: "#FF4B4B", off: "rgba(148,163,184,.18)"};
+    const col = {on: "#00E5A3", keys: "#FFB020", part: "#FFB020", err: "#FF4B4B", off: "rgba(148,163,184,.18)"};
     const linked = sources.filter(s => srcState(s) === "on").length;
     return `<svg class="ring" viewBox="0 0 140 140" role="img" aria-label="${linked} of ${n} data sources linked">
       <defs><filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="2.4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
@@ -342,11 +344,23 @@
         <svg class="hx-spark" viewBox="0 0 120 26" preserveAspectRatio="none" aria-hidden="true"><path d="M0 20H120" stroke-dasharray="3 4"/></svg><div class="hx-d">${esc(sub)}</div><i class="scan"></i></div>`;
     const node = (label, st, sub) => `<div class="pn ${st}"><b>${label}</b><small>${sub}</small></div>`;
     const wire = st => `<div class="pw ${st}"><i></i></div>`;
+    // Google Play: product sync and report sync are shown separately (revenue/google_play.py report_state)
+    const REP_CLS = {ok_imported: "ok", ok_empty: "ok", not_configured: "warn", never_checked: "nil", access_denied: "bad", not_found: "bad", error: "bad"};
+    const repBlock = s => { const r = s.reports; const bad = REP_BAD.includes(r.state);
+      return `<div class="rep">
+        <div class="idr"><span>Products</span><b class="${s.products_last_success ? "ok" : "nil"}">${s.products_last_success ? esc(when(s.products_last_success)) : "NEVER"}</b></div>
+        <div class="idr"><span>Reports</span><b class="${REP_CLS[r.state] || "warn"}">${esc((r.text || r.state).toUpperCase())}</b></div>
+        ${r.last_attempt ? `<div class="idnote">Last attempt ${esc(when(r.last_attempt))} · last success ${esc(when(r.last_success))}${bad && r.next_try ? ` · next automatic try ${esc(when(r.next_try))}` : ""}</div>` : ""}
+        ${bad && r.message ? `<div class="src-err">${esc(String(r.message).split(" | ")[0])}</div>` : ""}
+        ${r.retry_requested_at ? `<div class="idnote">Retry queued for the hourly job at :07</div>`
+          : (bad || r.state === "never_checked") ? `<button class="hx-btn" type="button" data-retry-play style="--h1:#00E5A3;margin-top:8px">Retry reports</button>` : ""}
+      </div>`; };
     const srcCard = s => { const st = srcState(s); return `<div class="src ${st}" style="--hue:${PLAT_HUE[s.platform] || "#00C2FF"}">
         <div class="src-top"><span class="led"></span><b>${esc(PLAT[s.platform] || s.name)}</b><span class="chip ${st}">${STATE_TXT[st]}</span></div>
         <div class="src-meta">LAST SYNC <b>${when(s.last_success)}</b>${s.period_end ? ` · DATA TO ${esc(String(s.period_end).slice(0, 10))}` : ""}</div>
         ${s.last_status === "failed" && s.last_message ? `<div class="src-err">${esc(s.last_message)}</div>` : s.status === "error" && s.last_error ? `<div class="src-err">${esc(s.last_error)}</div>` : ""}
         ${s.last_status === "partial" && s.last_message ? `<div class="src-warn">${esc(String(s.last_message).split(" | ")[0])}</div>` : ""}
+        ${s.reports ? repBlock(s) : ""}
         ${s.credentials.missing.length ? `<details><summary>Setup · ${s.credentials.missing.length} Render setting${s.credentials.missing.length > 1 ? "s" : ""} needed</summary>${s.credentials.missing.map(v => `<code>${esc(v)}</code>`).join("")}</details>` : ""}</div>`; };
     const idRow = (label, val, empty = "NOT SET") => `<div class="idr"><span>${label}</span><b class="${val ? "" : "nil"}">${val ? esc(val) : empty}</b></div>`;
     // result of "Check store IDs" (revenue/store_check.py)
@@ -443,6 +457,11 @@
       e.preventDefault(); e.stopPropagation();   // the button sits in the card header: don't also fold/unfold the card
       const f = document.querySelector(`.idform[data-app="${b.dataset.edit}"]`); f.hidden = !f.hidden; b.textContent = f.hidden ? "Edit IDs" : "Close";
       const card = b.closest("details"); if (!f.hidden && card) card.open = true;
+    });
+    document.querySelectorAll("[data-retry-play]").forEach(b => b.onclick = async () => {
+      b.disabled = true;
+      try { const r = await api("/api/revenue/retry-play-reports", {method: "POST"}); toast(`Report retry queued for the hourly job (${hhmm(r.next_run)}). Products aren't re-synced.`); load(false, true); }
+      catch (err) { if (err.message !== "signin") toast(err.message); b.disabled = false; }
     });
     const cb = $("checkIds"); if (cb) cb.onclick = async () => {
       cb.disabled = true; cb.textContent = "Checking…";

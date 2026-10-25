@@ -136,9 +136,9 @@ def q(con, sql, p=None):
     return con.execute(sql, p or []).fetchall()
 
 
-def run(con, fake, e=None, today=TODAY, force=True):
+def run(con, fake, e=None, today=TODAY, force=True, **kw):
     e = e or env()
-    return gp.run(con, environ=e, client=gp.Client(gp.load_service_account(e), session=fake, sleep=lambda s: None), today=today, force=force)
+    return gp.run(con, environ=e, client=gp.Client(gp.load_service_account(e), session=fake, sleep=lambda s: None), today=today, force=force, **kw)
 
 
 class CredTests(unittest.TestCase):
@@ -209,7 +209,7 @@ class ProductTests(unittest.TestCase):
     def test_permission_problems(self):
         con = setup_con()
         res = run(con, FakeGoogle(deny=["/applications/"]))
-        job = q(con, f"SELECT status, message FROM {S}.synchronization_jobs")[0]
+        job = q(con, f"SELECT status, message FROM {S}.synchronization_jobs WHERE job_type = 'products'")[0]
         self.assertEqual(job[0], "partial")
         self.assertIn("Android Developer API", job[1])
         con2 = setup_con()
@@ -225,8 +225,8 @@ class ProductTests(unittest.TestCase):
         registry.update_listing(con, "ccrn_adult", "google_play", {"package_name": "com.alexkorir.ccrn"})
         res = run(con, FakeGoogle())
         self.assertEqual(res["products"]["apps"], 2)
-        self.assertEqual(q(con, f"SELECT status FROM {S}.synchronization_jobs")[0][0], "succeeded")   # empty lists are fine
-        msg = q(con, f"SELECT message FROM {S}.synchronization_jobs")[0][0]
+        self.assertEqual(q(con, f"SELECT status FROM {S}.synchronization_jobs WHERE job_type = 'products'")[0][0], "succeeded")   # empty lists are fine
+        msg = q(con, f"SELECT message FROM {S}.synchronization_jobs WHERE job_type = 'products'")[0][0]
         self.assertNotIn("204", msg)
 
     def test_daily_guard_and_skip(self):
@@ -235,9 +235,11 @@ class ProductTests(unittest.TestCase):
         run(con, FakeGoogle())                               # clean run (bucket set, no files) -> done for the day
         self.assertIn("skipped", run(con, FakeGoogle(), force=False))
         con2 = setup_con()
-        run(con2, FakeGoogle(), e=env(GOOGLE_PLAY_REPORTS_BUCKET=""))      # warning -> retried next hour
+        run(con2, FakeGoogle(deny=["/applications/"]))       # product warning -> products retried after 50 minutes
         con2.execute(f"UPDATE {S}.synchronization_jobs SET finished_at = finished_at - INTERVAL 55 MINUTE")
-        self.assertNotIn("skipped", run(con2, FakeGoogle(), e=env(GOOGLE_PLAY_REPORTS_BUCKET=""), force=False))
+        res = run(con2, FakeGoogle(deny=["/applications/"]), force=False)
+        self.assertIn("status", res["products"])
+        self.assertIn("skipped", res["reports"])             # the clean report pass still counts for the day
 
 
 class ReportTests(unittest.TestCase):
@@ -261,7 +263,7 @@ class ReportTests(unittest.TestCase):
         self.assertEqual([(t, Decimal(str(p)), c, s, f) for t, p, c, s, f in fin],
                          [("Google fee", Decimal("-1.50"), "USD", "finalized", "2026-09"), ("Charge", Decimal("9.99"), "USD", "finalized", "2026-09")])
         self.assertEqual(q(con, f"SELECT count(*) FROM {S}.report_blobs")[0][0], 2)
-        self.assertEqual(q(con, f"SELECT status FROM {S}.synchronization_jobs")[0][0], "partial")   # one unmatched line
+        self.assertEqual(q(con, f"SELECT status, outcome FROM {S}.synchronization_jobs WHERE job_type = 'reports'")[0], ("partial", "ok_imported"))   # one unmatched line
 
     def test_new_generation_adds_only_new_orders(self):
         con = setup_con()
@@ -290,13 +292,162 @@ class ReportTests(unittest.TestCase):
         con = setup_con()
         res = run(con, FakeGoogle(deny=["/b/"]))
         self.assertEqual(res["products"]["products"], 3)
-        self.assertIn("View financial data", q(con, f"SELECT message FROM {S}.synchronization_jobs")[0][0])
+        self.assertEqual(q(con, f"SELECT outcome FROM {S}.synchronization_jobs WHERE job_type = 'reports'")[0][0], "access_denied")
         con2 = setup_con()
         run(con2, FakeGoogle(bucket_exists=False))
-        self.assertIn("not found", q(con2, f"SELECT message FROM {S}.synchronization_jobs")[0][0])
+        self.assertEqual(q(con2, f"SELECT outcome FROM {S}.synchronization_jobs WHERE job_type = 'reports'")[0][0], "not_found")
         con3 = setup_con()
         run(con3, FakeGoogle(), e=env(GOOGLE_PLAY_REPORTS_BUCKET=""))
-        self.assertIn("not set", q(con3, f"SELECT message FROM {S}.synchronization_jobs")[0][0])
+        self.assertEqual(q(con3, f"SELECT outcome, message FROM {S}.synchronization_jobs WHERE job_type = 'reports'")[0][0], "not_configured")
+
+
+def denied_403():
+    """What Cloud Storage answers when the identity lacks storage.objects.list on the bucket."""
+    return FakeGoogle(deny=["/b/"])
+
+
+class ReportStatusTests(unittest.TestCase):
+    """Report sync is tracked apart from product sync (revenue/google_play.py)."""
+
+    def jobs(self, con, kind):
+        return q(con, f"SELECT status, outcome, message FROM {S}.synchronization_jobs WHERE job_type = ? ORDER BY started_at", [kind])
+
+    def test_products_succeed_while_reports_get_403(self):
+        con = setup_con()
+        res = run(con, denied_403())
+        self.assertEqual(res["products"]["status"], "succeeded")
+        self.assertEqual(res["products"]["products"], 3)
+        self.assertEqual(res["reports"]["outcome"], "access_denied")
+        self.assertEqual(self.jobs(con, "products")[0][0], "succeeded")
+        status, outcome, msg = self.jobs(con, "reports")[0]
+        self.assertEqual((status, outcome), ("failed", "access_denied"))
+        self.assertIn(SA["client_email"], msg)
+        self.assertIn(BUCKET, msg)
+        self.assertNotIn("awaiting", msg.lower())
+        src = next(x for x in registry.registry(con, environ={})["sources"] if x["platform"] == "google_play")
+        self.assertEqual(src["reports"]["state"], "access_denied")
+        self.assertIsNone(src["last_success"])                  # products worked, but no report pass ever did
+        self.assertIsNotNone(src["products_last_success"])
+
+    def test_failed_attempts_keep_last_success(self):
+        con = setup_con()
+        run(con, FakeGoogle())                                   # bucket readable, empty
+        ok = gp.report_state(con)["last_success"]
+        self.assertIsNotNone(ok)
+        run(con, denied_403())
+        st = gp.report_state(con)
+        self.assertEqual(st["state"], "access_denied")
+        self.assertEqual(str(st["last_success"]), str(ok))
+        self.assertEqual(st["failures_in_a_row"], 1)
+
+    def test_403_is_not_retried_every_hour(self):
+        con = setup_con()
+        run(con, denied_403())
+        con.execute(f"UPDATE {S}.synchronization_jobs SET finished_at = finished_at - INTERVAL 2 HOUR, started_at = started_at - INTERVAL 2 HOUR")
+        fake = denied_403()
+        res = run(con, fake, force=False)
+        self.assertIn("skipped", res)                            # products done for the day, 403 waits for its daily retry
+        self.assertFalse(any("/b/" in u for u, _ in fake.calls))
+        con.execute(f"UPDATE {S}.synchronization_jobs SET finished_at = finished_at - INTERVAL 23 HOUR, started_at = started_at - INTERVAL 23 HOUR")
+        res = run(con, denied_403(), force=False)
+        self.assertEqual(res["reports"]["outcome"], "access_denied")
+
+    def test_other_errors_back_off(self):
+        now = dt.datetime(2026, 10, 25, 12, 0)
+        self.assertEqual(gp._next_report_try("error", now, 1), now + dt.timedelta(minutes=45))
+        self.assertEqual(gp._next_report_try("error", now, 3), now + dt.timedelta(hours=4) - dt.timedelta(minutes=15))
+        self.assertEqual(gp._next_report_try("error", now, 99), now + dt.timedelta(hours=24) - dt.timedelta(minutes=15))
+        self.assertEqual(gp._next_report_try("access_denied", now, 5), now + dt.timedelta(hours=24) - dt.timedelta(minutes=15))
+
+    def test_explicit_retry_bypasses_only_the_report_guard(self):
+        con = setup_con()
+        run(con, denied_403())
+        products_before = len(self.jobs(con, "products"))
+        fake = FakeGoogle()                                      # access fixed
+        res = run(con, fake, force=False, retry_reports=True, reports_only=True)
+        self.assertEqual(res["reports"]["outcome"], "ok_empty")
+        self.assertEqual(len(self.jobs(con, "products")), products_before)    # products not re-synced
+        self.assertFalse(any("/applications/" in u for u, _ in fake.calls))
+        # the phone app's "Retry reports" request: the next hourly run retries reports, products keep their guard
+        con2 = setup_con()
+        run(con2, denied_403())
+        gp.request_report_retry(con2)
+        self.assertIsNotNone(gp.report_state(con2)["retry_requested_at"])
+        fake2 = FakeGoogle()
+        res2 = run(con2, fake2, force=False)
+        self.assertEqual(res2["reports"]["outcome"], "ok_empty")
+        self.assertIn("skipped", res2["products"])
+        self.assertFalse(any("/applications/" in u for u, _ in fake2.calls))
+        self.assertIsNone(gp.report_state(con2)["retry_requested_at"])
+
+    def test_empty_bucket_is_not_access_denied(self):
+        con = setup_con()
+        run(con, FakeGoogle())
+        self.assertEqual(gp.report_state(con)["state"], "ok_empty")
+        con2 = setup_con()
+        run(con2, denied_403())
+        self.assertEqual(gp.report_state(con2)["state"], "access_denied")
+        con3 = setup_con()
+        self.assertEqual(gp.report_state(con3)["state"], "never_checked")
+
+    def test_repeated_imports_do_not_duplicate(self):
+        con = setup_con()
+        files = ReportTests().files()
+        run(con, FakeGoogle(files=files))
+        counts = [q(con, f"SELECT count(*) FROM {S}.{t}")[0][0] for t in ("sales_reports", "financial_reports", "report_files")]
+        res = run(con, FakeGoogle(files=files), force=False, retry_reports=True, reports_only=True)
+        self.assertEqual(res["reports"]["inserted"], 0)
+        self.assertEqual(res["reports"]["outcome"], "ok_imported")
+        self.assertEqual([q(con, f"SELECT count(*) FROM {S}.{t}")[0][0] for t in ("sales_reports", "financial_reports", "report_files")], counts)
+
+
+class DiagnoseTests(unittest.TestCase):
+    def check_clean(self, d):
+        text = json.dumps(d)
+        for secret in ("PRIVATE KEY", "ya29.", SA["private_key"][40:80], "assertion"):
+            self.assertNotIn(secret, text)
+        self.assertEqual(set(d), {"service_account", "bucket", "result", "detail"})
+
+    def test_denied(self):
+        fake = denied_403()
+        d = gp.diagnose_reports(env(), session=fake)
+        self.check_clean(d)
+        self.assertEqual((d["service_account"], d["bucket"], d["result"]), (SA["client_email"], BUCKET, "HTTP 403"))
+        self.assertEqual(len(fake.calls), 1)
+        self.assertEqual(fake.calls[0][1].get("maxResults"), 1)   # at most one object requested
+        self.assertNotIn("alt", fake.calls[0][1])                  # nothing downloaded
+
+    def test_success_empty_and_not_configured(self):
+        d = gp.diagnose_reports(env(), session=FakeGoogle())
+        self.check_clean(d)
+        self.assertEqual(d["result"], "success, empty")
+        d = gp.diagnose_reports(env(), session=FakeGoogle(files=ReportTests().files()))
+        self.assertEqual(d["result"], "success")
+        self.assertNotIn("salesreport", json.dumps(d))             # object names are not printed
+        d = gp.diagnose_reports(env(GOOGLE_PLAY_REPORTS_BUCKET=""), session=FakeGoogle())
+        self.assertEqual(d["result"], "not configured")
+        d = gp.diagnose_reports(env(), session=FakeGoogle(token_status=400))
+        self.check_clean(d)
+        self.assertEqual(d["result"], "HTTP 400")
+        self.assertIn("token request", d["detail"])
+        self.assertEqual(gp.diagnose_reports(env(), session=FakeGoogle(bucket_exists=False))["result"], "HTTP 404")
+
+    def test_command_prints_only_the_four_fields(self):
+        import contextlib
+        real = gp.diagnose_reports
+        gp.diagnose_reports = lambda: real(env(), session=denied_403())
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                code = gp._main(["diagnose-reports"])
+        finally:
+            gp.diagnose_reports = real
+        out = buf.getvalue()
+        self.assertEqual(code, 1)
+        self.assertEqual([l.split()[0] for l in out.strip().splitlines()], ["service_account", "bucket", "result", "detail"])
+        self.assertIn(SA["client_email"], out)
+        self.assertNotIn("PRIVATE KEY", out)
+        self.assertNotIn("ya29.", out)
 
 
 if __name__ == "__main__":

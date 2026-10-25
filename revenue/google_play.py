@@ -4,7 +4,8 @@ Stage D: Google Play connector (read-only).
 Credentials (adbot-hourly on Render):
   * the service account key as a Secret File  (any single *.json in /etc/secrets,
     or GOOGLE_PLAY_SERVICE_ACCOUNT_FILE, or the JSON text in GOOGLE_PLAY_SERVICE_ACCOUNT_JSON)
-  * GOOGLE_PLAY_REPORTS_BUCKET  e.g. pubsite_prod_7714024473854983317 (optional until reports exist)
+  * GOOGLE_PLAY_REPORTS_BUCKET  the bucket from Play Console > Download reports > "Copy Cloud Storage URI"
+    (optional until reports exist; never derived from the developer account ID)
 
 What it pulls, once a day:
   1. Products + prices  (Android Publisher API v3, monetization)
@@ -77,6 +78,10 @@ class PlayAuthError(PlayError):
 
 
 class PlayFormatError(PlayError):
+    pass
+
+
+class BucketNotFound(PlayError):
     pass
 
 
@@ -468,16 +473,18 @@ def _record(con, report_id, rtype, month, tz, status, data, rows, now):
 
 
 def sync_reports(con, client: Client, bucket: str) -> dict:
-    stats = {"files": 0, "lines": 0, "inserted": 0, "unparsed": 0, "unmatched": 0}
+    stats = {"listed": 0, "files": 0, "lines": 0, "inserted": 0, "unparsed": 0, "unmatched": 0}
     matcher, now = PackageMatcher(con), registry.now()
     if client.get(f"{GCS}/b/{bucket}/o", {"maxResults": 1}) is None:
-        raise PlayError(f"reports bucket {bucket} not found; copy it again from a Play Console report link")
+        raise BucketNotFound(f"reports bucket {bucket} not found (HTTP 404); copy it again with Play Console > "
+                             "Download reports > Copy Cloud Storage URI")
     for prefix, rtype in (("sales/salesreport_", "ESTIMATED_SALES"), ("earnings/earnings_", "EARNINGS")):
         for obj in client.pages(f"{GCS}/b/{bucket}/o", "items", {"prefix": prefix}):
             name = obj.get("name", "")
             m = re.search(r"_(\d{4})(\d{2})\.zip$", name)
             if not m:
                 continue
+            stats["listed"] += 1
             month = f"{m.group(1)}-{m.group(2)}"
             rid = f"google:{name}:{obj.get('generation', '')}"
             if con.execute(f"SELECT 1 FROM {SCHEMA}.report_files WHERE report_id = ?", [rid]).fetchall():
@@ -503,16 +510,171 @@ def sync_reports(con, client: Client, bucket: str) -> dict:
     return stats
 
 
+
+
 # --------------------------------------------------------------------------- #
-# Entry point used by the hourly job
+# Product sync and report sync are tracked as separate jobs
 # --------------------------------------------------------------------------- #
+# synchronization_jobs rows for source 'google_play':
+#   job_type 'products'  - subscriptions / one-time products / prices   (older rows: 'daily', both steps together)
+#   job_type 'reports'   - the Play Console reports bucket, with outcome:
+REPORT_OUTCOMES = ("not_configured", "ok_empty", "ok_imported", "access_denied", "not_found", "error")
+REPORT_STATE_TEXT = {
+    "not_configured": "Not configured: GOOGLE_PLAY_REPORTS_BUCKET isn't set on adbot-hourly",
+    "never_checked": "Never checked",
+    "ok_empty": "Bucket readable, no report files in it yet",
+    "ok_imported": "Reports imported",
+    "access_denied": "Access denied by Google (HTTP 403)",
+    "not_found": "Bucket not found (HTTP 404)",
+    "error": "Failed",
+}
+OK_OUTCOMES = ("ok_empty", "ok_imported")
+DAILY_HOURS = 20                      # a clean pass counts for the day
+DENIED_RETRY_HOURS = 24               # 403 / 404 don't fix themselves within the hour: retry daily, or on request
+ERROR_BACKOFF_HOURS = (1, 2, 4, 8, 24)  # other failures: hourly at first, then backing off, capped at a day
+
+
 def _set_account(con, status: str, error: Optional[str] = None) -> None:
     con.execute(f"UPDATE {SCHEMA}.store_accounts SET status = ?, last_verified_at = CASE WHEN ? = 'verified' THEN ? ELSE last_verified_at END, "
                 "last_error = ?, updated_at = ? WHERE account_id = 'google_play_reporting'",
                 [status, status, registry.now(), error, registry.now()])
 
 
-def run(con, environ=None, client: Optional[Client] = None, today: Optional[dt.date] = None, force: bool = False) -> dict:
+def _products_due(con, now: dt.datetime) -> bool:
+    """Product sync: once a day after a clean pass; again within the hour after warnings."""
+    return not con.execute(
+        f"SELECT 1 FROM {SCHEMA}.synchronization_jobs WHERE source = 'google_play' AND job_type IN ('products', 'daily') AND "
+        "((status = 'succeeded' AND finished_at > ?) OR (status = 'partial' AND finished_at > ?))",
+        [now - dt.timedelta(hours=DAILY_HOURS), now - dt.timedelta(minutes=50)]).fetchall()
+
+
+def report_state(con) -> dict:
+    """What the phone app shows for Google Play reports. Read-only."""
+    rows = con.execute(
+        f"SELECT outcome, status, finished_at, message, rows_seen, rows_inserted FROM {SCHEMA}.synchronization_jobs "
+        "WHERE source = 'google_play' AND job_type = 'reports' AND finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT 50").fetchall()
+    ok = con.execute(f"SELECT max(finished_at) FROM {SCHEMA}.synchronization_jobs WHERE source = 'google_play' "
+                     f"AND job_type = 'reports' AND outcome IN ('ok_empty', 'ok_imported')").fetchone()[0]
+    acc = con.execute(f"SELECT retry_requested_at FROM {SCHEMA}.store_accounts WHERE account_id = 'google_play_reporting'").fetchone()
+    retry = acc[0] if acc else None
+    if not rows:
+        return {"state": "never_checked", "text": REPORT_STATE_TEXT["never_checked"], "last_attempt": None,
+                "last_success": ok, "message": None, "failures_in_a_row": 0, "next_try": None, "retry_requested_at": retry}
+    outcome, _status, finished, message, seen, inserted = rows[0]
+    fails = 0
+    for r in rows:
+        if r[0] in OK_OUTCOMES or r[0] == "not_configured":
+            break
+        fails += 1
+    return {"state": outcome or "error", "text": REPORT_STATE_TEXT.get(outcome or "error"), "last_attempt": finished,
+            "last_success": ok, "message": message, "files": seen, "inserted": inserted, "failures_in_a_row": fails,
+            "next_try": _next_report_try(outcome, finished, fails), "retry_requested_at": retry}
+
+
+def _ts(v) -> Optional[dt.datetime]:
+    if v is None or isinstance(v, dt.datetime):
+        return v
+    return dt.datetime.fromisoformat(str(v).replace(" ", "T").rstrip("Z"))
+
+
+def _next_report_try(outcome: Optional[str], finished, fails: int) -> Optional[dt.datetime]:
+    finished = _ts(finished)
+    if finished is None:
+        return None
+    if outcome in OK_OUTCOMES or outcome == "not_configured":
+        hours = DAILY_HOURS
+    elif outcome in ("access_denied", "not_found"):
+        hours = DENIED_RETRY_HOURS
+    else:
+        hours = ERROR_BACKOFF_HOURS[min(max(fails, 1), len(ERROR_BACKOFF_HOURS)) - 1]
+    # the hourly job starts a few minutes after the hour: allow 15 minutes of slack
+    return finished + dt.timedelta(hours=hours) - dt.timedelta(minutes=15)
+
+
+def _reports_due(con, now: dt.datetime) -> bool:
+    st = report_state(con)
+    return st["state"] == "never_checked" or st["next_try"] is None or now >= st["next_try"]
+
+
+def _retry_requested(con) -> bool:
+    r = con.execute(f"SELECT retry_requested_at FROM {SCHEMA}.store_accounts WHERE account_id = 'google_play_reporting'").fetchone()
+    return bool(r and r[0])
+
+
+def request_report_retry(con, actor: str = "admin") -> None:
+    """'Retry reports' in the phone app: the next hourly run retries the reports step only."""
+    con.execute(f"UPDATE {SCHEMA}.store_accounts SET retry_requested_at = ?, updated_at = ? WHERE account_id = 'google_play_reporting'",
+                [registry.now(), registry.now()])
+    registry.audit(con, actor, "google_play.retry_reports_requested", PLATFORM, None, dry_run=False)
+
+
+def _sync_products_job(con, client: Client, today: dt.date) -> dict:
+    job = registry.start_job(con, PLATFORM, "products")
+    try:
+        res = sync_products(con, client, today)
+    except PlayAuthError:
+        registry.finish_job(con, job, "failed", message="Google refused the service account key")
+        raise
+    except Exception as e:  # noqa: BLE001
+        msg = registry.scrub_text(f"{type(e).__name__}: {e}")
+        registry.finish_job(con, job, "failed", message=msg)
+        log.exception("Google Play product sync failed")
+        return {"failed": msg}
+    errors = res.pop("errors")
+    status = "partial" if errors else "succeeded"
+    registry.finish_job(con, job, status, res["products"], 0,
+                        message=("; ".join(errors) + " | " if errors else "") + json.dumps(res))
+    res["status"] = status
+    if errors:
+        res["errors"] = errors
+    return res
+
+
+def _sync_reports_job(con, client: Client, bucket: Optional[str], sa_email: str) -> dict:
+    """One pass over the reports bucket. Never marks a failed fetch as a success."""
+    job = registry.start_job(con, PLATFORM, "reports")
+
+    def done(status, outcome, message, _seen=0, _inserted=0, **extra):
+        registry.finish_job(con, job, status, _seen, _inserted, message=message, outcome=outcome)
+        return {"outcome": outcome, "status": status, "message": message, **extra}
+
+    if not bucket:
+        return done("skipped", "not_configured", "GOOGLE_PLAY_REPORTS_BUCKET not set; only products and prices were read")
+    try:
+        stats = sync_reports(con, client, bucket)
+    except PlayAuthError as e:
+        if e.where == "token":
+            raise
+        return done("failed", "access_denied",
+                    f"Google denied {sa_email} access to bucket {bucket}: {e}. Products still sync; reports are retried "
+                    f"in {DENIED_RETRY_HOURS} h or when you press Retry reports")
+    except BucketNotFound as e:
+        return done("failed", "not_found", str(e))
+    except Exception as e:  # noqa: BLE001 - recorded; the ad bot keeps running
+        log.exception("Google Play report sync failed")
+        return done("failed", "error", registry.scrub_text(f"{type(e).__name__}: {e}"))
+    problems = []
+    if stats["unparsed"]:
+        problems.append(f"{stats['unparsed']} report file(s) kept but not parsed (unrecognised layout)")
+    if stats["unmatched"]:
+        problems.append(f"{stats['unmatched']} line(s) not matched to an app: check the Play package names")
+    outcome = "ok_imported" if stats["listed"] else "ok_empty"
+    return done("partial" if problems else "succeeded", outcome,
+                ("; ".join(problems) + " | " if problems else "") + json.dumps(stats),
+                stats["lines"], stats["inserted"], **stats)
+
+
+# --------------------------------------------------------------------------- #
+# Entry point used by the hourly job (and by the explicit report retry)
+# --------------------------------------------------------------------------- #
+def run(con, environ=None, client: Optional[Client] = None, today: Optional[dt.date] = None, force: bool = False,
+        retry_reports: bool = False, reports_only: bool = False) -> dict:
+    """Products and reports, each with its own daily guard.
+
+    force          tests / first set-up: run both steps now
+    retry_reports  run the reports step now, whatever its guard says (products keep their own guard)
+    reports_only   skip the products step entirely (used by the explicit retry)
+    A 'Retry reports' request from the phone app acts like retry_reports on the next hourly run."""
     env = os.environ if environ is None else environ
     try:
         sa = load_service_account(env)
@@ -522,54 +684,100 @@ def run(con, environ=None, client: Optional[Client] = None, today: Optional[dt.d
         return {"skipped": str(e)}
     if sa is None:
         return {"skipped": "Google Play service account key not present"}
-    # a clean run counts for the day; a run with warnings is retried on the next hourly run
     now = registry.now()
-    if not force and con.execute(
-            f"SELECT 1 FROM {SCHEMA}.synchronization_jobs WHERE source = 'google_play' AND "
-            "((status = 'succeeded' AND finished_at > ?) OR (status = 'partial' AND finished_at > ?))",
-            [now - dt.timedelta(hours=20), now - dt.timedelta(minutes=50)]).fetchall():
-        return {"skipped": "already synced today"}
+    requested = _retry_requested(con)
+    do_products = not reports_only and (force or _products_due(con, now))
+    do_reports = force or retry_reports or requested or _reports_due(con, now)
+    if not do_products and not do_reports:
+        return {"skipped": "already synced today (products and reports)"}
     client = client or Client(sa)
     today = today or dt.datetime.now(dt.timezone.utc).date()
-    job = registry.start_job(con, PLATFORM, "daily")
-    result, problems = {}, []
+    result: dict = {}
     try:
-        result["products"] = sync_products(con, client, today)
-        problems += result["products"].pop("errors")
-        if bucket:
-            try:
-                result["reports"] = sync_reports(con, client, bucket)
-                if result["reports"]["unparsed"]:
-                    problems.append(f"{result['reports']['unparsed']} report file(s) kept but not parsed (unrecognised layout)")
-                if result["reports"]["unmatched"]:
-                    problems.append(f"{result['reports']['unmatched']} line(s) not matched to an app: check the Play package names")
-            except PlayAuthError as e:
-                if e.where == "token":
-                    raise
-                problems.append(f"reports bucket not readable yet ({e}). The Play Console invite needs 'View financial data'; "
-                                "new invites can take up to a day")
-                result["reports"] = {"forbidden": True}
-            except PlayError as e:
-                problems.append(str(e))
-                result["reports"] = {"forbidden": True}
+        if do_products:
+            result["products"] = _sync_products_job(con, client, today)
         else:
-            problems.append("GOOGLE_PLAY_REPORTS_BUCKET not set; only products and prices were read")
-    except PlayAuthError as e:
+            result["products"] = {"skipped": "products already synced today"}
+        if do_reports:
+            result["reports"] = _sync_reports_job(con, client, bucket, sa.get("client_email", ""))
+            if requested or retry_reports:
+                con.execute(f"UPDATE {SCHEMA}.store_accounts SET retry_requested_at = NULL WHERE account_id = 'google_play_reporting'")
+        else:
+            result["reports"] = {"skipped": "reports not due", **{k: report_state(con)[k] for k in ("state", "next_try")}}
+    except PlayAuthError as e:   # only the sign-in itself gets here: the key is wrong
         _set_account(con, "error", str(e))
-        registry.finish_job(con, job, "failed", message=str(e))
         registry.audit(con, "scheduler", "google_play.sync", PLATFORM, {"status": "failed", "error": str(e)}, dry_run=False)
         return {"failed": str(e)}
-    except Exception as e:  # noqa: BLE001
-        msg = registry.scrub_text(f"{type(e).__name__}: {e}")
-        registry.finish_job(con, job, "failed", message=msg)
-        log.exception("Google Play sync failed")
-        return {"failed": msg}
-    worked = (not result["products"].get("forbidden") and result["products"]["apps"] > 0) or \
-             (isinstance(result.get("reports"), dict) and not result["reports"].get("forbidden") and "files" in result["reports"])
-    _set_account(con, "verified" if worked else "error", None if worked else "; ".join(problems)[:500])
-    seen = sum(v.get("lines", 0) for v in result.values() if isinstance(v, dict))
-    ins = sum(v.get("inserted", 0) for v in result.values() if isinstance(v, dict))
-    registry.finish_job(con, job, "partial" if problems else "succeeded", seen, ins,
-                        message=("; ".join(problems) + " | " if problems else "") + json.dumps(result))
+    # The account row says whether the key works (Google issued a token and answered).
+    # Report health is separate (report_state), so working products never hide a report failure.
+    _set_account(con, "verified")
     registry.audit(con, "scheduler", "google_play.sync", PLATFORM, {"calls": client.calls, **result}, dry_run=False)
     return result
+
+
+# --------------------------------------------------------------------------- #
+# Command line:  python -m revenue.google_play diagnose-reports | retry-reports
+# --------------------------------------------------------------------------- #
+def diagnose_reports(environ=None, session=None) -> dict:
+    """Read-only check of the reports bucket, independent of the database and the daily guards.
+
+    Uses the production key loader, lists at most ONE object and never downloads a report.
+    Returns only: service account email, bucket, result, sanitized detail."""
+    env = os.environ if environ is None else environ
+    out = {"service_account": None, "bucket": None, "result": None, "detail": None}
+    try:
+        sa = load_service_account(env)
+    except PlayError as e:
+        return {**out, "result": "key error", "detail": registry.scrub_text(str(e))}
+    if sa is None:
+        return {**out, "result": "not configured", "detail": "no service account key found (Secret File *.json, "
+                                                             "GOOGLE_PLAY_SERVICE_ACCOUNT_FILE or GOOGLE_PLAY_SERVICE_ACCOUNT_JSON)"}
+    out["service_account"] = sa.get("client_email")
+    try:
+        out["bucket"] = bucket_name(env)
+    except PlayError as e:
+        return {**out, "result": "not configured", "detail": str(e)}
+    if not out["bucket"]:
+        return {**out, "result": "not configured", "detail": "GOOGLE_PLAY_REPORTS_BUCKET is not set"}
+    client = Client(sa, session=session, max_retries=2)
+    try:
+        body = client.get(f"{GCS}/b/{out['bucket']}/o", {"maxResults": 1, "fields": "items(name)"})
+    except PlayAuthError as e:
+        where = "token request (the key itself was refused)" if e.where == "token" else "bucket listing"
+        return {**out, "result": f"HTTP {e.status}", "detail": registry.scrub_text(f"{where}: {e}")}
+    except PlayError as e:
+        return {**out, "result": "error", "detail": registry.scrub_text(str(e))}
+    if body is None:
+        return {**out, "result": "HTTP 404", "detail": "bucket not found"}
+    n = len(body.get("items") or [])
+    return {**out, "result": "success" if n else "success, empty",
+            "detail": "the bucket listed at least one object (none downloaded)" if n else "the bucket is readable and holds no objects"}
+
+
+def _main(argv=None) -> int:
+    import argparse
+    ap = argparse.ArgumentParser(prog="python -m revenue.google_play", description="Google Play reporting tools (read-only).")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("diagnose-reports", help="test access to the reports bucket now: lists at most one object, writes nothing")
+    sub.add_parser("retry-reports", help="run the reports step now, bypassing only its daily guard (products are not re-synced)")
+    args = ap.parse_args(argv)
+    if args.cmd == "diagnose-reports":
+        d = diagnose_reports()
+        for k in ("service_account", "bucket", "result", "detail"):
+            print(f"{k:16} {d[k] if d[k] is not None else '-'}")
+        return 0 if str(d["result"]).startswith("success") else 1
+    logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
+    import revenue
+    from dlt_pipeline import connect  # the same database connection the hourly job uses
+    con = connect()
+    revenue.ensure(con)
+    res = run(con, retry_reports=True, reports_only=True)
+    rep = res.get("reports") or {}
+    print(json.dumps({"reports": {k: rep.get(k) for k in ("outcome", "status", "message", "listed", "files", "inserted")}}
+                     if rep else res, default=str))
+    return 0 if rep.get("outcome") in OK_OUTCOMES else 1
+
+
+if __name__ == "__main__":
+    import sys
+    sys.exit(_main())

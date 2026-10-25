@@ -503,6 +503,16 @@ async def revenue_listing(request: Request):
 
 
 @guarded
+async def revenue_retry_play_reports(request: Request):
+    """'Retry reports' on the Google Play card: the next hourly run retries the reports step only
+    (products keep their own daily guard). The service account key lives on adbot-hourly."""
+    from revenue import google_play
+    with _db_lock:
+        google_play.request_report_retry(con(), actor="admin")
+    return J({"ok": True, "next_run": store_check.next_hourly_run().isoformat()})
+
+
+@guarded
 async def revenue_check_ids(request: Request):
     """'Check store IDs': confirm each app's Apple ID / bundle ID / Play package with the stores. Read-only.
 
@@ -576,6 +586,7 @@ routes = [
     Route("/api/revenue", revenue_get),
     Route("/api/revenue/listing", revenue_listing, methods=["POST"]),
     Route("/api/revenue/check-ids", revenue_check_ids, methods=["POST"]),
+    Route("/api/revenue/retry-play-reports", revenue_retry_play_reports, methods=["POST"]),
     Mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static"),
     Mount("/web", StaticFiles(directory=str(WEB)), name="web"),
 ]

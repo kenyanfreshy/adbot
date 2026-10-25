@@ -129,6 +129,16 @@ class RevenueWebTests(unittest.TestCase):
         self.assertIsNotNone(ccrn["listings"]["apple_app_store"]["check_requested_at"])
         self.assertIsNotNone(ccrn["listings"]["google_play"]["check_requested_at"])
 
+    def test_retry_play_reports(self):
+        self.assertEqual(call("POST", "/api/revenue/retry-play-reports")[0], 401)
+        status, d, _ = call("POST", "/api/revenue/retry-play-reports", cookie=self.cookie)
+        self.assertEqual(status, 200, d)
+        _, d, _ = call("GET", "/api/revenue", cookie=self.cookie)
+        play = next(x for x in d["sources"] if x["platform"] == "google_play")
+        self.assertIsNotNone(play["reports"]["retry_requested_at"])
+        self.assertEqual(play["reports"]["state"], "never_checked")
+        self.assertIsNone(play["last_success"])
+
     def test_existing_screens_still_work(self):
         for path in ("/api/me", "/api/rules", "/api/log"):
             with self.subTest(path=path):

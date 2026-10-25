@@ -131,12 +131,17 @@ def start_job(con, source: str, job_type: str, period_start=None, period_end=Non
     return job_id
 
 
-def finish_job(con, job_id: str, status: str, rows_seen: int = 0, rows_inserted: int = 0, message: Optional[str] = None) -> None:
+def finish_job(con, job_id: str, status: str, rows_seen: int = 0, rows_inserted: int = 0, message: Optional[str] = None,
+               outcome: Optional[str] = None) -> None:
     if status not in ("succeeded", "partial", "failed", "skipped"):
         raise ValueError(f"bad job status {status!r}")
     msg = None if message is None else str(redact(message))[:500]
-    con.execute(f"UPDATE {SCHEMA}.synchronization_jobs SET status = ?, finished_at = ?, rows_seen = ?, rows_inserted = ?, message = ? "
-                "WHERE job_id = ?", [status, now(), rows_seen, rows_inserted, msg, job_id])
+    if outcome is None:
+        con.execute(f"UPDATE {SCHEMA}.synchronization_jobs SET status = ?, finished_at = ?, rows_seen = ?, rows_inserted = ?, message = ? "
+                    "WHERE job_id = ?", [status, now(), rows_seen, rows_inserted, msg, job_id])
+    else:
+        con.execute(f"UPDATE {SCHEMA}.synchronization_jobs SET status = ?, finished_at = ?, rows_seen = ?, rows_inserted = ?, message = ?, "
+                    "outcome = ? WHERE job_id = ?", [status, now(), rows_seen, rows_inserted, msg, outcome, job_id])
 
 
 # --------------------------------------------------------------------------- #
@@ -233,6 +238,17 @@ def registry(con, environ=None) -> dict:
             "last_status": last["status"] if last else None, "last_message": last["message"] if last else None,
             "last_error": acc.get("last_error"),
         })
+        if acc["platform"] == "google_play":
+            # Products and reports are separate jobs: "last sync" is the last good REPORT pass,
+            # so a working product sync never makes a refused bucket look healthy.
+            from .google_play import report_state
+            rep = report_state(con)
+            prod = con.execute(f"SELECT max(finished_at) FROM {SCHEMA}.synchronization_jobs WHERE source = 'google_play' "
+                               "AND job_type IN ('products', 'daily') AND status IN ('succeeded', 'partial')").fetchone()[0]
+            lp = con.execute(f"SELECT status, message FROM {SCHEMA}.synchronization_jobs WHERE source = 'google_play' "
+                             "AND job_type IN ('products', 'daily') ORDER BY started_at DESC LIMIT 1").fetchone()
+            sources[-1].update({"reports": rep, "products_last_success": prod, "last_success": rep["last_success"],
+                                "last_status": lp[0] if lp else None, "last_message": lp[1] if lp else None})
     return {"apps": out_apps, "sources": sources}
 
 

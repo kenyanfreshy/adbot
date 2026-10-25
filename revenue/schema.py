@@ -355,6 +355,14 @@ MIGRATIONS.append((5, "Store ID check: result of the last check and pending requ
     f"ALTER TABLE {SCHEMA}.store_listings ADD COLUMN IF NOT EXISTS check_requested_at TIMESTAMP",
 ]))
 
+MIGRATIONS.append((6, "Google Play: report sync tracked apart from product sync", [
+    # outcome of a job in plain terms. Google Play report jobs use:
+    # not_configured | ok_empty | ok_imported | access_denied | not_found | error
+    f"ALTER TABLE {SCHEMA}.synchronization_jobs ADD COLUMN IF NOT EXISTS outcome VARCHAR",
+    # set by "Retry reports" in the phone app; the next hourly run retries reports only, then clears it
+    f"ALTER TABLE {SCHEMA}.store_accounts ADD COLUMN IF NOT EXISTS retry_requested_at TIMESTAMP",
+]))
+
 LATEST = max(v for v, _, _ in MIGRATIONS)
 
 
