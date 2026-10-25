@@ -387,8 +387,10 @@
             ${prods.some(p => p.platform === "google_play") ? "" : `<div class="rung nil"><div class="rung-l"><b>Android</b><small>read from Google Play</small></div><div class="rung-bar"><i style="width:0"></i></div><div class="rung-v">UNAVAILABLE</div></div>`}
           </div></details></article>`; }).join("")}</div>
 
-      <div class="hx-h"><span>AD PLATFORMS</span><small>spend + return on ad spend</small></div>
-      <div class="src-grid two">${ads.map(srcCard).join("")}</div>
+      <details class="fold hx-fold" id="adsFold" ${store.get("adbot-adplat-open", false) ? "open" : ""}>
+        <summary class="hx-h"><span>AD PLATFORMS</span><small>${ads.filter(x => srcState(x) === "on").length}/${ads.length} linked${ads.some(x => srcState(x) === "err") ? " · " + ads.filter(x => srcState(x) === "err").length + " error" : ""}</small><i class="chev" aria-hidden="true"></i></summary>
+        <div class="src-grid two">${ads.map(srcCard).join("")}</div>
+      </details>
       <p class="hx-foot">READ-ONLY · NOTHING HERE CHANGES STORE PRODUCTS, PRICES OR PURCHASES</p>
     </div>`;
     document.querySelectorAll("[data-edit]").forEach(b => b.onclick = e => {
@@ -396,6 +398,7 @@
       const f = document.querySelector(`.idform[data-app="${b.dataset.edit}"]`); f.hidden = !f.hidden; b.textContent = f.hidden ? "Edit IDs" : "Close";
       const card = b.closest("details"); if (!f.hidden && card) card.open = true;
     });
+    const af = $("adsFold"); if (af) af.addEventListener("toggle", () => store.set("adbot-adplat-open", af.open));
     document.querySelectorAll("details.appfold").forEach(dd => dd.addEventListener("toggle", () => {
       const m = store.get("adbot-apps-open", {}); m[dd.dataset.app] = dd.open; store.set("adbot-apps-open", m);
     }));
