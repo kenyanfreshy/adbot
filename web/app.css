@@ -423,3 +423,11 @@ select option{background:#0F172A}
 @media (min-width:1280px){ .kpis{grid-template-columns:repeat(6,1fr)} }
 @media (min-width:1500px){ .rev .appgrid{grid-template-columns:repeat(3,1fr)} }
 @media (hover:hover){ .btn:hover,.chip:hover,.hx-btn:hover{filter:brightness(1.12)} }
+
+/* collapsible sections */
+details.fold>summary{cursor:pointer;list-style:none;user-select:none;-webkit-user-select:none}
+details.fold>summary::-webkit-details-marker{display:none}
+details.fold>summary .chev{width:9px;height:9px;flex:none;margin-left:10px;border-right:2px solid var(--cyan);border-bottom:2px solid var(--cyan);transform:rotate(-45deg);transition:transform .2s;filter:drop-shadow(0 0 4px rgba(0,194,255,.6))}
+details.fold[open]>summary .chev{transform:rotate(45deg) translate(-2px,-2px)}
+details.fold>summary:hover{color:#fff}
+details.fold:not([open])>summary{margin-bottom:4px}

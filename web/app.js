@@ -150,10 +150,14 @@
       <div class="card"><div class="legend"><span><i style="background:#00C2FF"></i>Taps</span><span><i style="background:#00E5A3"></i>Installs</span><span><i style="background:#FFB020"></i>Spend (right)</span></div>
         <div class="chart">${lineChart(d.series, ["taps", "installs", "spend"], ["#00C2FF", "#00E5A3", "#FFB020"], "spend")}</div></div>
       ${d.by_app.length ? `<div class="h">By app &amp; channel</div><div class="card list">${d.by_app.map(b => `<div class="item"><span class="dot" style="background:${COLOR[b.app] || "#666"};margin-top:6px"></span><div class="main"><div class="name">${esc(SHORT[b.app] || b.app)} · ${esc(b.channel)}</div><div class="meta">${num(b.taps)} taps · ${num(b.installs)} installs · CPT ${money(b.taps ? b.spend / b.taps : null)}</div></div><div class="right">${money(b.spend)}<small>${b.revenue ? "ACoS " + pct(b.spend / b.revenue, 0) : ""}</small></div></div>`).join("")}</div>` : ""}
-      ${geoShow ? `<div class="h">NurseBound countries <small>${money(d.plan.NurseBound ? d.plan.NurseBound.daily : 0)}/day</small></div>
+      ${geoShow ? `<details class="fold" id="geoFold" ${store.get("adbot-geo-open", false) ? "open" : ""}>
+        <summary class="h">NurseBound countries <small>${(() => { const on = d.geo.filter(g => g.enabled !== false).sort((a, b) => (b.plan || 0) - (a.plan || 0));
+          return `${on.length} · ${on.slice(0, 3).map(g => flag(g.code)).join(" ")}${on.length > 3 ? " +" + (on.length - 3) : ""} · ${money(d.plan.NurseBound ? d.plan.NurseBound.daily : 0)}/day`; })()}</small><i class="chev" aria-hidden="true"></i></summary>
         <div class="card list">${d.geo.filter(g => g.enabled !== false).map(g => `<div class="item"><span class="flag">${flag(g.code)}</span><div class="main"><div class="name">${esc(regionName(g.code))} ${g.flag === "who_safeguards" ? '<span class="badge warn">WHO list</span>' : ""}${g.flag === "china_reach" ? '<span class="badge mute">limited reach</span>' : ""}</div>
           <div class="bar" style="margin-top:6px"><i style="width:${(g.plan || 0) / geoMax * 100}%"></i></div><div class="meta">${g.spend ? money(g.spend) + " spent · " + num(g.installs) + " installs" : "no spend yet"} · going to ${(g.dest || []).map(flag).join(" ")}</div></div><div class="right">${money(g.plan)}<small>${g.plan && g.plan < 1 ? "under $1" : "per day"}</small></div></div>`).join("")}</div>
-        ${d.geo_untagged_spend ? `<p class="sub" style="margin:8px 2px">${money(d.geo_untagged_spend)} of NurseBound spend has no country code in the campaign name.</p>` : ""}` : ""}`;
+        ${d.geo_untagged_spend ? `<p class="sub" style="margin:8px 2px">${money(d.geo_untagged_spend)} of NurseBound spend has no country code in the campaign name.</p>` : ""}</details>` : ""}`;
+    const fold = $("geoFold");
+    if (fold) fold.addEventListener("toggle", () => store.set("adbot-geo-open", fold.open));
   }
 
   /* ---------- Keywords ---------- */
