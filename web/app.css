@@ -382,6 +382,65 @@ select option{background:#0F172A}
 .rev .rung-v{font:700 13px var(--mono);color:#fff;font-variant-numeric:tabular-nums;min-width:70px;text-align:right}
 .rev .rung.nil .rung-v{font-size:9.5px;letter-spacing:.08em;color:#475569}
 .rev .hx-foot{text-align:center;margin:16px 0 4px;font:600 9px var(--mono);letter-spacing:.14em;color:#475569}
+
+/* app race: running totals per app (the one animated moment on this tab: lines draw in once) */
+.rev .race{position:relative;border-radius:22px;padding:12px 12px 14px;overflow:hidden;
+  background:radial-gradient(120% 70% at 100% 0%,rgba(224,36,195,.10),transparent 60%),radial-gradient(90% 60% at 0% 100%,rgba(0,194,255,.10),transparent 60%),rgba(9,14,28,.92);
+  border:1px solid var(--edge);box-shadow:0 0 0 1px rgba(255,255,255,.03) inset,0 20px 44px rgba(0,0,0,.5)}
+.rev .race::before{content:"";position:absolute;inset:0;pointer-events:none;opacity:.5;
+  background-image:linear-gradient(rgba(0,194,255,.05) 1px,transparent 1px),linear-gradient(90deg,rgba(0,194,255,.05) 1px,transparent 1px);background-size:22px 22px;
+  -webkit-mask-image:linear-gradient(180deg,#000,transparent 70%);mask-image:linear-gradient(180deg,#000,transparent 70%)}
+.rev .rc-ctl{position:relative;display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;margin-bottom:6px}
+.rev .rc-seg{display:inline-flex;padding:3px;border-radius:12px;background:rgba(2,6,16,.7);border:1px solid rgba(148,163,184,.16)}
+.rev .rc-seg button{border:0;background:transparent;color:#7D8BA6;font:600 12px var(--display);padding:7px 10px;border-radius:9px;cursor:pointer;min-height:32px}
+.rev .rc-seg button[aria-pressed="true"]{color:#fff;background:linear-gradient(135deg,rgba(0,194,255,.28),rgba(224,36,195,.24));box-shadow:0 0 0 1px rgba(0,194,255,.45) inset,0 0 14px rgba(0,194,255,.25)}
+.rev .rc-seg button:focus-visible{outline:2px solid var(--cy);outline-offset:1px}
+.rev .rc-stage{position:relative}
+.rev .rc-svg{display:block;width:100%;height:auto;max-height:340px;touch-action:pan-y}
+.rev .rc-grid{stroke:rgba(148,163,184,.10);stroke-width:1}
+.rev .rc-grid.base{stroke:rgba(0,194,255,.35)}
+.rev .rc-ax{fill:#64748B;font:500 9px var(--mono);font-variant-numeric:tabular-nums}
+.rev .rc-line{fill:none;stroke-width:2.4;stroke-linejoin:round;stroke-linecap:round}
+.rev .rc-idle{fill:none;stroke-width:1.2;stroke-dasharray:2 5;opacity:.35}
+.rev .rc-dot{filter:drop-shadow(0 0 6px currentColor)}
+.rev .rc-ping{stroke-width:1.5;transform-box:fill-box;transform-origin:center;animation:rcping 2.4s ease-out infinite}
+@keyframes rcping{0%{transform:scale(1);opacity:.9}100%{transform:scale(3.4);opacity:0}}
+.rev .rc-draw{stroke-dasharray:1;stroke-dashoffset:1;animation:rcdraw 1.6s cubic-bezier(.65,0,.35,1) .1s forwards}
+@keyframes rcdraw{to{stroke-dashoffset:0}}
+.rev .rc-fade{opacity:0;animation:rcfade .6s ease-out 1.4s forwards}
+@keyframes rcfade{to{opacity:1}}
+.rev .rc-empty{fill:#CBD5E1;font:700 13px var(--display)}
+.rev .rc-empty2{fill:#64748B;font:500 10px var(--mono)}
+.rev .rc-vline{stroke:rgba(255,255,255,.55);stroke-width:1;stroke-dasharray:3 3}
+.rev .rc-hit{cursor:crosshair}
+.rev .rc-read{position:absolute;left:8px;top:6px;z-index:2;display:flex;flex-direction:column;gap:3px;padding:8px 10px;border-radius:12px;pointer-events:none;
+  background:rgba(2,6,16,.86);border:1px solid rgba(0,194,255,.35);box-shadow:0 8px 24px rgba(0,0,0,.5);-webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px)}
+.rev .rc-read b{font:700 11px var(--display);color:#fff}
+.rev .rc-read span{display:flex;align-items:center;gap:6px;font:500 11px var(--display);color:#A9B8CF;white-space:nowrap}
+.rev .rc-read span i{width:7px;height:7px;border-radius:50%;background:var(--h);box-shadow:0 0 8px var(--h)}
+.rev .rc-read em{font:700 11px var(--mono);font-style:normal;color:#fff;margin-left:auto;padding-left:10px}
+.rev .rs-list{position:relative;list-style:none;margin:10px 0 0;padding:0;display:grid;gap:8px}
+@media (min-width:640px){.rev .rs-list{grid-template-columns:1fr 1fr}}
+.rev .rs{display:flex;gap:10px;align-items:flex-start;padding:10px 11px;border-radius:14px;background:rgba(2,6,16,.55);border:1px solid color-mix(in srgb,var(--h1) 26%,transparent)}
+.rev .rs-idle{grid-column:1/-1;display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;padding:9px 11px;border-radius:14px;border:1px dashed rgba(148,163,184,.18)}
+.rev .rs-idle span{display:inline-flex;align-items:center;gap:6px;font:600 12.5px var(--display);color:#A9B8CF}
+.rev .rs-idle span i{width:7px;height:7px;border-radius:50%;background:var(--h1);opacity:.6}
+.rev .rs-idle small{flex-basis:100%;font:500 11px var(--display);color:#64748B}
+.rev .rc-read[hidden]{display:none}
+.rev .rs-rank{width:24px;height:24px;flex:none;border-radius:8px;display:grid;place-items:center;font:800 12px var(--hud);color:#0B1120;
+  background:linear-gradient(135deg,var(--h1),var(--h2));box-shadow:0 0 12px color-mix(in srgb,var(--h1) 55%,transparent)}
+.rev .rs-main{flex:1;min-width:0}
+.rev .rs-top{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}
+.rev .rs-top b{font:700 13.5px var(--display);color:#F1F5F9}
+.rev .rs-tag{font:500 10px var(--display);color:#94A3B8;border:1px solid rgba(148,163,184,.25);border-radius:999px;padding:1px 7px}
+.rev .rs-v{margin-left:auto;font:700 14px var(--mono);color:#fff;font-variant-numeric:tabular-nums;text-shadow:0 0 14px color-mix(in srgb,var(--h1) 45%,transparent)}
+.rev .rs-bar{height:5px;border-radius:99px;background:rgba(148,163,184,.10);margin:7px 0 5px;overflow:hidden}
+.rev .rs-bar i{display:block;height:100%;width:var(--w);border-radius:99px;background:linear-gradient(90deg,var(--h1),var(--h2));box-shadow:0 0 10px var(--h1);transform-origin:left;animation:hxgrow .9s cubic-bezier(.2,.8,.2,1) .3s both}
+.rev .rs-sub{font:500 11px var(--display);color:#7D8BA6}
+.rev .rs-sub em{font-style:normal;font-weight:600}
+.rev .rs-sub em.up{color:var(--mint)}.rev .rs-sub em.down{color:var(--cor)}.rev .rs-sub em.new{color:#A9B8CF}
+.rev .rc-note{position:relative;margin:10px 2px 0;font:500 11px/1.5 var(--display);color:#64748B;max-width:70ch}
+@media (prefers-reduced-motion:reduce){.rev .rc-draw{stroke-dashoffset:0}.rev .rc-fade{opacity:1}.rev .rc-ping{display:none}}
 @media (prefers-reduced-motion:reduce){.rev *{animation:none!important}}
 .tabs button span{white-space:nowrap}
 

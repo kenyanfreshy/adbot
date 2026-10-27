@@ -1,6 +1,9 @@
 """Run the phone app locally against made-up data (no database needed):  python tests/local_server.py
 Then open http://127.0.0.1:8765 and sign in with 'test-pass'. For development only."""
 import datetime as dt, json, os, random, re, sys
+if os.environ.get("RENDER") or os.environ.get("ADBOT_ENV", "").lower() == "production" or os.environ.get("MOTHERDUCK_TOKEN"):
+    sys.exit("tests/local_server.py is a local demo with a fixed password and made-up data; it refuses to run "
+             "where RENDER, ADBOT_ENV=production or MOTHERDUCK_TOKEN is set.")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 os.environ.setdefault("APP_PASSWORD", "test-pass")
 import dlt_pipeline as bot

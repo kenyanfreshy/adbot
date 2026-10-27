@@ -26,7 +26,7 @@ The phone app's **Trading** tab shows what the trading bot reports: equity and P
 1. Copy `trading_status.py` into the trading bot and `pip install duckdb` there.
 2. On the trading machine set `MOTHERDUCK_TOKEN` (ideally its own MotherDuck token) and run `python trading_status.py` once; the Trading tab should show a test report.
 3. In the Audit/Monitoring service, create `StatusReporter(bot_id="...", mode="paper" or "live")` and call `heartbeat()`, `account()`, `positions()`, `trade()`, `signal()` and `risk()` (examples at the top of the file). Calls return instantly and never raise, so trading can't be slowed or stopped by reporting.
-4. The hourly job sends a Telegram alert if the bot goes quiet for 20+ minutes while the FX market is open, or if its kill switch turns on.
+4. Each scheduled run (every 4 hours) sends a Telegram alert if the bot has gone quiet for 20+ minutes while the FX market is open, or if its kill switch was turned on since the previous run. A problem can therefore wait up to 4 hours for an alert; the trading bot should keep its own immediate alerts.
 
 ### Trading bridge for fx_trading_system (no changes to the trading code)
 

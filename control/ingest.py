@@ -68,6 +68,7 @@ def collect(jobs: list[Job], start: dt.date, end: dt.date, records: list[dict], 
                 row["date"] = d
                 row["import_id"] = rec["import_id"]
                 row["account_id"] = row.get("account_id") or job.account_id
+                row["_fetched_at"] = row.get("_fetched_at") or clock().isoformat()   # when this revision was read
                 rec["rows"] += 1
                 if has_activity(row):
                     rec["activity_rows"] += 1
@@ -86,6 +87,63 @@ def collect(jobs: list[Job], start: dt.date, end: dt.date, records: list[dict], 
             rec["status"] = "failed"
             rec["message"] = _scrub(f"{type(e).__name__}: {e}")[:500]
         rec["finished_at"] = clock()
+
+
+def existing_revisions(con, start: dt.date, end: dt.date, dataset: str = "ads", table: str = "ad_performance") -> dict:
+    """(channel, entity_id, date) -> newest _fetched_at already stored, for the window being re-imported."""
+    try:
+        cols = {r[0] for r in con.execute("SELECT column_name FROM information_schema.columns WHERE table_schema = ? AND table_name = ?",
+                                          [dataset, table]).fetchall()}
+        if "_fetched_at" not in cols:
+            return {}
+        return {(ch, str(e), str(d)[:10]): str(f) for ch, e, d, f in con.execute(
+            f"SELECT channel, entity_id, CAST(date AS VARCHAR), max(_fetched_at) FROM {dataset}.{table} "
+            "WHERE CAST(date AS VARCHAR) BETWEEN ? AND ? GROUP BY 1, 2, 3", [start.isoformat(), end.isoformat()]).fetchall() if f}
+    except Exception:  # noqa: BLE001 - first run: nothing stored yet
+        return {}
+
+
+def _rev(v) -> dt.datetime:
+    """A revision time as naive UTC, whatever form it was stored in (ISO string, 'YYYY-MM-DD HH:MM:SS+00:00', datetime)."""
+    if v in (None, ""):
+        return dt.datetime.min
+    if isinstance(v, dt.datetime):
+        t = v
+    else:
+        try:
+            t = dt.datetime.fromisoformat(str(v).replace("Z", "+00:00").replace(" ", "T"))
+        except ValueError:
+            return dt.datetime.min
+    if t.tzinfo is not None:
+        t = t.astimezone(dt.timezone.utc).replace(tzinfo=None)
+    return t
+
+
+def keep_newest_revisions(rows, existing: Optional[dict] = None, dropped: Optional[list] = None) -> list[dict]:
+    """One row per (channel, entity_id, date): the newest revision (by _fetched_at) wins, whether the duplicate is
+    in this import or already stored. An older revision arriving late (out of order) is dropped, not merged over
+    a newer one. Counts what was dropped in `dropped`."""
+    existing = existing or {}
+    best: dict = {}
+    order: list = []
+    for r in rows:
+        k = (r.get("channel"), str(r.get("entity_id")), str(r.get("date"))[:10])
+        f = _rev(r.get("_fetched_at"))
+        if existing.get(k) and f != dt.datetime.min and f < _rev(existing[k]):
+            if dropped is not None:
+                dropped.append({"key": k, "reason": "older than the stored revision"})
+            continue
+        if k in best:
+            if f >= _rev(best[k].get("_fetched_at")):
+                if dropped is not None:
+                    dropped.append({"key": k, "reason": "duplicate in this import (older copy)"})
+                best[k] = r
+            elif dropped is not None:
+                dropped.append({"key": k, "reason": "duplicate in this import (older copy)"})
+            continue
+        best[k] = r
+        order.append(k)
+    return [best[k] for k in order]
 
 
 def quality(rec: dict) -> str:

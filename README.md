@@ -21,17 +21,17 @@ Local run: `pip install -r requirements.txt`, set APP_PASSWORD, then `python dlt
 
 ## Ad control plane
 
-Every hourly run goes DATA → QUALITY → RECOMMENDATION → POLICY → EXECUTION → VERIFICATION → AUDIT (`control/engine.py`). State lives in the `control` schema (import runs, source status, campaign map, proposals, executions, alerts, locks).
+Every scheduled run (every 4 hours at :07 UTC) goes DATA → QUALITY → RECOMMENDATION → POLICY → EXECUTION → VERIFICATION → AUDIT (`control/engine.py`). State lives in the `control` schema (import runs, source status, campaign map, proposals, executions, alerts, locks).
 
 **Modes** (Ads tab): Observe (import and report only) · Recommend (default; proposals, no writes) · Approval (you approve each proposal) · Bounded automatic (only action types listed in `auto_actions`, inside every limit). DRY_RUN=true overrides all modes: approved or automatic changes are recorded as *simulated*.
 
-**Stop automation** latches immediately: nothing automatic runs until you press Resume. **Emergency pause** (type PAUSE) queues pauses for every managed campaign of the chosen app/channel; it runs in any mode and never resumes anything when cleared. Because the web service holds no ad credentials, approved changes and emergency pauses are carried out by the next hourly job.
+**Stop automation** is saved to the shared database at once (and read back); the scheduled worker confirms it at its next run and re-checks it before every advertising write, and waiting approvals are withdrawn. **Resume** (password) un-pauses nothing and leaves earlier approvals blocked until approved again. **Emergency pause** (type PAUSE) records one pause per managed campaign in scope; the worker sends them at its next run (every 4 hours at :07 UTC, so up to about 4 hours later) and only when DRY_RUN is off. Each stage (requested, saved, seen by the worker, sent, verified / failed) is shown on the Ads tab. Nothing is ever resumed automatically. Details: `docs/CONTROL_PLANE.md`; revenue bases: `docs/MEASUREMENT.md`.
 
 **Data states** per source: not configured, unsupported, connected/not imported, imported (zero activity), imported (activity), partial, stale, failed. Missing revenue, installs or values are shown as unavailable, never 0. Apple Ads reports no revenue; Google conversions are not installs; TikTok is not integrated.
 
 **Budget policy** (Rules tab): no budget proposals until you set `monthly_budget`, `app_monthly` allocations and `campaign_daily_max`. Daily allowance = (allocation × (1 − reserve) − month-to-date spend) ÷ days left. Rebalancing is blocked without reported revenue, enough spend and conversions.
 
-**Safeguards**: per-change limit (`max_daily_change_pct`), cooldown, per-campaign and per-account daily action caps, deadband, data-maturity days, one job at a time (lease lock), dedup of proposals, read-before-write and verify-after-write, ambiguous results held as *uncertain* until reconciled.
+**Approvals** are bound to the exact values, evidence, account, campaign and policy version, expire after `approval_ttl_hours`, and are re-validated against live state right before sending. **Safeguards**: per-change limit (`max_daily_change_pct`), cooldown, per-campaign and per-account daily action caps, deadband, data-maturity days, one job at a time (lease lock), dedup of proposals, read-before-write and verify-after-write, ambiguous results held as *uncertain* until reconciled.
 
 **Dry-run checks**
 
@@ -40,6 +40,8 @@ python -m unittest discover -s tests -v          # set DUCKDB_CLI=/path/to/duckd
 DRY_RUN=true ALERT_TRANSPORT=log python dlt_pipeline.py --no-sync
 DRY_RUN=true ALERT_TRANSPORT=log python dlt_pipeline.py --days 14
 python tests/local_server.py                     # demo UI, password test-pass, http://localhost:8765
+python scripts/staging_check.py                  # real duckdb (+ dlt): migrations, restart, rollback, web start-up
+python scripts/staging_check.py --motherduck adbot_staging   # + two processes, lock expiry, crash recovery
 ```
 
 `ALERT_TRANSPORT=fake` or `log` keeps alerts off Telegram.
@@ -53,7 +55,7 @@ The phone app's **Trading** tab shows what the trading bot reports: equity and P
 1. Copy `trading_status.py` into the trading bot and `pip install duckdb` there.
 2. On the trading machine set `MOTHERDUCK_TOKEN` (ideally its own MotherDuck token) and run `python trading_status.py` once; the Trading tab should show a test report.
 3. In the Audit/Monitoring service, create `StatusReporter(bot_id="...", mode="paper" or "live")` and call `heartbeat()`, `account()`, `positions()`, `trade()`, `signal()` and `risk()` (examples at the top of the file). Calls return instantly and never raise, so trading can't be slowed or stopped by reporting.
-4. The hourly job sends a Telegram alert if the bot goes quiet for 20+ minutes while the FX market is open, or if its kill switch turns on.
+4. Each scheduled run (every 4 hours) sends a Telegram alert if the bot has gone quiet for 20+ minutes while the FX market is open, or if its kill switch was turned on since the previous run. A problem can therefore wait up to 4 hours for an alert; the trading bot should keep its own immediate alerts.
 
 ### Trading bridge for fx_trading_system (no changes to the trading code)
 
@@ -70,14 +72,14 @@ package with the stores, read-only (`revenue/store_check.py`). App Store Connect
 for the Apple ID (an empty bundle ID is filled in from the store); Google Play must answer for the package in
 your Play Console. Each row then shows VERIFIED, MISMATCH, NOT FOUND, NO ACCESS or NEEDS KEY, plus the store
 state (Live, In review, ...). The store keys live on `adbot-hourly`, so a press is answered by the next hourly
-run at :07; if you also add the keys to `adbot-control-panel` the check runs instantly. The hourly job re-checks
+run at its next scheduled run (every 4 hours at :07 UTC); if you also add the keys to `adbot-control-panel` the check runs instantly. The hourly job re-checks
 every listing once a day.
 
 **Google Play reports** are tracked apart from Google Play products (`revenue/google_play.py`): products sync once a
 day; the reports bucket has its own status (Not configured, Never checked, Bucket readable but empty, Reports imported,
 Access denied, Bucket not found, Failed) and its own "last success", which a failed attempt never moves. A 403/404 is
 retried once a day, other failures back off 1 h → 2 h → 4 h → 8 h → 24 h. To retry now without re-syncing products:
-press **Retry reports** on the Google Play card (runs at the next :07), or run `python -m revenue.google_play retry-reports`
+press **Retry reports** on the Google Play card (runs at the next scheduled run), or run `python -m revenue.google_play retry-reports`
 where the key is available. To test bucket access alone (lists at most one object, writes nothing, prints only the
 service account email, bucket, result and a sanitized error): `python -m revenue.google_play diagnose-reports`.
 

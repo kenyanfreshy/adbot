@@ -175,8 +175,14 @@ class StoreCheckTests(unittest.TestCase):
         self.assertEqual(store_check.run(self.con, environ={}), {})               # and no hourly "no keys" noise
 
     def test_next_hourly_run(self):
-        self.assertEqual(store_check.next_hourly_run(dt.datetime(2026, 10, 25, 14, 3)), dt.datetime(2026, 10, 25, 14, 7))
-        self.assertEqual(store_check.next_hourly_run(dt.datetime(2026, 10, 25, 14, 7)), dt.datetime(2026, 10, 25, 15, 7))
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"WORKER_EVERY_HOURS": "1"}):
+            self.assertEqual(store_check.next_hourly_run(dt.datetime(2026, 10, 25, 14, 3)), dt.datetime(2026, 10, 25, 14, 7))
+            self.assertEqual(store_check.next_hourly_run(dt.datetime(2026, 10, 25, 14, 7)), dt.datetime(2026, 10, 25, 15, 7))
+        with mock.patch.dict(os.environ, {"WORKER_EVERY_HOURS": "4"}):      # render.yaml: "7 */4 * * *"
+            self.assertEqual(store_check.next_hourly_run(dt.datetime(2026, 10, 25, 14, 3)), dt.datetime(2026, 10, 25, 16, 7))
+            self.assertEqual(store_check.next_hourly_run(dt.datetime(2026, 10, 25, 16, 7)), dt.datetime(2026, 10, 25, 20, 7))
+            self.assertEqual(store_check.next_hourly_run(dt.datetime(2026, 10, 25, 23, 0)), dt.datetime(2026, 10, 26, 0, 7))
 
 
 if __name__ == "__main__":

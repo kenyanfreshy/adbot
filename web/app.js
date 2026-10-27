@@ -21,7 +21,8 @@
   function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("on"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("on"), 3000); }
 
   async function api(path, opts = {}) {
-    const r = await fetch(path, {credentials: "same-origin", headers: {"Content-Type": "application/json"}, ...opts});
+    // X-AdBot-Request: a custom header a cross-site page can't send without CORS permission (CSRF defence)
+    const r = await fetch(path, {credentials: "same-origin", headers: {"Content-Type": "application/json", "X-AdBot-Request": "1"}, ...opts});
     let body = null; try { body = await r.json(); } catch (e) {}
     if (r.status === 401 && body && body.error === "signin") { showLogin(); throw new Error("signin"); }
     if (!r.ok) throw new Error((body && body.error) || `Server error ${r.status}`);
@@ -167,7 +168,8 @@
       <div class="qreason">${esc(p.reason || "")}</div>
       ${bl.length ? `<ul class="qblock">${bl.map(b => `<li>${esc(b)}</li>`).join("")}</ul>` : ""}
       <details class="qev"><summary>Evidence and details</summary><dl>${ev.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl></details>
-      ${p.status === "proposed" && mode === "approval" ? `<div class="qbtns"><button class="btn" data-dec="0">Reject</button><button class="btn primary" data-dec="1">Approve</button></div>` : ""}
+      ${(p.status === "proposed" || (p.status === "blocked" && p.reapproval_required && bl.every(b => String(b).startsWith("Needs a new approval")))) && mode === "approval" ? `<div class="qbtns"><button class="btn" data-dec="0">Reject</button><button class="btn primary" data-dec="1" data-hash="${esc(p.proposal_hash || "")}">${p.status === "blocked" ? "Approve again" : "Approve"}</button></div>` : ""}
+      ${p.status === "approved" && p.approval_expires_at ? `<div class="qnote">Approved; expires ${when(p.approval_expires_at)} if not carried out. The scheduled job (next run ${when(C.next_run)}) re-checks everything before sending.</div>` : ""}
       ${p.status === "proposed" && mode !== "approval" ? `<div class="qnote">${mode === "bounded_auto" ? "Not in your list of automatic actions; switch to Approval mode to approve it." : "Recommend mode: nothing is applied. Switch to Approval mode to approve changes."}</div>` : ""}
     </div>`;
   }
@@ -195,8 +197,8 @@
           ${C.automation_stopped ? `<button class="btn" id="resumeBtn">Resume automation</button>` : `<button class="btn danger" id="stopBtn">Stop automation</button>`}
         </div>
         <p class="ctl-help">${esc((C.modes.find(m => m.id === C.mode) || {}).label || "")}. Last decision run: ${C.last_cycle ? when(C.last_cycle.at) : "not yet"}.</p>
-        ${C.automation_stopped ? `<div class="banner bad"><b>Automation is stopped</b> since ${when(C.automation_stopped.since)}. AdBot makes no optimization changes. <b>Your ads are still running</b>; use Emergency pause to stop them.</div>` : ""}
-        ${C.emergency ? `<div class="banner bad"><b>Emergency pause active</b> since ${when(C.emergency.since)} (${C.emergency.count} campaign${C.emergency.count === 1 ? "" : "s"}). Results are in the queue below. Nothing is resumed automatically. <button class="btn sm" id="emClear">Clear latch</button></div>` : ""}
+        ${C.automation_stopped ? `<div class="banner bad"><b>Automation is stopped</b> · requested ${when(C.automation_stopped.requested_at || C.automation_stopped.since)} · ${C.automation_stopped.persisted_at ? "saved" : "NOT confirmed saved"} · ${C.automation_stopped.acknowledged_at ? "seen by the scheduled job " + when(C.automation_stopped.acknowledged_at) : "not yet seen by the scheduled job (next run " + when(C.next_run) + ")"}. No advertising change is sent while stopped. <b>Your ads are still running</b>; use Emergency pause to stop them.</div>` : ""}
+        ${C.emergency ? (() => { const E = C.emergency_status || {}; return `<div class="banner bad"><b>Emergency pause requested</b> ${when(C.emergency.requested_at || C.emergency.since)} for ${E.campaigns ?? C.emergency.count} campaign${(E.campaigns ?? C.emergency.count) === 1 ? "" : "s"} · ${E.acknowledged_at ? "seen by the scheduled job " + when(E.acknowledged_at) : "waiting for the scheduled job (next run " + when(C.next_run) + "); nothing has been sent yet"}${C.dry_run ? " · <b>DRY RUN: no pause will be sent</b>" : ""}.<br>Sent ${E.remote_requests_sent || 0} · verified paused ${E.verified || 0} · already paused ${E.already_paused || 0} · failed ${E.failed || 0} · unconfirmed ${(E.uncertain || 0) + (E.accepted_unconfirmed || 0)} · simulated ${E.simulated_dry_run || 0} · waiting ${E.waiting || 0}. Nothing is resumed automatically. <button class="btn sm" id="emClear">Clear latch</button></div>`; })() : ""}
       </section>
 
       <div class="kpis ov">
@@ -238,11 +240,11 @@
           <div class="row2 umap-ctl"><select aria-label="App for ${esc(u.campaign_name || "")}"><option value="">Choose app…</option>${APPS.map(a => `<option>${esc(a)}</option>`).join("")}</select><button class="btn sm" data-map="1">Map</button><button class="btn sm" data-ign="1">Not ours</button></div></div></div>`).join("")}</div>` : ""}
 
       <div class="h">Performance <small>live data · last ${d.days} days</small></div>
-      ${!d.has_data ? `<div class="banner">No ad performance has been imported. ${C.sources.every(s => ["not_configured", "unsupported"].includes(s.state)) ? "No ad channel has credentials on the hourly job yet." : "Check Data freshness above for each source's state."}</div>` : ""}
+      ${!d.has_data ? `<div class="banner">No ad performance has been imported. ${C.sources.every(s => ["not_configured", "unsupported"].includes(s.state)) ? "No ad channel has credentials on the adbot-hourly job yet." : "Check Data freshness above for each source's state."}</div>` : ""}
       <div class="kpis">
         ${k("Taps / clicks", num(T.taps), delta(T.taps, P.taps))}
         ${k("Installs", num(T.installs), T.cpi != null ? money(T.cpi) + " per install" : T.conversions_other ? num(T.conversions_other) + " Google conversions" : "")}
-        ${k("Attributed revenue", T.revenue == null ? "Not reported" : money(T.revenue), T.revenue == null ? (T.revenue_estimate ? "estimate " + money(T.revenue_estimate) + " (value per install)" : "platforms report none") : `${T.roas != null ? T.roas.toFixed(2) + "× ROAS" : ""} on ${pct(T.revenue_coverage, 0)} of spend`)}
+        ${k("Attributed revenue", T.revenue == null ? (T.revenue_by_channel && T.revenue_by_channel.length > 1 ? "Per platform" : "Not reported") : money(T.revenue), T.revenue == null ? (T.revenue_note ? T.revenue_by_channel.map(c => esc(c.channel.split(" ")[0]) + " " + money(c.revenue)).join(" · ") + " (not added: attribution overlaps)" : T.revenue_estimate ? "estimate " + money(T.revenue_estimate) + " (value per install)" : "platforms report none") : `${T.roas != null ? T.roas.toFixed(2) + "× ROAS" : ""} on ${pct(T.revenue_coverage, 0)} of spend`)}
         ${k("ACoS", T.acos == null ? "—" : pct(T.acos), T.acos == null ? "needs reported revenue" : "over spend with revenue")}
         ${k("Avg cost per tap", money(T.cpt), delta(T.cpt, P.cpt, true))}
         ${k("Prior period spend", money(P.spend), delta(T.spend, P.spend, true) + " now vs then")}
@@ -250,20 +252,21 @@
       <div class="card"><div class="legend"><span><i style="background:#00C2FF"></i>Taps</span><span><i style="background:#00E5A3"></i>Installs</span><span><i style="background:#FFB020"></i>Spend (right)</span></div>
         <div class="chart">${lineChart(d.series, ["taps", "installs", "spend"], ["#00C2FF", "#00E5A3", "#FFB020"], "spend")}</div></div>
       ${d.by_app.length ? `<div class="h">By app &amp; channel</div><div class="card list">${d.by_app.map(b => `<div class="item"><span class="dot" style="background:${COLOR[b.app] || "#666"};margin-top:6px"></span><div class="main"><div class="name">${esc(SHORT[b.app] || b.app)} · ${esc(b.channel)}</div><div class="meta">${num(b.taps)} clicks · ${b.channel === "Google Ads" ? num(b.conversions_other) + " conversions" : num(b.installs) + " installs"} · CPT ${money(b.cpt)}</div></div><div class="right">${money(b.spend)}<small>${b.revenue == null ? "revenue not reported" : "ACoS " + (b.acos == null ? "—" : pct(b.acos, 0))}</small></div></div>`).join("")}</div>` : ""}
-      <details class="fold emer" id="emFold"><summary class="h">Emergency pause <small>stops ads</small><i class="chev" aria-hidden="true"></i></summary>
-        <div class="card"><p class="sub" style="margin-top:0">Pauses every active managed campaign / ad set in scope. Separate from Stop automation. Runs on the hourly job (it has the platform credentials) and reports each campaign's result. Nothing is resumed automatically.</p>
+      <details class="fold emer" id="emFold"><summary class="h">Emergency pause <small>at the next scheduled run</small><i class="chev" aria-hidden="true"></i></summary>
+        <div class="card"><p class="sub" style="margin-top:0">Records a pause for every active managed campaign / ad set in scope. Separate from Stop automation. Nothing is paused when you press it: the scheduled job sends the pauses at its next run (${when(C.next_run)}, every ${C.every_hours} h)${C.dry_run ? ", and with DRY RUN on it only simulates them" : ""}, then reports each campaign as verified, failed or unconfirmed. Nothing is resumed automatically.</p>
           <div class="row2"><select id="emApp" aria-label="App"><option value="">All apps</option>${APPS.map(a => `<option>${esc(a)}</option>`).join("")}</select><select id="emCh" aria-label="Channel"><option value="">All channels</option><option>Apple Search Ads</option><option>Meta Ads</option><option>Google Ads</option></select></div>
           <label class="sub" for="emConfirm" style="display:block;margin-top:10px">Type PAUSE to confirm</label><input id="emConfirm" class="txt" autocomplete="off" autocapitalize="characters">
           <button class="btn danger block" id="emGo" style="margin-top:10px">Pause managed campaigns</button></div></details>`;
     // wiring
     const after = msg => { toast(msg); load(false, true); };
-    $("modeSel").onchange = async e => { try { await api("/api/control/mode", {method: "POST", body: JSON.stringify({mode: e.target.value})}); after("Mode saved: " + e.target.selectedOptions[0].text); } catch (err) { if (err.message !== "signin") toast(err.message); } };
+    $("modeSel").onchange = async e => { const risky = ["approval", "bounded_auto"].includes(e.target.value); const pw = risky ? prompt("Enter the AdBot password to allow changes to be applied") : null; if (risky && !pw) { e.target.value = C.mode; return; } try { await api("/api/control/mode", {method: "POST", body: JSON.stringify({mode: e.target.value, password: pw})}); after("Mode saved: " + e.target.selectedOptions[0].text); } catch (err) { if (err.message !== "signin") toast(err.message); } };
     if ($("stopBtn")) $("stopBtn").onclick = async () => { try { const r = await api("/api/control/stop", {method: "POST", body: JSON.stringify({reason: "Stopped from the phone app."})}); after(r.note); } catch (err) { if (err.message !== "signin") toast(err.message); } };
-    if ($("resumeBtn")) $("resumeBtn").onclick = async () => { try { await api("/api/control/resume", {method: "POST"}); after("Automation resumed in " + C.mode + " mode"); } catch (err) { if (err.message !== "signin") toast(err.message); } };
+    if ($("resumeBtn")) $("resumeBtn").onclick = async () => { const pw = prompt("Enter the AdBot password to resume automation"); if (!pw) return; try { const r = await api("/api/control/resume", {method: "POST", body: JSON.stringify({password: pw})}); after(r.note); } catch (err) { if (err.message !== "signin") toast(err.message); } };
     if ($("emClear")) $("emClear").onclick = async () => { try { const r = await api("/api/control/emergency-clear", {method: "POST"}); after(r.note); } catch (err) { if (err.message !== "signin") toast(err.message); } };
-    $("emGo").onclick = async () => { $("emGo").disabled = true; try { const r = await api("/api/control/emergency-pause", {method: "POST", body: JSON.stringify({app: $("emApp").value, channel: $("emCh").value, confirm: $("emConfirm").value.trim().toUpperCase()})}); after(`${r.requested} pause(s) queued. ${r.note}`); } catch (err) { if (err.message !== "signin") toast(err.message); } finally { $("emGo").disabled = false; } };
+    $("emGo").onclick = async () => { $("emGo").disabled = true; try { const r = await api("/api/control/emergency-pause", {method: "POST", body: JSON.stringify({app: $("emApp").value, channel: $("emCh").value, confirm: $("emConfirm").value.trim().toUpperCase()})}); after(`${r.requested} pause request(s) recorded. ${r.note}`); } catch (err) { if (err.message !== "signin") toast(err.message); } finally { $("emGo").disabled = false; } };
     document.querySelectorAll("[data-dec]").forEach(b => b.onclick = async () => { const pid = b.closest("[data-pid]").dataset.pid; b.disabled = true;
-      try { await api("/api/proposals/decide", {method: "POST", body: JSON.stringify({proposal_id: pid, approve: b.dataset.dec === "1"})}); after(b.dataset.dec === "1" ? "Approved. It runs on the next decision run" + (C.dry_run ? " as a simulation (dry run)." : ".") : "Rejected."); } catch (err) { if (err.message !== "signin") toast(err.message); b.disabled = false; } });
+      const hash = (b.closest("[data-pid]").querySelector("[data-hash]") || {dataset: {}}).dataset.hash;
+      try { await api("/api/proposals/decide", {method: "POST", body: JSON.stringify({proposal_id: pid, approve: b.dataset.dec === "1", expected_hash: hash})}); after(b.dataset.dec === "1" ? "Approved. The scheduled job (next run " + when(C.next_run) + ") re-checks it and then " + (C.dry_run ? "simulates it: dry run, nothing is sent." : "sends it.") : "Rejected."); } catch (err) { if (err.message !== "signin") toast(err.message); b.disabled = false; } });
     document.querySelectorAll(".umap").forEach(row => {
       const send = async body => { try { await api("/api/campaigns/map", {method: "POST", body: JSON.stringify({channel: row.dataset.ch, campaign_id: row.dataset.cid, ...body})}); after("Saved. Decisions use it from the next run."); } catch (err) { if (err.message !== "signin") toast(err.message); } };
       row.querySelector("[data-map]").onclick = () => { const a = row.querySelector("select").value; if (!a) { toast("Choose an app first"); return; } send({app: a}); };
@@ -513,6 +516,116 @@
     });
   }
 
+  /* ---------- App race: running totals per app, from imported store reports (revenue/compare.py) ---------- */
+  const RACE_HUE = {...APP_HUE, vitalsync: ["#FACC15", "#A3E635"]};
+  const RACE_NAME = {rnr_pro: "RNR Pro", ccrn_adult: "CCRN Adult", nursebound_pro: "NurseBound Pro", vitalsync: "VitalSync"};
+  const RACE_METRIC = {proceeds: {label: "Proceeds", col: 3, fmt: v => money(v), none: "No sales",
+                         axis: (v, step) => "$" + (v >= 1000 ? (v / 1000).toFixed(step >= 1000 && step % 1000 === 0 ? 0 : 1) + "k" : v.toFixed(step % 1 ? 2 : 0))},
+                       downloads: {label: "Downloads", col: 1, fmt: v => num(v), axis: v => num(v), none: "No downloads", count: true},
+                       paid: {label: "Paid units", col: 2, fmt: v => num(v), axis: v => num(v), none: "No paid units", count: true}};
+  const dayAdd = (iso, n) => { const t = new Date(iso + "T00:00:00Z"); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); };
+  const dayLabel = iso => new Date(iso + "T00:00:00Z").toLocaleDateString("en-US", {month: "short", day: "numeric", timeZone: "UTC"});
+
+  function raceData(cmp, apps, metric, range) {
+    const m = RACE_METRIC[metric], end = dayAdd(cmp.today, -1), start = dayAdd(end, -(range - 1)), prevStart = dayAdd(start, -range);
+    const days = Array.from({length: range}, (_, i) => dayAdd(start, i));
+    const lines = apps.map(a => {
+      const rows = cmp.series[a.app_id] || [];
+      const byDay = new Map(rows.filter(r => r[0] >= start && r[0] <= end && r[m.col] != null).map(r => [r[0], r[m.col]]));
+      const prevRows = rows.filter(r => r[0] >= prevStart && r[0] < start && r[m.col] != null);
+      let run = 0; const cum = days.map(d => (run += byDay.get(d) || 0));
+      return {...a, cum, total: byDay.size ? run : null, prev: prevRows.length ? prevRows.reduce((s, r) => s + r[m.col], 0) : null,
+              hue: RACE_HUE[a.app_id] || ["#00C2FF", "#E024C3"], short: RACE_NAME[a.app_id] || a.name};
+    });
+    return {days, start, end, lines};
+  }
+
+  function raceSvg(rd, metric, animate) {
+    const m = RACE_METRIC[metric], W = 360, H = 196, L = 8, R = 46, T = 14, B = 24, iw = W - L - R, ih = H - T - B;
+    const n = rd.days.length, max = Math.max(...rd.lines.map(l => l.cum[n - 1]), 0);
+    // round axis steps (1, 2, 2.5, 5 × 10^k), four of them, with a little headroom above the leader
+    const step = (() => { const raw = max * 1.08 / 4; if (!(raw > 0)) return 0; const p = Math.pow(10, Math.floor(Math.log10(raw)));
+      const st = [1, 2, 2.5, 5, 10].map(f => f * p).find(v => v >= raw);
+      return m.count ? Math.max(1, Math.ceil(st)) : st; })();   // whole numbers for counts
+    const top = max > 0 ? step * 4 : 1, x = i => L + (n === 1 ? iw : iw * i / (n - 1)), y = v => T + ih - ih * v / top;
+    const grid = [0, .25, .5, .75, 1].map(f => `<line x1="${L}" x2="${L + iw}" y1="${(T + ih * (1 - f)).toFixed(1)}" y2="${(T + ih * (1 - f)).toFixed(1)}" class="rc-grid${f === 0 ? " base" : ""}"/>`
+      + (max > 0 && f > 0 ? `<text x="${W - 2}" y="${(T + ih * (1 - f) + 3).toFixed(1)}" class="rc-ax" text-anchor="end">${esc(m.axis(top * f, step))}</text>` : "")).join("");
+    const ticks = [0, Math.floor((n - 1) / 2), n - 1].map(i => `<text x="${x(i).toFixed(1)}" y="${H - 6}" class="rc-ax" text-anchor="${i === 0 ? "start" : i === n - 1 ? "end" : "middle"}">${esc(dayLabel(rd.days[i]))}</text>`).join("");
+    // leader last, so its line sits on top
+    const order = rd.lines.map((l, i) => i).sort((a, b) => (rd.lines[a].total ?? -1) - (rd.lines[b].total ?? -1));
+    const defs = rd.lines.map((l, i) => `<linearGradient id="rcg${i}" x1="0" x2="1" y1="0" y2="0"><stop offset="0" stop-color="${l.hue[0]}"/><stop offset="1" stop-color="${l.hue[1]}"/></linearGradient>
+      <linearGradient id="rcf${i}" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${l.hue[1]}" stop-opacity=".28"/><stop offset="1" stop-color="${l.hue[1]}" stop-opacity="0"/></linearGradient>`).join("");
+    const leader = rd.lines.reduce((b, l) => l.total != null && (b == null || l.total > b.total) ? l : b, null);
+    const paths = order.map(i => {
+      const l = rd.lines[i];
+      // a step line: running totals only change on days with activity
+      const d = "M" + l.cum.map((v, k) => (k ? `H${x(k).toFixed(1)}V${y(v).toFixed(1)}` : `${x(0).toFixed(1)},${y(v).toFixed(1)}`)).join("");
+      if (l.total == null) return `<path d="M${L},${T + ih}H${L + iw}" class="rc-idle" style="stroke:${l.hue[0]}"/>`;
+      const area = `${d}V${T + ih}H${x(0).toFixed(1)}Z`, ex = x(n - 1), ey = y(l.cum[n - 1]);
+      return `${l === leader ? `<path d="${area}" fill="url(#rcf${i})" class="${animate ? "rc-fade" : ""}"/>` : ""}
+        <path d="${d}" class="rc-line${animate ? " rc-draw" : ""}" stroke="url(#rcg${i})" pathLength="1" filter="url(#rcglow)"/>
+        <circle cx="${ex.toFixed(1)}" cy="${ey.toFixed(1)}" r="3.6" fill="${l.hue[1]}" style="color:${l.hue[1]}" class="rc-dot${animate ? " rc-fade" : ""}"/>
+        <circle cx="${ex.toFixed(1)}" cy="${ey.toFixed(1)}" r="3.6" fill="none" stroke="${l.hue[1]}" class="rc-ping"/>`;
+    }).join("");
+    const empty = !leader ? `<text x="${L + iw / 2}" y="${T + ih / 2 - 4}" text-anchor="middle" class="rc-empty">${esc(m.none)} recorded</text>
+      <text x="${L + iw / 2}" y="${T + ih / 2 + 14}" text-anchor="middle" class="rc-empty2">${esc(dayLabel(rd.start))} – ${esc(dayLabel(rd.end))}</text>` : "";
+    return `<svg class="rc-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="Running ${esc(m.label.toLowerCase())} per app, ${esc(dayLabel(rd.start))} to ${esc(dayLabel(rd.end))}">
+      <defs>${defs}<filter id="rcglow" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="2.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
+      ${grid}${ticks}${paths}${empty}
+      <g class="rc-cross" hidden><line class="rc-vline" y1="${T}" y2="${T + ih}"/></g>
+      <rect class="rc-hit" x="${L}" y="${T}" width="${iw}" height="${ih}" fill="transparent"/></svg>`;
+  }
+
+  function raceStandings(rd, metric) {
+    const m = RACE_METRIC[metric];
+    const sum = rd.lines.reduce((s, l) => s + (l.total || 0), 0);
+    const ranked = rd.lines.filter(l => l.total != null).sort((a, b) => b.total - a.total);
+    const idle = rd.lines.filter(l => l.total == null);
+    const idleRow = idle.length ? `<li class="rs-idle">${idle.map(l => `<span style="--h1:${l.hue[0]}"><i></i>${esc(l.short)}</span>`).join("")}
+      <small>${esc(m.none)} in imported store reports for this period</small></li>` : "";
+    return ranked.map((l, i) => {
+      const share = sum > 0 ? l.total / sum : 0;
+      const delta = l.prev == null ? `<em class="new">none in the previous ${rd.days.length} days</em>`
+        : l.prev === 0 ? "" : (() => { const ch = (l.total - l.prev) / Math.abs(l.prev); return `<em class="${ch >= 0 ? "up" : "down"}">${ch >= 0 ? "▲" : "▼"} ${pct(Math.abs(ch), 0)} vs previous ${rd.days.length} days</em>`; })();
+      return `<li class="rs" style="--h1:${l.hue[0]};--h2:${l.hue[1]};--w:${(share * 100).toFixed(1)}%">
+        <span class="rs-rank">${i + 1}</span>
+        <div class="rs-main"><div class="rs-top"><b>${esc(l.short)}</b>${l.extra ? `<small class="rs-tag">tracked, not managed</small>` : ""}<span class="rs-v">${esc(m.fmt(l.total))}</span></div>
+          <div class="rs-bar"><i></i></div>
+          <div class="rs-sub">${pct(share, 0)} of the total${delta ? " · " : ""}${delta}</div></div></li>`;
+    }).join("") + idleRow;
+  }
+
+  function mountRace(d, animate) {
+    const host = $("race"); if (!host || !d.compare) return;
+    const cmp = d.compare, st = {metric: "proceeds", range: 30, ...store.get("adbot-race", {})};
+    if (![7, 30, 90].includes(+st.range)) st.range = 30;
+    if (!RACE_METRIC[st.metric]) st.metric = "proceeds";
+    const apps = d.apps.map(a => ({app_id: a.app_id, name: a.name})).concat((cmp.extra_apps || []).map(a => ({...a, extra: true})));
+    const rd = raceData(cmp, apps, st.metric, st.range);
+    const hasPlay = d.sources.some(s => s.platform === "google_play" && (s.rows || {}).sales_reports);
+    const seg = (key, opts) => `<div class="rc-seg" role="group">${opts.map(([v, t]) => `<button type="button" data-${key}="${v}" aria-pressed="${String(st[key]) === String(v)}">${t}</button>`).join("")}</div>`;
+    host.innerHTML = `<div class="rc-ctl">${seg("metric", Object.entries(RACE_METRIC).map(([k, v]) => [k, v.label]))}${seg("range", [[7, "7 days"], [30, "30 days"], [90, "90 days"]])}</div>
+      <div class="rc-stage"><div class="rc-read" aria-live="polite" hidden></div>${raceSvg(rd, st.metric, animate)}</div>
+      <ol class="rs-list">${raceStandings(rd, st.metric)}</ol>
+      <p class="rc-note">Running totals from App Store${hasPlay ? " and Google Play" : ""} sales reports${cmp.estimated ? ", estimated until Apple's finance reports settle" : ""}. ${!hasPlay ? "Google Play isn't included until its reports import. " : ""}${st.metric === "proceeds" ? "Proceeds in USD only" + (cmp.other_currency_rows ? ` (${num(cmp.other_currency_rows)} rows in other currencies left out)` : "") + ". " : ""}${(cmp.extra_apps || []).length ? "VitalSync is compared here but isn't run by the ad bot." : ""}</p>`;
+    host.querySelectorAll("[data-metric]").forEach(b => b.onclick = () => { store.set("adbot-race", {...st, metric: b.dataset.metric}); mountRace(d, true); });
+    host.querySelectorAll("[data-range]").forEach(b => b.onclick = () => { store.set("adbot-race", {...st, range: +b.dataset.range}); mountRace(d, true); });
+    // scrub: drag or hover across the chart to read every app's running total on that day
+    const svg = host.querySelector(".rc-svg"), hit = svg.querySelector(".rc-hit"), cross = svg.querySelector(".rc-cross"), vline = svg.querySelector(".rc-vline"), read = host.querySelector(".rc-read");
+    const m = RACE_METRIC[st.metric], n = rd.days.length;
+    if (!rd.lines.some(l => l.total != null)) return;
+    const show = ev => {
+      const box = hit.getBoundingClientRect(); if (!box.width) return;
+      const f = Math.min(1, Math.max(0, (ev.clientX - box.left) / box.width)), k = Math.round(f * (n - 1));
+      const vx = +hit.getAttribute("x") + (+hit.getAttribute("width")) * (n === 1 ? 1 : k / (n - 1));
+      vline.setAttribute("x1", vx); vline.setAttribute("x2", vx); cross.hidden = false; read.hidden = false;
+      read.innerHTML = `<b>${esc(dayLabel(rd.days[k]))}</b>${[...rd.lines].filter(l => l.total != null).sort((a, b) => b.cum[k] - a.cum[k]).map(l => `<span style="--h:${l.hue[1]}"><i></i>${esc(l.short)} <em>${esc(m.fmt(l.cum[k]))}</em></span>`).join("")}`;
+    };
+    const hide = () => { cross.hidden = true; read.hidden = true; };
+    hit.addEventListener("pointermove", show); hit.addEventListener("pointerdown", show);
+    hit.addEventListener("pointerleave", hide); hit.addEventListener("pointercancel", hide);
+  }
+
   async function viewRevenue(my) {
     const d = await api("/api/revenue"); if (my !== seq) return;
     const isStore = s => s.platform === "apple_app_store" || s.platform === "google_play";
@@ -531,7 +644,7 @@
         <div class="idr"><span>Reports</span><b class="${REP_CLS[r.state] || "warn"}">${esc((r.text || r.state).toUpperCase())}</b></div>
         ${r.last_attempt ? `<div class="idnote">Last attempt ${esc(when(r.last_attempt))} · last success ${esc(when(r.last_success))}${bad && r.next_try ? ` · next automatic try ${esc(when(r.next_try))}` : ""}</div>` : ""}
         ${bad && r.message ? `<div class="src-err">${esc(String(r.message).split(" | ")[0])}</div>` : ""}
-        ${r.retry_requested_at ? `<div class="idnote">Retry queued for the hourly job at :07</div>`
+        ${r.retry_requested_at ? `<div class="idnote">Retry queued for the next scheduled run</div>`
           : (bad || r.state === "never_checked") ? `<button class="hx-btn" type="button" data-retry-play style="--h1:#00E5A3;margin-top:8px">Retry reports</button>` : ""}
       </div>`; };
     const srcCard = s => { const st = srcState(s); const sh = s.shared || {}; return `<div class="src ${st}" style="--hue:${PLAT_HUE[s.platform] || "#00C2FF"}">
@@ -554,7 +667,7 @@
     const hhmm = t => new Date(t + (String(t).endsWith("Z") ? "" : "Z")).toLocaleTimeString("en-US", {hour: "numeric", minute: "2-digit"});
     const checkRows = (l, hasId) => {
       if (!hasId) return idRow("Check", null, "ENTER IDS FIRST");
-      if (l.check_requested_at) return `<div class="idr"><span>Check</span><b class="warn">QUEUED</b></div><div class="idnote">Runs on the hourly job at :07${l.check_result ? ` · last: ${esc((CHK[l.check_result] || [])[1] || l.check_result)}` : ""}</div>`;
+      if (l.check_requested_at) return `<div class="idr"><span>Check</span><b class="warn">QUEUED</b></div><div class="idnote">Runs on the next scheduled run${l.check_result ? ` · last: ${esc((CHK[l.check_result] || [])[1] || l.check_result)}` : ""}</div>`;
       if (!l.check_result) return idRow("Check", null, "NOT CHECKED");
       const [cls, txt] = CHK[l.check_result] || ["warn", l.check_result.toUpperCase()];
       const st = l.publication_status && l.publication_status !== "unknown" && l.publication_status !== "not_found" ? (STORE_STATE[l.publication_status] || l.publication_status) : null;
@@ -579,6 +692,9 @@
         ${tile("MONTH TO DATE", "#E024C3", "estimated proceeds")}
         ${tile("AD SPEND · MONTH", "#FFB020", "ad accounts not synced")}
       </div>
+
+      <div class="hx-h"><span>APP RACE</span><small>running totals</small></div>
+      <section class="race" id="race"></section>
 
       <div class="hx-h"><span>DATA PIPELINE</span><small>live status</small></div>
       <div class="pipe">
@@ -632,6 +748,7 @@
       </details>
       <p class="hx-foot">READ-ONLY · NOTHING HERE CHANGES STORE PRODUCTS, PRICES OR PURCHASES</p>
     </div>`;
+    mountRace(d, true);
     document.querySelectorAll("[data-edit]").forEach(b => b.onclick = e => {
       e.preventDefault(); e.stopPropagation();   // the button sits in the card header: don't also fold/unfold the card
       const f = document.querySelector(`.idform[data-app="${b.dataset.edit}"]`); f.hidden = !f.hidden; b.textContent = f.hidden ? "Edit IDs" : "Close";
@@ -639,7 +756,7 @@
     });
     document.querySelectorAll("[data-retry-play]").forEach(b => b.onclick = async () => {
       b.disabled = true;
-      try { const r = await api("/api/revenue/retry-play-reports", {method: "POST"}); toast(`Report retry queued for the hourly job (${hhmm(r.next_run)}). Products aren't re-synced.`); load(false, true); }
+      try { const r = await api("/api/revenue/retry-play-reports", {method: "POST"}); toast(`Report retry queued for the scheduled job (${hhmm(r.next_run)}). Products aren't re-synced.`); load(false, true); }
       catch (err) { if (err.message !== "signin") toast(err.message); b.disabled = false; }
     });
     const cb = $("checkIds"); if (cb) cb.onclick = async () => {
@@ -649,7 +766,7 @@
         const r = await api("/api/revenue/check-ids", {method: "POST"});
         const parts = Object.entries(r.checked || {}).map(([p, c]) => `${NAME[p]}: ${Object.entries(c).map(([k, n]) => `${n} ${(CHK[k] || [, k])[1].replace(" ✓", "").toLowerCase()}`).join(", ")}`);
         const q = Object.keys(r.queued || {}).map(p => NAME[p]);
-        if (q.length) parts.push(`${q.join(" + ")} queued for the hourly job (${hhmm(r.next_run)})`);
+        if (q.length) parts.push(`${q.join(" + ")} queued for the scheduled job (${hhmm(r.next_run)})`);
         toast(parts.join(" · ") || "Checked."); load(false, true);
       } catch (err) { if (err.message !== "signin") toast(err.message); cb.disabled = false; cb.textContent = "Check store IDs"; }
     };
@@ -675,7 +792,7 @@
     const RES = {applied: "ok", reconciled_applied: "ok", simulated: "sim", failed: "bad", uncertain: "bad", reconciled_not_applied: "bad", already_done: "ok", skipped: "nil"};
     const sec = (id, title, n, body) => `<details class="fold" id="${id}" ${store.get("adbot-log-" + id, id === "lgDec") ? "open" : ""}><summary class="h">${title} <small>${n}</small><i class="chev" aria-hidden="true"></i></summary>${body}</details>`;
     $("view").innerHTML = `
-      ${d.dry_run ? `<div class="banner warn"><b>Dry run.</b> Changes marked <b>Simulated</b> were never sent to an ad platform. Set DRY_RUN=false on the hourly job and choose Approval or Bounded automatic mode to allow live changes.</div>` : ""}
+      ${d.dry_run ? `<div class="banner warn"><b>Dry run.</b> Changes marked <b>Simulated</b> were never sent to an ad platform. Set DRY_RUN=false on the adbot-hourly job and choose Approval or Bounded automatic mode to allow live changes.</div>` : ""}
       ${sec("lgDec", "Decisions", d.decisions.length, `<div class="card list">${d.decisions.length ? d.decisions.map(x => `<div class="item"><div class="main"><div class="name">${esc(ACT[x.action] || x.action)}: ${esc(x.entity_name || "")}</div><div class="meta">${esc(SHORT[x.app] || x.app || "")} · ${esc(x.channel || "")} · ${esc(KIND[x.kind] || x.kind)} · ${esc(x.reason || "")}${x.outcome && !String(x.outcome).startsWith("claim:") ? " · " + esc(x.outcome) : ""}</div></div><div class="right">${pchip(x.status)}<small>${t(x.outcome_at || x.created_at)}</small></div></div>`).join("") : `<div class="empty">No decisions yet.</div>`}</div>`)}
       ${sec("lgEx", "Executions", d.executions.length, `<div class="card list">${d.executions.length ? d.executions.map(x => `<div class="item"><div class="main"><div class="name">${esc(ACT[x.action] || x.action)}: ${esc(x.entity_name || "")}</div><div class="meta">${esc(x.channel)} · ${x.mode === "live" ? "live" : "simulated"}${x.error ? ` · <span style="color:var(--red)">${esc(x.error)}</span>` : ""}</div></div><div class="right"><span class="schip ${RES[x.result] || "nil"}">${esc(String(x.result).replace(/_/g, " "))}</span><small>${t(x.attempted_at)}</small></div></div>`).join("") : `<div class="empty">Nothing executed yet.</div>`}</div>`)}
       ${sec("lgAl", "Alerts", d.alerts.length, `<div class="card list">${d.alerts.length ? d.alerts.map(a => `<div class="item sev-${SEV[a.severity] || "info"}"><div class="main"><div class="name">${esc(a.title)}</div><div class="meta">${esc(a.category)} · via ${esc(a.transport || "—")}${a.error ? ` · <span style="color:var(--red)">${esc(a.error)}</span>` : ""}</div></div><div class="right"><span class="schip ${DS[a.delivery_status] || "nil"}">${esc(a.delivery_status)}</span><small>${t(a.created_at)}</small></div></div>`).join("") : `<div class="empty">No alerts yet.</div>`}</div>`)}
