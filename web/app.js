@@ -516,6 +516,116 @@
     });
   }
 
+  /* ---------- App race: running totals per app, from imported store reports (revenue/compare.py) ---------- */
+  const RACE_HUE = {...APP_HUE, vitalsync: ["#FACC15", "#A3E635"]};
+  const RACE_NAME = {rnr_pro: "RNR Pro", ccrn_adult: "CCRN Adult", nursebound_pro: "NurseBound Pro", vitalsync: "VitalSync"};
+  const RACE_METRIC = {proceeds: {label: "Proceeds", col: 3, fmt: v => money(v), none: "No sales",
+                         axis: (v, step) => "$" + (v >= 1000 ? (v / 1000).toFixed(step >= 1000 && step % 1000 === 0 ? 0 : 1) + "k" : v.toFixed(step % 1 ? 2 : 0))},
+                       downloads: {label: "Downloads", col: 1, fmt: v => num(v), axis: v => num(v), none: "No downloads", count: true},
+                       paid: {label: "Paid units", col: 2, fmt: v => num(v), axis: v => num(v), none: "No paid units", count: true}};
+  const dayAdd = (iso, n) => { const t = new Date(iso + "T00:00:00Z"); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); };
+  const dayLabel = iso => new Date(iso + "T00:00:00Z").toLocaleDateString("en-US", {month: "short", day: "numeric", timeZone: "UTC"});
+
+  function raceData(cmp, apps, metric, range) {
+    const m = RACE_METRIC[metric], end = dayAdd(cmp.today, -1), start = dayAdd(end, -(range - 1)), prevStart = dayAdd(start, -range);
+    const days = Array.from({length: range}, (_, i) => dayAdd(start, i));
+    const lines = apps.map(a => {
+      const rows = cmp.series[a.app_id] || [];
+      const byDay = new Map(rows.filter(r => r[0] >= start && r[0] <= end && r[m.col] != null).map(r => [r[0], r[m.col]]));
+      const prevRows = rows.filter(r => r[0] >= prevStart && r[0] < start && r[m.col] != null);
+      let run = 0; const cum = days.map(d => (run += byDay.get(d) || 0));
+      return {...a, cum, total: byDay.size ? run : null, prev: prevRows.length ? prevRows.reduce((s, r) => s + r[m.col], 0) : null,
+              hue: RACE_HUE[a.app_id] || ["#00C2FF", "#E024C3"], short: RACE_NAME[a.app_id] || a.name};
+    });
+    return {days, start, end, lines};
+  }
+
+  function raceSvg(rd, metric, animate) {
+    const m = RACE_METRIC[metric], W = 360, H = 196, L = 8, R = 46, T = 14, B = 24, iw = W - L - R, ih = H - T - B;
+    const n = rd.days.length, max = Math.max(...rd.lines.map(l => l.cum[n - 1]), 0);
+    // round axis steps (1, 2, 2.5, 5 × 10^k), four of them, with a little headroom above the leader
+    const step = (() => { const raw = max * 1.08 / 4; if (!(raw > 0)) return 0; const p = Math.pow(10, Math.floor(Math.log10(raw)));
+      const st = [1, 2, 2.5, 5, 10].map(f => f * p).find(v => v >= raw);
+      return m.count ? Math.max(1, Math.ceil(st)) : st; })();   // whole numbers for counts
+    const top = max > 0 ? step * 4 : 1, x = i => L + (n === 1 ? iw : iw * i / (n - 1)), y = v => T + ih - ih * v / top;
+    const grid = [0, .25, .5, .75, 1].map(f => `<line x1="${L}" x2="${L + iw}" y1="${(T + ih * (1 - f)).toFixed(1)}" y2="${(T + ih * (1 - f)).toFixed(1)}" class="rc-grid${f === 0 ? " base" : ""}"/>`
+      + (max > 0 && f > 0 ? `<text x="${W - 2}" y="${(T + ih * (1 - f) + 3).toFixed(1)}" class="rc-ax" text-anchor="end">${esc(m.axis(top * f, step))}</text>` : "")).join("");
+    const ticks = [0, Math.floor((n - 1) / 2), n - 1].map(i => `<text x="${x(i).toFixed(1)}" y="${H - 6}" class="rc-ax" text-anchor="${i === 0 ? "start" : i === n - 1 ? "end" : "middle"}">${esc(dayLabel(rd.days[i]))}</text>`).join("");
+    // leader last, so its line sits on top
+    const order = rd.lines.map((l, i) => i).sort((a, b) => (rd.lines[a].total ?? -1) - (rd.lines[b].total ?? -1));
+    const defs = rd.lines.map((l, i) => `<linearGradient id="rcg${i}" x1="0" x2="1" y1="0" y2="0"><stop offset="0" stop-color="${l.hue[0]}"/><stop offset="1" stop-color="${l.hue[1]}"/></linearGradient>
+      <linearGradient id="rcf${i}" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="${l.hue[1]}" stop-opacity=".28"/><stop offset="1" stop-color="${l.hue[1]}" stop-opacity="0"/></linearGradient>`).join("");
+    const leader = rd.lines.reduce((b, l) => l.total != null && (b == null || l.total > b.total) ? l : b, null);
+    const paths = order.map(i => {
+      const l = rd.lines[i];
+      // a step line: running totals only change on days with activity
+      const d = "M" + l.cum.map((v, k) => (k ? `H${x(k).toFixed(1)}V${y(v).toFixed(1)}` : `${x(0).toFixed(1)},${y(v).toFixed(1)}`)).join("");
+      if (l.total == null) return `<path d="M${L},${T + ih}H${L + iw}" class="rc-idle" style="stroke:${l.hue[0]}"/>`;
+      const area = `${d}V${T + ih}H${x(0).toFixed(1)}Z`, ex = x(n - 1), ey = y(l.cum[n - 1]);
+      return `${l === leader ? `<path d="${area}" fill="url(#rcf${i})" class="${animate ? "rc-fade" : ""}"/>` : ""}
+        <path d="${d}" class="rc-line${animate ? " rc-draw" : ""}" stroke="url(#rcg${i})" pathLength="1" filter="url(#rcglow)"/>
+        <circle cx="${ex.toFixed(1)}" cy="${ey.toFixed(1)}" r="3.6" fill="${l.hue[1]}" style="color:${l.hue[1]}" class="rc-dot${animate ? " rc-fade" : ""}"/>
+        <circle cx="${ex.toFixed(1)}" cy="${ey.toFixed(1)}" r="3.6" fill="none" stroke="${l.hue[1]}" class="rc-ping"/>`;
+    }).join("");
+    const empty = !leader ? `<text x="${L + iw / 2}" y="${T + ih / 2 - 4}" text-anchor="middle" class="rc-empty">${esc(m.none)} recorded</text>
+      <text x="${L + iw / 2}" y="${T + ih / 2 + 14}" text-anchor="middle" class="rc-empty2">${esc(dayLabel(rd.start))} – ${esc(dayLabel(rd.end))}</text>` : "";
+    return `<svg class="rc-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="Running ${esc(m.label.toLowerCase())} per app, ${esc(dayLabel(rd.start))} to ${esc(dayLabel(rd.end))}">
+      <defs>${defs}<filter id="rcglow" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="2.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
+      ${grid}${ticks}${paths}${empty}
+      <g class="rc-cross" hidden><line class="rc-vline" y1="${T}" y2="${T + ih}"/></g>
+      <rect class="rc-hit" x="${L}" y="${T}" width="${iw}" height="${ih}" fill="transparent"/></svg>`;
+  }
+
+  function raceStandings(rd, metric) {
+    const m = RACE_METRIC[metric];
+    const sum = rd.lines.reduce((s, l) => s + (l.total || 0), 0);
+    const ranked = rd.lines.filter(l => l.total != null).sort((a, b) => b.total - a.total);
+    const idle = rd.lines.filter(l => l.total == null);
+    const idleRow = idle.length ? `<li class="rs-idle">${idle.map(l => `<span style="--h1:${l.hue[0]}"><i></i>${esc(l.short)}</span>`).join("")}
+      <small>${esc(m.none)} in imported store reports for this period</small></li>` : "";
+    return ranked.map((l, i) => {
+      const share = sum > 0 ? l.total / sum : 0;
+      const delta = l.prev == null ? `<em class="new">none in the previous ${rd.days.length} days</em>`
+        : l.prev === 0 ? "" : (() => { const ch = (l.total - l.prev) / Math.abs(l.prev); return `<em class="${ch >= 0 ? "up" : "down"}">${ch >= 0 ? "▲" : "▼"} ${pct(Math.abs(ch), 0)} vs previous ${rd.days.length} days</em>`; })();
+      return `<li class="rs" style="--h1:${l.hue[0]};--h2:${l.hue[1]};--w:${(share * 100).toFixed(1)}%">
+        <span class="rs-rank">${i + 1}</span>
+        <div class="rs-main"><div class="rs-top"><b>${esc(l.short)}</b>${l.extra ? `<small class="rs-tag">tracked, not managed</small>` : ""}<span class="rs-v">${esc(m.fmt(l.total))}</span></div>
+          <div class="rs-bar"><i></i></div>
+          <div class="rs-sub">${pct(share, 0)} of the total${delta ? " · " : ""}${delta}</div></div></li>`;
+    }).join("") + idleRow;
+  }
+
+  function mountRace(d, animate) {
+    const host = $("race"); if (!host || !d.compare) return;
+    const cmp = d.compare, st = {metric: "proceeds", range: 30, ...store.get("adbot-race", {})};
+    if (![7, 30, 90].includes(+st.range)) st.range = 30;
+    if (!RACE_METRIC[st.metric]) st.metric = "proceeds";
+    const apps = d.apps.map(a => ({app_id: a.app_id, name: a.name})).concat((cmp.extra_apps || []).map(a => ({...a, extra: true})));
+    const rd = raceData(cmp, apps, st.metric, st.range);
+    const hasPlay = d.sources.some(s => s.platform === "google_play" && (s.rows || {}).sales_reports);
+    const seg = (key, opts) => `<div class="rc-seg" role="group">${opts.map(([v, t]) => `<button type="button" data-${key}="${v}" aria-pressed="${String(st[key]) === String(v)}">${t}</button>`).join("")}</div>`;
+    host.innerHTML = `<div class="rc-ctl">${seg("metric", Object.entries(RACE_METRIC).map(([k, v]) => [k, v.label]))}${seg("range", [[7, "7 days"], [30, "30 days"], [90, "90 days"]])}</div>
+      <div class="rc-stage"><div class="rc-read" aria-live="polite" hidden></div>${raceSvg(rd, st.metric, animate)}</div>
+      <ol class="rs-list">${raceStandings(rd, st.metric)}</ol>
+      <p class="rc-note">Running totals from App Store${hasPlay ? " and Google Play" : ""} sales reports${cmp.estimated ? ", estimated until Apple's finance reports settle" : ""}. ${!hasPlay ? "Google Play isn't included until its reports import. " : ""}${st.metric === "proceeds" ? "Proceeds in USD only" + (cmp.other_currency_rows ? ` (${num(cmp.other_currency_rows)} rows in other currencies left out)` : "") + ". " : ""}${(cmp.extra_apps || []).length ? "VitalSync is compared here but isn't run by the ad bot." : ""}</p>`;
+    host.querySelectorAll("[data-metric]").forEach(b => b.onclick = () => { store.set("adbot-race", {...st, metric: b.dataset.metric}); mountRace(d, true); });
+    host.querySelectorAll("[data-range]").forEach(b => b.onclick = () => { store.set("adbot-race", {...st, range: +b.dataset.range}); mountRace(d, true); });
+    // scrub: drag or hover across the chart to read every app's running total on that day
+    const svg = host.querySelector(".rc-svg"), hit = svg.querySelector(".rc-hit"), cross = svg.querySelector(".rc-cross"), vline = svg.querySelector(".rc-vline"), read = host.querySelector(".rc-read");
+    const m = RACE_METRIC[st.metric], n = rd.days.length;
+    if (!rd.lines.some(l => l.total != null)) return;
+    const show = ev => {
+      const box = hit.getBoundingClientRect(); if (!box.width) return;
+      const f = Math.min(1, Math.max(0, (ev.clientX - box.left) / box.width)), k = Math.round(f * (n - 1));
+      const vx = +hit.getAttribute("x") + (+hit.getAttribute("width")) * (n === 1 ? 1 : k / (n - 1));
+      vline.setAttribute("x1", vx); vline.setAttribute("x2", vx); cross.hidden = false; read.hidden = false;
+      read.innerHTML = `<b>${esc(dayLabel(rd.days[k]))}</b>${[...rd.lines].filter(l => l.total != null).sort((a, b) => b.cum[k] - a.cum[k]).map(l => `<span style="--h:${l.hue[1]}"><i></i>${esc(l.short)} <em>${esc(m.fmt(l.cum[k]))}</em></span>`).join("")}`;
+    };
+    const hide = () => { cross.hidden = true; read.hidden = true; };
+    hit.addEventListener("pointermove", show); hit.addEventListener("pointerdown", show);
+    hit.addEventListener("pointerleave", hide); hit.addEventListener("pointercancel", hide);
+  }
+
   async function viewRevenue(my) {
     const d = await api("/api/revenue"); if (my !== seq) return;
     const isStore = s => s.platform === "apple_app_store" || s.platform === "google_play";
@@ -583,6 +693,9 @@
         ${tile("AD SPEND · MONTH", "#FFB020", "ad accounts not synced")}
       </div>
 
+      <div class="hx-h"><span>APP RACE</span><small>running totals</small></div>
+      <section class="race" id="race"></section>
+
       <div class="hx-h"><span>DATA PIPELINE</span><small>live status</small></div>
       <div class="pipe">
         <div class="pcol">${stores.map(s => node(esc(PLAT[s.platform]), srcState(s), STATE_TXT[srcState(s)])).join("")}</div>
@@ -635,6 +748,7 @@
       </details>
       <p class="hx-foot">READ-ONLY · NOTHING HERE CHANGES STORE PRODUCTS, PRICES OR PURCHASES</p>
     </div>`;
+    mountRace(d, true);
     document.querySelectorAll("[data-edit]").forEach(b => b.onclick = e => {
       e.preventDefault(); e.stopPropagation();   // the button sits in the card header: don't also fold/unfold the card
       const f = document.querySelector(`.idform[data-app="${b.dataset.edit}"]`); f.hidden = !f.hidden; b.textContent = f.hidden ? "Edit IDs" : "Close";

@@ -90,6 +90,8 @@ class RevenueWebTests(unittest.TestCase):
         self.assertNotIn("EAAG-secret", json.dumps(d))
         self.assertFalse(d["has_revenue_data"])
         self.assertEqual({a["name"] for a in d["apps"]}, {"NurseBound Pro", "Rapid Nursing Review Pro", "CCRN Adult"})
+        # app race: present with no data yet, never zeros
+        self.assertEqual((d["compare"]["series"], d["compare"]["extra_apps"]), ({}, []))
         rnr = next(a for a in d["apps"] if a["app_id"] == "rnr_pro")
         lifetime = next(p for p in rnr["products"] if p["plan_code"] == "lifetime")
         self.assertIsInstance(lifetime["prices"][0]["amount"], str)          # money travels as text, not float

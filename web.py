@@ -50,6 +50,7 @@ from control import state as cstate
 from control import status as cstatus
 from control.channels import CHANNELS as CH_INFO
 from control.channels import MANAGED
+from revenue import compare as rev_compare
 from revenue import registry as rev_registry
 from revenue import store_check
 from revenue.schema import SCHEMA as REV
@@ -867,6 +868,7 @@ async def revenue_get(request: Request):
             cur = con().execute(f"select {plat} as p, count(*) as n from {REV}.{t} group by 1")
             for p, n in cur.fetchall():
                 counts.setdefault(p, {})[t] = int(n)
+        cmp = rev_compare.compare(con())          # per-app daily downloads / paid units / USD proceeds (one query)
     for a in reg["apps"]:
         for p in a["products"]:
             # the phone only needs the US price; store prices exist for ~170 regions
@@ -884,7 +886,7 @@ async def revenue_get(request: Request):
         s["shared"] = plat_src.get(s["platform"]) or cstatus.from_revenue_source(s)
     return J({**reg, "has_revenue_data": any(counts.get(p, {}).get(t) for p in ("apple_app_store", "google_play")
                                              for t in ("sales_reports", "financial_reports")),
-              "stage": "B", "dry_run": dry_run()})
+              "compare": cmp, "stage": "B", "dry_run": dry_run()})
 
 
 @guarded
