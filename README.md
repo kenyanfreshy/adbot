@@ -25,13 +25,13 @@ Every hourly run goes DATA → QUALITY → RECOMMENDATION → POLICY → EXECUTI
 
 **Modes** (Ads tab): Observe (import and report only) · Recommend (default; proposals, no writes) · Approval (you approve each proposal) · Bounded automatic (only action types listed in `auto_actions`, inside every limit). DRY_RUN=true overrides all modes: approved or automatic changes are recorded as *simulated*.
 
-**Stop automation** latches immediately: nothing automatic runs until you press Resume. **Emergency pause** (type PAUSE) queues pauses for every managed campaign of the chosen app/channel; it runs in any mode and never resumes anything when cleared. Because the web service holds no ad credentials, approved changes and emergency pauses are carried out by the next hourly job.
+**Stop automation** is saved to the shared database at once (and read back); the hourly worker confirms it at its next run and re-checks it before every advertising write, and waiting approvals are withdrawn. **Resume** (password) un-pauses nothing and leaves earlier approvals blocked until approved again. **Emergency pause** (type PAUSE) records one pause per managed campaign in scope; the worker sends them at its next run (:07) and only when DRY_RUN is off. Each stage (requested, saved, seen by the worker, sent, verified / failed) is shown on the Ads tab. Nothing is ever resumed automatically. Details: `docs/CONTROL_PLANE.md`; revenue bases: `docs/MEASUREMENT.md`.
 
 **Data states** per source: not configured, unsupported, connected/not imported, imported (zero activity), imported (activity), partial, stale, failed. Missing revenue, installs or values are shown as unavailable, never 0. Apple Ads reports no revenue; Google conversions are not installs; TikTok is not integrated.
 
 **Budget policy** (Rules tab): no budget proposals until you set `monthly_budget`, `app_monthly` allocations and `campaign_daily_max`. Daily allowance = (allocation × (1 − reserve) − month-to-date spend) ÷ days left. Rebalancing is blocked without reported revenue, enough spend and conversions.
 
-**Safeguards**: per-change limit (`max_daily_change_pct`), cooldown, per-campaign and per-account daily action caps, deadband, data-maturity days, one job at a time (lease lock), dedup of proposals, read-before-write and verify-after-write, ambiguous results held as *uncertain* until reconciled.
+**Approvals** are bound to the exact values, evidence, account, campaign and policy version, expire after `approval_ttl_hours`, and are re-validated against live state right before sending. **Safeguards**: per-change limit (`max_daily_change_pct`), cooldown, per-campaign and per-account daily action caps, deadband, data-maturity days, one job at a time (lease lock), dedup of proposals, read-before-write and verify-after-write, ambiguous results held as *uncertain* until reconciled.
 
 **Dry-run checks**
 
@@ -40,6 +40,8 @@ python -m unittest discover -s tests -v          # set DUCKDB_CLI=/path/to/duckd
 DRY_RUN=true ALERT_TRANSPORT=log python dlt_pipeline.py --no-sync
 DRY_RUN=true ALERT_TRANSPORT=log python dlt_pipeline.py --days 14
 python tests/local_server.py                     # demo UI, password test-pass, http://localhost:8765
+python scripts/staging_check.py                  # real duckdb (+ dlt): migrations, restart, rollback, web start-up
+python scripts/staging_check.py --motherduck adbot_staging   # + two processes, lock expiry, crash recovery
 ```
 
 `ALERT_TRANSPORT=fake` or `log` keeps alerts off Telegram.

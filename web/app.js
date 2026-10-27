@@ -21,7 +21,8 @@
   function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("on"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("on"), 3000); }
 
   async function api(path, opts = {}) {
-    const r = await fetch(path, {credentials: "same-origin", headers: {"Content-Type": "application/json"}, ...opts});
+    // X-AdBot-Request: a custom header a cross-site page can't send without CORS permission (CSRF defence)
+    const r = await fetch(path, {credentials: "same-origin", headers: {"Content-Type": "application/json", "X-AdBot-Request": "1"}, ...opts});
     let body = null; try { body = await r.json(); } catch (e) {}
     if (r.status === 401 && body && body.error === "signin") { showLogin(); throw new Error("signin"); }
     if (!r.ok) throw new Error((body && body.error) || `Server error ${r.status}`);
@@ -167,7 +168,8 @@
       <div class="qreason">${esc(p.reason || "")}</div>
       ${bl.length ? `<ul class="qblock">${bl.map(b => `<li>${esc(b)}</li>`).join("")}</ul>` : ""}
       <details class="qev"><summary>Evidence and details</summary><dl>${ev.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl></details>
-      ${p.status === "proposed" && mode === "approval" ? `<div class="qbtns"><button class="btn" data-dec="0">Reject</button><button class="btn primary" data-dec="1">Approve</button></div>` : ""}
+      ${(p.status === "proposed" || (p.status === "blocked" && p.reapproval_required && bl.every(b => String(b).startsWith("Needs a new approval")))) && mode === "approval" ? `<div class="qbtns"><button class="btn" data-dec="0">Reject</button><button class="btn primary" data-dec="1" data-hash="${esc(p.proposal_hash || "")}">${p.status === "blocked" ? "Approve again" : "Approve"}</button></div>` : ""}
+      ${p.status === "approved" && p.approval_expires_at ? `<div class="qnote">Approved; expires ${when(p.approval_expires_at)} if not carried out. The hourly job re-checks everything before sending.</div>` : ""}
       ${p.status === "proposed" && mode !== "approval" ? `<div class="qnote">${mode === "bounded_auto" ? "Not in your list of automatic actions; switch to Approval mode to approve it." : "Recommend mode: nothing is applied. Switch to Approval mode to approve changes."}</div>` : ""}
     </div>`;
   }
@@ -195,8 +197,8 @@
           ${C.automation_stopped ? `<button class="btn" id="resumeBtn">Resume automation</button>` : `<button class="btn danger" id="stopBtn">Stop automation</button>`}
         </div>
         <p class="ctl-help">${esc((C.modes.find(m => m.id === C.mode) || {}).label || "")}. Last decision run: ${C.last_cycle ? when(C.last_cycle.at) : "not yet"}.</p>
-        ${C.automation_stopped ? `<div class="banner bad"><b>Automation is stopped</b> since ${when(C.automation_stopped.since)}. AdBot makes no optimization changes. <b>Your ads are still running</b>; use Emergency pause to stop them.</div>` : ""}
-        ${C.emergency ? `<div class="banner bad"><b>Emergency pause active</b> since ${when(C.emergency.since)} (${C.emergency.count} campaign${C.emergency.count === 1 ? "" : "s"}). Results are in the queue below. Nothing is resumed automatically. <button class="btn sm" id="emClear">Clear latch</button></div>` : ""}
+        ${C.automation_stopped ? `<div class="banner bad"><b>Automation is stopped</b> · requested ${when(C.automation_stopped.requested_at || C.automation_stopped.since)} · ${C.automation_stopped.persisted_at ? "saved" : "NOT confirmed saved"} · ${C.automation_stopped.acknowledged_at ? "seen by the hourly job " + when(C.automation_stopped.acknowledged_at) : "not yet seen by the hourly job (next run at :07)"}. No advertising change is sent while stopped. <b>Your ads are still running</b>; use Emergency pause to stop them.</div>` : ""}
+        ${C.emergency ? (() => { const E = C.emergency_status || {}; return `<div class="banner bad"><b>Emergency pause requested</b> ${when(C.emergency.requested_at || C.emergency.since)} for ${E.campaigns ?? C.emergency.count} campaign${(E.campaigns ?? C.emergency.count) === 1 ? "" : "s"} · ${E.acknowledged_at ? "seen by the hourly job " + when(E.acknowledged_at) : "waiting for the hourly job (next run at :07); nothing has been sent yet"}${C.dry_run ? " · <b>DRY RUN: no pause will be sent</b>" : ""}.<br>Sent ${E.remote_requests_sent || 0} · verified paused ${E.verified || 0} · already paused ${E.already_paused || 0} · failed ${E.failed || 0} · unconfirmed ${(E.uncertain || 0) + (E.accepted_unconfirmed || 0)} · simulated ${E.simulated_dry_run || 0} · waiting ${E.waiting || 0}. Nothing is resumed automatically. <button class="btn sm" id="emClear">Clear latch</button></div>`; })() : ""}
       </section>
 
       <div class="kpis ov">
@@ -242,7 +244,7 @@
       <div class="kpis">
         ${k("Taps / clicks", num(T.taps), delta(T.taps, P.taps))}
         ${k("Installs", num(T.installs), T.cpi != null ? money(T.cpi) + " per install" : T.conversions_other ? num(T.conversions_other) + " Google conversions" : "")}
-        ${k("Attributed revenue", T.revenue == null ? "Not reported" : money(T.revenue), T.revenue == null ? (T.revenue_estimate ? "estimate " + money(T.revenue_estimate) + " (value per install)" : "platforms report none") : `${T.roas != null ? T.roas.toFixed(2) + "× ROAS" : ""} on ${pct(T.revenue_coverage, 0)} of spend`)}
+        ${k("Attributed revenue", T.revenue == null ? (T.revenue_by_channel && T.revenue_by_channel.length > 1 ? "Per platform" : "Not reported") : money(T.revenue), T.revenue == null ? (T.revenue_note ? T.revenue_by_channel.map(c => esc(c.channel.split(" ")[0]) + " " + money(c.revenue)).join(" · ") + " (not added: attribution overlaps)" : T.revenue_estimate ? "estimate " + money(T.revenue_estimate) + " (value per install)" : "platforms report none") : `${T.roas != null ? T.roas.toFixed(2) + "× ROAS" : ""} on ${pct(T.revenue_coverage, 0)} of spend`)}
         ${k("ACoS", T.acos == null ? "—" : pct(T.acos), T.acos == null ? "needs reported revenue" : "over spend with revenue")}
         ${k("Avg cost per tap", money(T.cpt), delta(T.cpt, P.cpt, true))}
         ${k("Prior period spend", money(P.spend), delta(T.spend, P.spend, true) + " now vs then")}
@@ -250,20 +252,21 @@
       <div class="card"><div class="legend"><span><i style="background:#00C2FF"></i>Taps</span><span><i style="background:#00E5A3"></i>Installs</span><span><i style="background:#FFB020"></i>Spend (right)</span></div>
         <div class="chart">${lineChart(d.series, ["taps", "installs", "spend"], ["#00C2FF", "#00E5A3", "#FFB020"], "spend")}</div></div>
       ${d.by_app.length ? `<div class="h">By app &amp; channel</div><div class="card list">${d.by_app.map(b => `<div class="item"><span class="dot" style="background:${COLOR[b.app] || "#666"};margin-top:6px"></span><div class="main"><div class="name">${esc(SHORT[b.app] || b.app)} · ${esc(b.channel)}</div><div class="meta">${num(b.taps)} clicks · ${b.channel === "Google Ads" ? num(b.conversions_other) + " conversions" : num(b.installs) + " installs"} · CPT ${money(b.cpt)}</div></div><div class="right">${money(b.spend)}<small>${b.revenue == null ? "revenue not reported" : "ACoS " + (b.acos == null ? "—" : pct(b.acos, 0))}</small></div></div>`).join("")}</div>` : ""}
-      <details class="fold emer" id="emFold"><summary class="h">Emergency pause <small>stops ads</small><i class="chev" aria-hidden="true"></i></summary>
-        <div class="card"><p class="sub" style="margin-top:0">Pauses every active managed campaign / ad set in scope. Separate from Stop automation. Runs on the hourly job (it has the platform credentials) and reports each campaign's result. Nothing is resumed automatically.</p>
+      <details class="fold emer" id="emFold"><summary class="h">Emergency pause <small>at the next hourly run</small><i class="chev" aria-hidden="true"></i></summary>
+        <div class="card"><p class="sub" style="margin-top:0">Records a pause for every active managed campaign / ad set in scope. Separate from Stop automation. Nothing is paused when you press it: the hourly job sends the pauses at its next run (:07)${C.dry_run ? ", and with DRY RUN on it only simulates them" : ""}, then reports each campaign as verified, failed or unconfirmed. Nothing is resumed automatically.</p>
           <div class="row2"><select id="emApp" aria-label="App"><option value="">All apps</option>${APPS.map(a => `<option>${esc(a)}</option>`).join("")}</select><select id="emCh" aria-label="Channel"><option value="">All channels</option><option>Apple Search Ads</option><option>Meta Ads</option><option>Google Ads</option></select></div>
           <label class="sub" for="emConfirm" style="display:block;margin-top:10px">Type PAUSE to confirm</label><input id="emConfirm" class="txt" autocomplete="off" autocapitalize="characters">
           <button class="btn danger block" id="emGo" style="margin-top:10px">Pause managed campaigns</button></div></details>`;
     // wiring
     const after = msg => { toast(msg); load(false, true); };
-    $("modeSel").onchange = async e => { try { await api("/api/control/mode", {method: "POST", body: JSON.stringify({mode: e.target.value})}); after("Mode saved: " + e.target.selectedOptions[0].text); } catch (err) { if (err.message !== "signin") toast(err.message); } };
+    $("modeSel").onchange = async e => { const risky = ["approval", "bounded_auto"].includes(e.target.value); const pw = risky ? prompt("Enter the AdBot password to allow changes to be applied") : null; if (risky && !pw) { e.target.value = C.mode; return; } try { await api("/api/control/mode", {method: "POST", body: JSON.stringify({mode: e.target.value, password: pw})}); after("Mode saved: " + e.target.selectedOptions[0].text); } catch (err) { if (err.message !== "signin") toast(err.message); } };
     if ($("stopBtn")) $("stopBtn").onclick = async () => { try { const r = await api("/api/control/stop", {method: "POST", body: JSON.stringify({reason: "Stopped from the phone app."})}); after(r.note); } catch (err) { if (err.message !== "signin") toast(err.message); } };
-    if ($("resumeBtn")) $("resumeBtn").onclick = async () => { try { await api("/api/control/resume", {method: "POST"}); after("Automation resumed in " + C.mode + " mode"); } catch (err) { if (err.message !== "signin") toast(err.message); } };
+    if ($("resumeBtn")) $("resumeBtn").onclick = async () => { const pw = prompt("Enter the AdBot password to resume automation"); if (!pw) return; try { const r = await api("/api/control/resume", {method: "POST", body: JSON.stringify({password: pw})}); after(r.note); } catch (err) { if (err.message !== "signin") toast(err.message); } };
     if ($("emClear")) $("emClear").onclick = async () => { try { const r = await api("/api/control/emergency-clear", {method: "POST"}); after(r.note); } catch (err) { if (err.message !== "signin") toast(err.message); } };
-    $("emGo").onclick = async () => { $("emGo").disabled = true; try { const r = await api("/api/control/emergency-pause", {method: "POST", body: JSON.stringify({app: $("emApp").value, channel: $("emCh").value, confirm: $("emConfirm").value.trim().toUpperCase()})}); after(`${r.requested} pause(s) queued. ${r.note}`); } catch (err) { if (err.message !== "signin") toast(err.message); } finally { $("emGo").disabled = false; } };
+    $("emGo").onclick = async () => { $("emGo").disabled = true; try { const r = await api("/api/control/emergency-pause", {method: "POST", body: JSON.stringify({app: $("emApp").value, channel: $("emCh").value, confirm: $("emConfirm").value.trim().toUpperCase()})}); after(`${r.requested} pause request(s) recorded. ${r.note}`); } catch (err) { if (err.message !== "signin") toast(err.message); } finally { $("emGo").disabled = false; } };
     document.querySelectorAll("[data-dec]").forEach(b => b.onclick = async () => { const pid = b.closest("[data-pid]").dataset.pid; b.disabled = true;
-      try { await api("/api/proposals/decide", {method: "POST", body: JSON.stringify({proposal_id: pid, approve: b.dataset.dec === "1"})}); after(b.dataset.dec === "1" ? "Approved. It runs on the next decision run" + (C.dry_run ? " as a simulation (dry run)." : ".") : "Rejected."); } catch (err) { if (err.message !== "signin") toast(err.message); b.disabled = false; } });
+      const hash = (b.closest("[data-pid]").querySelector("[data-hash]") || {dataset: {}}).dataset.hash;
+      try { await api("/api/proposals/decide", {method: "POST", body: JSON.stringify({proposal_id: pid, approve: b.dataset.dec === "1", expected_hash: hash})}); after(b.dataset.dec === "1" ? "Approved. The hourly job (next run at :07) re-checks it and then " + (C.dry_run ? "simulates it: dry run, nothing is sent." : "sends it.") : "Rejected."); } catch (err) { if (err.message !== "signin") toast(err.message); b.disabled = false; } });
     document.querySelectorAll(".umap").forEach(row => {
       const send = async body => { try { await api("/api/campaigns/map", {method: "POST", body: JSON.stringify({channel: row.dataset.ch, campaign_id: row.dataset.cid, ...body})}); after("Saved. Decisions use it from the next run."); } catch (err) { if (err.message !== "signin") toast(err.message); } };
       row.querySelector("[data-map]").onclick = () => { const a = row.querySelector("select").value; if (!a) { toast("Choose an app first"); return; } send({app: a}); };

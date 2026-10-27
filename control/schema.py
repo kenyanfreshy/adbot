@@ -141,6 +141,111 @@ MIGRATIONS: list[tuple[int, str, list[str]]] = [
     ]),
 ]
 
+# --------------------------------------------------------------------------- #
+# Migration 2: execution lifecycle, bound approvals, write-ahead intents, budget reservations
+# --------------------------------------------------------------------------- #
+P_STATUSES = ("proposed", "blocked", "approved", "rejected", "executing", "applied", "verified", "simulated", "failed",
+              "uncertain", "superseded", "expired", "already_done")
+E_RESULTS = ("simulated", "accepted", "verified", "failed", "uncertain", "already_done", "blocked", "skipped",
+             "reconciled_verified", "reconciled_not_applied", "applied", "reconciled_applied")
+P_OLD_COLS = ("proposal_id, fingerprint, kind, created_at, run_id, app, channel, account_id, campaign_id, entity_key, entity_type, "
+              "entity_name, action, current_value, proposed_value, metrics, window_start, window_end, freshness, sufficiency, rule_id, "
+              "rule_version, reason, expected_effect, blockers, next_eligible_at, status, decided_by, decided_at, outcome, outcome_at")
+
+
+def _in(vals) -> str:
+    return ", ".join(f"'{v}'" for v in vals)
+
+
+MIGRATIONS.append((2, "execution lifecycle: bound approvals, verified status, intents (write-ahead), budget reservations", [
+    f"""CREATE TABLE {SCHEMA}.proposals_v2 (
+        proposal_id      VARCHAR PRIMARY KEY,
+        fingerprint      VARCHAR NOT NULL,
+        kind             VARCHAR NOT NULL CHECK (kind IN ('optimization', 'safeguard', 'emergency', 'manual')),
+        created_at       TIMESTAMP NOT NULL,
+        run_id           VARCHAR,
+        app              VARCHAR,
+        channel          VARCHAR,
+        account_id       VARCHAR,
+        campaign_id      VARCHAR,
+        entity_key       VARCHAR NOT NULL,
+        entity_type      VARCHAR,
+        entity_name      VARCHAR,
+        action           VARCHAR NOT NULL,
+        current_value    VARCHAR,
+        proposed_value   VARCHAR,
+        metrics          VARCHAR,
+        window_start     DATE,
+        window_end       DATE,
+        freshness        VARCHAR,
+        sufficiency      VARCHAR,
+        rule_id          VARCHAR,
+        rule_version     VARCHAR,
+        reason           VARCHAR,
+        expected_effect  VARCHAR,
+        blockers         VARCHAR,
+        next_eligible_at TIMESTAMP,
+        status           VARCHAR NOT NULL CHECK (status IN ({_in(P_STATUSES)})),
+        decided_by       VARCHAR,
+        decided_at       TIMESTAMP,
+        outcome          VARCHAR,
+        outcome_at       TIMESTAMP,
+        currency            VARCHAR,     -- currency of current/proposed values (budgets)
+        policy_version      VARCHAR,     -- hash of the rule settings that produced it
+        proposal_hash       VARCHAR,     -- hash of exact values + evidence + account/campaign + policy
+        approved_hash       VARCHAR,     -- proposal_hash the approver saw; execution needs it unchanged
+        approval_expires_at TIMESTAMP,
+        reapproval_required BOOLEAN NOT NULL DEFAULT FALSE,
+        request_id          VARCHAR,     -- emergency request this pause belongs to
+        claimed_by          VARCHAR,     -- worker that took it for execution
+        claimed_at          TIMESTAMP)""",
+    f"INSERT INTO {SCHEMA}.proposals_v2 ({P_OLD_COLS}) SELECT {P_OLD_COLS} FROM {SCHEMA}.proposals",
+    # migration 1 used 'applied' for a change confirmed by a re-read; that is 'verified' now
+    f"UPDATE {SCHEMA}.proposals_v2 SET status = 'verified' WHERE status = 'applied'",
+    f"ALTER TABLE {SCHEMA}.proposals RENAME TO proposals_pre_m2",
+    f"ALTER TABLE {SCHEMA}.proposals_v2 RENAME TO proposals",
+    f"""CREATE TABLE {SCHEMA}.executions_v2 (
+        exec_id      VARCHAR PRIMARY KEY,
+        proposal_id  VARCHAR NOT NULL,
+        attempted_at TIMESTAMP NOT NULL,
+        mode         VARCHAR NOT NULL CHECK (mode IN ('dry_run', 'live')),
+        pre_state    VARCHAR,
+        result       VARCHAR NOT NULL CHECK (result IN ({_in(E_RESULTS)})),
+        post_state   VARCHAR,
+        error        VARCHAR,
+        intent_id    VARCHAR,
+        worker       VARCHAR)""",
+    f"INSERT INTO {SCHEMA}.executions_v2 (exec_id, proposal_id, attempted_at, mode, pre_state, result, post_state, error) "
+    f"SELECT exec_id, proposal_id, attempted_at, mode, pre_state, result, post_state, error FROM {SCHEMA}.executions",
+    f"ALTER TABLE {SCHEMA}.executions RENAME TO executions_pre_m2",
+    f"ALTER TABLE {SCHEMA}.executions_v2 RENAME TO executions",
+    # write-ahead record of every live remote write: persisted BEFORE the request is sent
+    f"""CREATE TABLE IF NOT EXISTS {SCHEMA}.intents (
+        intent_id    VARCHAR PRIMARY KEY,
+        proposal_id  VARCHAR NOT NULL,
+        created_at   TIMESTAMP NOT NULL,
+        worker       VARCHAR NOT NULL,
+        channel      VARCHAR NOT NULL,
+        entity_key   VARCHAR NOT NULL,
+        action       VARCHAR NOT NULL,
+        request      VARCHAR NOT NULL,      -- exact values sent (no credentials)
+        pre_state    VARCHAR,
+        state        VARCHAR NOT NULL CHECK (state IN ('pending', 'accepted', 'uncertain', 'verified', 'not_applied', 'failed')),
+        updated_at   TIMESTAMP NOT NULL,
+        error        VARCHAR)""",
+    # budget headroom held by increases, so two changes (or two jobs) can't spend the same allowance
+    f"""CREATE TABLE IF NOT EXISTS {SCHEMA}.budget_reservations (
+        reservation_id VARCHAR PRIMARY KEY,
+        app            VARCHAR NOT NULL,
+        day            DATE NOT NULL,
+        currency       VARCHAR NOT NULL,
+        amount         DOUBLE NOT NULL,
+        proposal_id    VARCHAR NOT NULL,
+        worker         VARCHAR NOT NULL,
+        created_at     TIMESTAMP NOT NULL,
+        state          VARCHAR NOT NULL CHECK (state IN ('held', 'consumed', 'released')))""",
+]))
+
 LATEST = max(v for v, _, _ in MIGRATIONS)
 
 
@@ -148,7 +253,13 @@ def _now() -> dt.datetime:
     return dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
 
 
+def _q(s: str) -> str:
+    return "'" + s.replace("'", "''") + "'"
+
+
 def ensure_schema(con) -> list[int]:
+    """Apply missing migrations. Each migration runs as ONE script inside a transaction together with its
+    schema_migrations row, so a crash leaves either the old schema or the new one, never half of it."""
     con.execute(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}")
     con.execute(f"CREATE TABLE IF NOT EXISTS {SCHEMA}.schema_migrations "
                 "(version INTEGER PRIMARY KEY, description VARCHAR NOT NULL, applied_at TIMESTAMP NOT NULL)")
@@ -157,8 +268,16 @@ def ensure_schema(con) -> list[int]:
     for version, desc, statements in MIGRATIONS:
         if version in done:
             continue
-        for sql in statements:
-            con.execute(sql)
-        con.execute(f"INSERT INTO {SCHEMA}.schema_migrations VALUES (?, ?, ?) ON CONFLICT DO NOTHING", [version, desc, _now()])
+        script = ";\n".join(["BEGIN TRANSACTION", *statements,
+                             f"INSERT INTO {SCHEMA}.schema_migrations VALUES ({version}, {_q(desc)}, "
+                             f"TIMESTAMP '{_now().isoformat(sep=' ')}')", "COMMIT"])
+        try:
+            con.execute(script)
+        except Exception:
+            try:
+                con.execute("ROLLBACK")
+            except Exception:  # noqa: BLE001 - no transaction left open
+                pass
+            raise
         applied.append(version)
     return applied

@@ -59,7 +59,8 @@ def ad_summary(rows: list[dict], rules) -> dict:
     by_cur: dict = {}
     for r in rows:
         cur = r.get("currency") or "unknown"
-        g = by_cur.setdefault(cur, {"currency": cur, "spend": 0.0, "taps": 0.0, "impressions": 0.0, "installs": 0.0,
+        # grouped by currency AND platform: platform-attributed revenue overlaps, so it's never added across platforms
+        g = by_cur.setdefault((cur, r.get("channel")), {"currency": cur, "channel": r.get("channel"), "spend": 0.0, "taps": 0.0, "impressions": 0.0, "installs": 0.0,
                                     "install_spend": 0.0, "conversions_other": 0.0, "revenue": 0.0, "revenue_spend": 0.0,
                                     "rows": 0, "revenue_rows": 0})
         ch = CHANNELS.get(r.get("channel"), {})
@@ -83,7 +84,7 @@ def ad_summary(rows: list[dict], rules) -> dict:
                     "revenue": g["revenue"] if g["revenue_rows"] else None,
                     "revenue_coverage": (g["revenue_spend"] / g["spend"]) if g["spend"] else None,
                     "roas": (g["revenue"] / g["revenue_spend"]) if g["revenue_rows"] and g["revenue_spend"] else None})
-    return {"by_currency": sorted(out, key=lambda x: -x["spend"]), "mixed_currency": len(out) > 1}
+    return {"by_currency": sorted(out, key=lambda x: -x["spend"]), "mixed_currency": len({g["currency"] for g in out}) > 1}
 
 
 def store_money(con, start: dt.date, end: dt.date) -> dict:

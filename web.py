@@ -23,6 +23,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import threading
 import time
 from dataclasses import asdict
@@ -137,14 +138,26 @@ def authed(request: Request) -> bool:
 
 
 _fails: dict[str, list[float]] = {}
+DEMO_PASSWORDS = {"test-pass", "password", "changeme", "admin", "adbot"}
+
+
+def client_ip(request: Request) -> str:
+    """The address Render's proxy saw: the LAST X-Forwarded-For hop (earlier hops are whatever the client sent)."""
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[-1].strip()
+    return request.client.host if request.client else "?"
 
 
 async def login(request: Request):
     if not _password():
         return J({"error": "APP_PASSWORD is not set on the server."}, 503)
-    ip = request.headers.get("x-forwarded-for", request.client.host if request.client else "?").split(",")[0].strip()
+    if bot.production() and _password().lower() in DEMO_PASSWORDS:
+        return J({"error": "APP_PASSWORD is a demo/test password; set a real one on Render."}, 503)
+    ip = client_ip(request)
     recent = [t for t in _fails.get(ip, []) if time.time() - t < 900]
-    if len(recent) >= 10:
+    everyone = [t for v in _fails.values() for t in v if time.time() - t < 900]
+    if len(recent) >= 10 or len(everyone) >= 50:   # per client, and a global cap (client IPs can be spoofed or rotated)
         return J({"error": "Too many attempts. Try again in 15 minutes."}, 429)
     try:
         body = await request.json()
@@ -170,15 +183,62 @@ async def logout(request: Request):
     return resp
 
 
-def guarded(fn):
-    async def wrapper(request: Request):
-        if not authed(request):
-            return J({"error": "signin"}, 401)
-        try:
-            return await fn(request)
-        except Exception as e:  # noqa: BLE001
-            return J({"error": f"{type(e).__name__}: {str(e)[:300]}"}, 500)
-    return wrapper
+_hits: dict[str, list[float]] = {}
+RATE = {"default": (60, 60), "control": (12, 60), "run": (3, 300)}   # (requests, per seconds) per client
+
+
+def same_origin(request: Request) -> bool:
+    """CSRF defence for cookie-authenticated writes: a custom header (cross-site pages can't add it without a CORS
+    grant, and this app sends none) plus, when the browser sends one, an Origin matching this host."""
+    if request.headers.get("x-adbot-request") != "1":
+        return False
+    origin = request.headers.get("origin")
+    if origin:
+        host = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
+        return origin.split("://", 1)[-1].rstrip("/") == host
+    return True
+
+
+def rate_ok(request: Request, bucket: str) -> bool:
+    n, per = RATE.get(bucket, RATE["default"])
+    k = f"{bucket}:{client_ip(request)}"
+    t = time.time()
+    v = [x for x in _hits.get(k, []) if t - x < per]
+    if len(v) >= n:
+        _hits[k] = v
+        return False
+    v.append(t)
+    _hits[k] = v
+    return True
+
+
+def guarded(fn=None, *, bucket: str = "default", step_up: bool = False):
+    """Server-side checks for every /api route: signed session; for writes also CSRF, rate limit and,
+    for high-risk changes, the password again (step_up)."""
+    def deco(f):
+        async def wrapper(request: Request):
+            if not authed(request):
+                return J({"error": "signin"}, 401)
+            if request.method != "GET":
+                if not same_origin(request):
+                    return J({"error": "Request refused (missing same-site request header)"}, 403)
+                if not rate_ok(request, bucket):
+                    return J({"error": "Too many requests; wait a minute"}, 429)
+            try:
+                return await f(request)
+            except bot.SharedStorageMissing as e:
+                return J({"error": str(e)}, 503)
+            except cstate.StorageError as e:
+                return J({"error": str(e)}, 503)
+            except Exception as e:  # noqa: BLE001
+                return J({"error": f"{type(e).__name__}: {str(e)[:300]}"}, 500)
+        return wrapper
+    return deco(fn) if fn else deco
+
+
+def password_ok(body: dict) -> bool:
+    pw = str((body or {}).get("password") or "")
+    return bool(_password()) and hmac.compare_digest(hashlib.sha256(pw.encode()).digest(), hashlib.sha256(_password().encode()).digest())
 
 
 # --------------------------------------------------------------------------- #
@@ -216,14 +276,25 @@ def filters(request: Request):
 
 
 def totals(rs: list[dict], rules: bot.Rules) -> dict:
-    """Ad KPIs with their coverage. Revenue is only what platforms reported; missing is None, never 0."""
+    """Ad KPIs with their coverage. Revenue is only what platforms reported; missing is None, never 0.
+    Platform-attributed revenue is NEVER added across platforms (each platform claims conversions by its own
+    attribution, so the same purchase can be claimed twice). With several platforms it is shown per platform."""
     sp = sum(r["spend"] for r in rs)
     tp = sum(r["taps"] for r in rs)
     ins = sum(r["installs"] for r in rs if CH_INFO.get(r["channel"], {}).get("conversion_is_install"))
     conv_other = sum(r["installs"] for r in rs if not CH_INFO.get(r["channel"], {}).get("conversion_is_install"))
-    rev_rows = [r for r in rs if r.get("revenue") is not None and CH_INFO.get(r["channel"], {}).get("revenue") != "none"]
-    rev = sum(r["revenue"] for r in rev_rows) if rev_rows else None
-    rev_sp = sum(r["spend"] for r in rev_rows)
+    by_ch: dict = {}
+    for r in rs:
+        if r.get("revenue") is not None and CH_INFO.get(r["channel"], {}).get("revenue") != "none":
+            c = by_ch.setdefault(r["channel"], {"channel": r["channel"], "revenue": 0.0, "spend": 0.0})
+            c["revenue"] += r["revenue"]
+            c["spend"] += r["spend"]
+    for c in by_ch.values():
+        c["roas"] = c["revenue"] / c["spend"] if c["spend"] else None
+        c["acos"] = c["spend"] / c["revenue"] if c["revenue"] else None
+    one = list(by_ch.values())[0] if len(by_ch) == 1 else None
+    rev = one["revenue"] if one else None
+    rev_sp = sum(c["spend"] for c in by_ch.values())
     by_app_inst: dict = {}
     for r in rs:
         if CH_INFO.get(r["channel"], {}).get("conversion_is_install"):
@@ -231,8 +302,13 @@ def totals(rs: list[dict], rules: bot.Rules) -> dict:
     est_parts = [v * rules.vpi(a) for a, v in by_app_inst.items() if rules.vpi(a)]
     currencies = sorted({r.get("currency") for r in rs if r.get("currency")})
     return {"spend": sp, "taps": tp, "installs": ins, "conversions_other": conv_other, "revenue": rev,
+            "revenue_basis": "platform-attributed purchase value, as reported by " + (one["channel"] if one else "each platform separately"),
+            "revenue_by_channel": sorted(by_ch.values(), key=lambda c: -c["spend"]),
+            "revenue_note": ("Reported by several platforms: shown per platform, not added up (their attribution overlaps)"
+                             if len(by_ch) > 1 else None),
             "revenue_coverage": (rev_sp / sp) if sp else None, "revenue_estimate": sum(est_parts) if est_parts else None,
-            "acos": (rev_sp / rev) if rev else None, "roas": (rev / rev_sp) if (rev is not None and rev_sp) else None,
+            "revenue_estimate_basis": "modeled: value per install × installs; display only, never used for decisions",
+            "acos": one["acos"] if one else None, "roas": one["roas"] if one else None,
             "cpt": sp / tp if tp else None, "cpi": (sum(r["spend"] for r in rs if CH_INFO.get(r["channel"], {}).get("conversion_is_install")) / ins) if ins else None,
             "currencies": currencies, "mixed_currency": len(currencies) > 1}
 
@@ -339,7 +415,7 @@ async def keywords(request: Request):
     return J({"items": out[:500], "max_cpt": rules.max_cpt, "target_acos": rules.target_acos, "max_acos": rules.max_acos})
 
 
-@guarded
+@guarded(bucket="control")
 async def override(request: Request):
     body = await request.json()
     key, status = str(body.get("key", ""))[:300], body.get("status")
@@ -364,6 +440,7 @@ RULE_FIELDS = {  # name: (type, min, max)
     "max_actions_per_campaign_day": (int, 1, 20), "max_actions_per_account_day": (int, 1, 200), "deadband_pct": (float, 0, 0.5),
     "min_days_data": (int, 1, 60), "stale_after_hours": (float, 2, 24 * 7), "min_conversions_for_revenue_rules": (int, 1, 10000),
     "min_spend_for_rebalance": (float, 0, 100000), "exploration_share": (float, 0, 0.33),
+    "approval_ttl_hours": (float, 1, 24 * 7),
 }
 NULLABLE_MONEY = {"monthly_budget": (0, 1_000_000), "campaign_daily_max": (1, 100_000)}
 AUTO_ACTIONS = ("pause_keyword", "pause_ad_set", "pause_campaign", "set_budget_decrease", "set_budget_increase", "safeguard_pause")
@@ -439,7 +516,7 @@ def _validate_rules(body: dict, base: bot.Rules) -> bot.Rules:
     return new
 
 
-@guarded
+@guarded(bucket="control")
 async def rules_post(request: Request):
     body = await request.json()
     base = bot.load_rules(con())
@@ -453,6 +530,8 @@ async def rules_post(request: Request):
         new = _validate_rules(body, base)
     except (ValueError, TypeError) as e:
         return J({"error": str(e)}, 400)
+    if list(new.auto_actions or []) != list(base.auto_actions or []) and new.auto_actions and not password_ok(body):
+        return J({"error": "Enter the AdBot password to change which actions may run automatically"}, 403)
     d = asdict(new)
     d.pop("overrides", None)
     old = asdict(base)
@@ -521,7 +600,7 @@ async def telegram_test(request: Request):
     return J({"ok": ok, "error": None if ok else "Not sent. Check TELEGRAM_BOT_TOKEN on Render and the chat ID in Rules."})
 
 
-@guarded
+@guarded(bucket="run")
 async def run_bot_now(request: Request):
     """One decision cycle now (no import: the hourly job imports). Shares the hourly job's lock, so the two
     never decide at the same time. This web service normally has no ad credentials, so approved live
@@ -530,8 +609,9 @@ async def run_bot_now(request: Request):
     with _db_lock:
         if not cstate.acquire(con(), "hourly", owner, ttl_minutes=10):
             return J({"error": "The hourly job is running right now. Try again in a few minutes."}, 409)
-        try:
-            res = bot.run_bot(con(), bot.load_rules(con()))
+        try:   # the web service never sends advertising changes: forced dry run, no adapters, no execution step
+            res = bot.run_bot(con(), bot.load_rules(con()), dry_run=True, adapters={}, execute=False,
+                              environ={**os.environ, "DRY_RUN": "true"}, lease=("hourly", owner))
         finally:
             cstate.release(con(), "hourly", owner)
     return J({"ok": True, "mode": res["mode"], "dry_run": res["dry_run"], "proposals": res["proposals"],
@@ -552,7 +632,7 @@ def pacing_and_rebalance(rules, allr: list[dict]) -> tuple[dict, dict]:
     pace = cbudget.pacing(rules, agg["mtd_app"], agg["mtd_channel"], today, APPS, agg["unattributed_mtd"])
     per_app = {}
     for e in agg["entities"].values():
-        p = per_app.setdefault(e["app"], {"spend": 0.0, "revenue": 0.0, "conversions": 0.0, "currency": None, "_known": True})
+        p = per_app.setdefault(e["app"], {"spend": 0.0, "revenue": 0.0, "conversions": 0.0, "currency": None, "_known": True, "_ch": set()})
         p["spend"] += e["spend"]
         p["conversions"] += e["installs"]
         p["currency"] = ",".join(sorted(e["currencies"])) or p["currency"]
@@ -560,9 +640,14 @@ def pacing_and_rebalance(rules, allr: list[dict]) -> tuple[dict, dict]:
             p["_known"] = False
         else:
             p["revenue"] += e["revenue"]
+            p["_ch"].add(e["channel"])
     for p in per_app.values():
+        chs = p.pop("_ch")
         if not p.pop("_known"):
             p["revenue"] = None
+        elif len(chs) > 1:   # overlapping platform claims are never added together
+            p["revenue"] = None
+            p["revenue_note"] = "revenue is claimed by several platforms; there is no deduplicated figure to compare"
     configured = [s for c, s in statuses.items() if CH_INFO[c]["supported"] and s["state"] != "not_configured"]
     source_ok = bool(configured) and all(s["state"] in cstatus.USABLE for s in configured)
     reb = cbudget.rebalance(rules, per_app, APPS, source_ok, mode, bool(stopped), (last or {}).get("at"))
@@ -588,7 +673,9 @@ async def control_get(request: Request):
     with _db_lock:
         c = con()
         mode, stopped, emer = cstate.mode(c), cstate.automation_stopped(c), ceng.emergency_active(c)
+        emer_status = ceng.emergency_status(c)
         last = cstate.get(c, "last_cycle")
+        hb = cstate.get(c, "worker_heartbeat")
         ad_status = list(ceng.source_statuses(c, rules).values())
         reg = rev_registry.registry(c)
         unm = cingest.unmapped(c)
@@ -611,7 +698,7 @@ async def control_get(request: Request):
                      "text": "Paused campaigns stay paused until you resume them in each platform. Clear the latch when you're done.", "action": "emergency"})
     if stopped:
         need.append({"severity": "critical", "title": "Automation is stopped",
-                     "text": (stopped.get("reason") or "") + " Ads keep running; only AdBot's optimization changes are stopped.", "action": "resume"})
+                     "text": (stopped.get("reason") or "") + " Ads keep running; AdBot sends no advertising changes while stopped.", "action": "resume"})
     for p in queue:
         if p["status"] == "uncertain":
             need.append({"severity": "critical", "title": f"Unconfirmed change: {p['entity_name']}", "text": p.get("outcome") or "", "action": "log"})
@@ -638,8 +725,16 @@ async def control_get(request: Request):
                      "text": "Add Apple Ads, Meta or Google Ads credentials to the adbot-hourly job on Render.", "action": "sources"})
     order = {"critical": 0, "warning": 1, "info": 2}
     need.sort(key=lambda x: order.get(x["severity"], 3))
+    storage = bot.storage_info()
+    hb_at = ceng._ts(hb.get("at")) if isinstance(hb, dict) and hb.get("at") else None
+    if not hb_at or (dt.datetime.utcnow() - hb_at) > dt.timedelta(hours=3):
+        need.insert(0, {"severity": "critical" if storage["production"] else "warning", "title": "Hourly job not seen in this database",
+                        "text": ("Last seen " + hb_at.isoformat(timespec="minutes") + " UTC. " if hb_at else "Never seen. ")
+                                + "Stop flags and approvals saved here only work if the hourly job uses the same database "
+                                + f"({storage['label']}).", "action": "sources"})
     return J({"mode": mode, "modes": [{"id": m, "label": cstate.MODE_LABEL[m]} for m in cstate.MODES], "dry_run": dry_run(),
-              "automation_stopped": stopped, "emergency": emer, "last_cycle": last,
+              "automation_stopped": stopped, "stop_stages": cstate.stop_stages(stopped), "emergency": emer,
+              "emergency_status": emer_status, "last_cycle": last, "storage": storage, "worker_heartbeat": hb,
               "sources": ad_status, "store_sources": store_status, "action_needed": need, "queue": queue, "recent": recent,
               "kpis": kp, "store_money": money, "pacing": pace, "rebalance": reb, "budget_errors": budget_errors,
               "unmapped": unm, "apps": APPS, "definitions": cmetrics.DEFINITIONS, "unavailable": cmetrics.UNAVAILABLE,
@@ -648,76 +743,96 @@ async def control_get(request: Request):
 
 async def _body(request: Request) -> dict:
     try:
-        return await request.json()
+        b = await request.json()
     except Exception:  # noqa: BLE001
         return {}
+    return b if isinstance(b, dict) else {}
 
 
-@guarded
+@guarded(bucket="control")
 async def control_mode(request: Request):
     body = await _body(request)
-    try:
-        with _db_lock:
-            prev = cstate.mode(con())
-            cstate.set_mode(con(), str(body.get("mode", "")), "admin")
-            rev_registry.audit(con(), "admin", "mode.changed", None, {"from": prev, "to": body.get("mode")}, dry_run=dry_run())
-    except ValueError as e:
-        return J({"error": str(e)}, 400)
-    return J({"ok": True, "mode": body.get("mode")})
+    m = str(body.get("mode", ""))
+    if m not in cstate.MODES:
+        return J({"error": f"mode must be one of {', '.join(cstate.MODES)}"}, 400)
+    if m in ("approval", "bounded_auto") and not password_ok(body):
+        return J({"error": "Enter the AdBot password to switch to a mode that can apply changes"}, 403)
+    with _db_lock:
+        prev = cstate.mode(con())
+        cstate.set_mode(con(), m, "admin")
+        if cstate.mode(con()) != m:
+            raise cstate.StorageError("The mode change was not confirmed by the database")
+        rev_registry.audit(con(), "admin", "mode.changed", None, {"from": prev, "to": m}, dry_run=dry_run())
+    return J({"ok": True, "mode": m})
 
 
-@guarded
+@guarded(bucket="control")
 async def control_stop(request: Request):
     body = await _body(request)
     with _db_lock:
-        v = cstate.stop_automation(con(), "admin", str(body.get("reason") or "Stopped from the phone app"))
-        rev_registry.audit(con(), "admin", "automation.stopped", None, v, dry_run=dry_run())
-    return J({"ok": True, "automation_stopped": v,
-              "note": "AdBot will make no optimization changes until you resume it. Your ads keep running."})
+        v = ceng.stop(con(), "admin", str(body.get("reason") or "Stopped from the phone app")[:300], dry=dry_run())
+    return J({"ok": True, "automation_stopped": v, "stages": cstate.stop_stages(v),
+              "note": f"Stop saved ({v['approvals_withdrawn']} waiting approval(s) withdrawn). The hourly job re-checks it before "
+                      "every advertising change and confirms it at its next run (:07). Your ads keep running."})
 
 
-@guarded
+@guarded(bucket="control")
 async def control_resume(request: Request):
+    body = await _body(request)
+    if not password_ok(body):
+        return J({"error": "Enter the AdBot password to resume automation"}, 403)
     with _db_lock:
-        cstate.reset_automation_stop(con(), "admin")
-        rev_registry.audit(con(), "admin", "automation.resumed", None, None, dry_run=dry_run())
-    return J({"ok": True})
+        r = ceng.resume(con(), "admin", dry=dry_run())
+    return J({"ok": True, **r, "note": "Automation resumed. Nothing was un-paused, and earlier approvals are blocked until you approve them again."})
 
 
-@guarded
+@guarded(bucket="control")
 async def control_emergency(request: Request):
     body = await _body(request)
-    app_ = body.get("app") if body.get("app") in APPS else None
-    ch = body.get("channel") if body.get("channel") in MANAGED else None
     if body.get("confirm") != "PAUSE":
         return J({"error": "Type PAUSE to confirm"}, 400)
+    app_ = body.get("app") or None
+    ch = body.get("channel") or None
+    if app_ is not None and app_ not in APPS:
+        return J({"error": f"Unknown app: {str(app_)[:60]}"}, 400)
+    if ch is not None and ch not in MANAGED:
+        return J({"error": f"Unknown or unmanaged channel: {str(ch)[:60]}"}, 400)
     rules = bot.load_rules(con())
     with _db_lock:
         res = ceng.request_emergency_pause(con(), rules, "admin", APPS, app=app_, channel=ch, dry=dry_run(),
                                            dataset=bot.DATASET, table=bot.TABLE, rule_app_fn=lambda n: bot.app_for(n, rules))
-    return J({"ok": True, **res, "note": "Pauses run on the hourly job, which has the platform credentials. Each campaign's result "
-                                         "appears in the decision queue. Nothing is resumed automatically later."})
+    return J({"ok": True, **res, "note": ("Recorded and saved. Nothing has been paused yet: the hourly job (next run at :07) sends the "
+                                          "pauses, and only when DRY_RUN is off. Each campaign's result appears in the queue. "
+                                          "Nothing is resumed automatically later.")})
 
 
-@guarded
+@guarded(bucket="control")
 async def control_emergency_clear(request: Request):
     with _db_lock:
         ceng.clear_emergency(con(), "admin", dry=dry_run())
-    return J({"ok": True, "note": "Latch cleared. Paused campaigns stay paused until you resume them in each platform."})
+    return J({"ok": True, "note": "Latch cleared; unsent pauses withdrawn. Paused campaigns stay paused until you resume them in each platform."})
 
 
-@guarded
+PID_RE = re.compile(r"^[0-9a-f]{32}$")
+
+
+@guarded(bucket="control")
 async def proposal_decide(request: Request):
     body = await _body(request)
+    pid = str(body.get("proposal_id", ""))
+    if not PID_RE.match(pid) or not isinstance(body.get("approve"), bool):
+        return J({"error": "proposal_id and approve (true/false) are required"}, 400)
+    rules = bot.load_rules(con())
     try:
         with _db_lock:
-            res = ceng.decide(con(), str(body.get("proposal_id", "")), bool(body.get("approve")), "admin", dry_run())
+            res = ceng.decide(con(), pid, body["approve"], "admin", dry_run(), expected_hash=str(body.get("expected_hash") or "") or None,
+                              ttl_hours=rules.approval_ttl_hours)
     except ValueError as e:
-        return J({"error": str(e)}, 400)
+        return J({"error": str(e)}, 409)
     return J({"ok": True, **res})
 
 
-@guarded
+@guarded(bucket="control")
 async def campaign_map(request: Request):
     body = await _body(request)
     try:

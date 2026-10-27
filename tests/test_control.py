@@ -198,8 +198,11 @@ class DataRuleTests(unittest.TestCase):
         self.assertEqual([x["entity_key"] for x in p], ["Meta Ads|B"])
         self.assertIn("reported $0", p[0]["reason"])
         self.assertTrue(any(n.get("rule") == "acos_ceiling" for n in s["notes"]))
-        summ = metrics.ad_summary(engine.load_rows(con, TODAY - dt.timedelta(days=30), TODAY), rules())["by_currency"][0]
-        self.assertAlmostEqual(summ["revenue_coverage"], 60 / (60 + 60 + 140))   # only B's spend has reported revenue
+        groups = metrics.ad_summary(engine.load_rows(con, TODAY - dt.timedelta(days=30), TODAY), rules())["by_currency"]
+        meta = [g for g in groups if g["channel"] == "Meta Ads"][0]
+        self.assertAlmostEqual(meta["revenue_coverage"], 60 / (60 + 60))   # only B's spend has reported revenue
+        apple = [g for g in groups if g["channel"] == "Apple Search Ads"][0]
+        self.assertIsNone(apple["revenue"])                                # never $0, and never mixed with Meta's claims
 
     def test_value_per_install_estimate_never_drives_decisions(self):
         con = fresh()
@@ -329,14 +332,17 @@ class ExecutionTests(unittest.TestCase):
         p = props(self.con)[0]
         self.assertEqual(p["status"], "proposed")
         self.assertEqual(fake.writes, [])
-        engine.decide(self.con, p["proposal_id"], True, "admin", dry=False)
         with self.assertRaises(ValueError):
-            engine.decide(self.con, p["proposal_id"], True, "admin", dry=False)   # can't approve twice
+            engine.decide(self.con, p["proposal_id"], True, "admin", dry=False)   # approval must name the exact version seen
+        engine.decide(self.con, p["proposal_id"], True, "admin", dry=False, expected_hash=p["proposal_hash"])
+        with self.assertRaises(ValueError):
+            engine.decide(self.con, p["proposal_id"], True, "admin", dry=False, expected_hash=p["proposal_hash"])   # not twice
         cycle(self.con, r, env=LIVE, adapters={"Apple Search Ads": fake}, now=NOW + dt.timedelta(minutes=5))
         self.assertEqual(len(fake.writes), 1)
-        self.assertEqual(props(self.con)[0]["status"], "applied")
-        ex = self.con.execute("SELECT result, pre_state, post_state FROM control.executions").fetchone()
-        self.assertEqual(ex[0], "applied")
+        self.assertEqual(props(self.con)[0]["status"], "verified")
+        ex = self.con.execute("SELECT result, pre_state, post_state FROM control.executions ORDER BY attempted_at, result").fetchall()
+        self.assertEqual(sorted(e[0] for e in ex), ["accepted", "verified"])
+        ex = [e for e in ex if e[0] == "verified"][0]
         self.assertIn("ACTIVE", ex[1])
         self.assertIn("PAUSED", ex[2])
 
@@ -364,13 +370,13 @@ class ExecutionTests(unittest.TestCase):
         r = rules(auto_actions=["pause_keyword"])
         s = cycle(self.con, r, env=LIVE, adapters={"Apple Search Ads": fake})
         by = {p["entity_key"]: p["status"] for p in props(self.con)}
-        self.assertEqual(by, {"Apple Search Ads|1": "applied", "Apple Search Ads|2": "failed", "Apple Search Ads|3": "uncertain"})
-        self.assertEqual(s["executions"], {"applied": 1, "failed": 1, "uncertain": 1})
+        self.assertEqual(by, {"Apple Search Ads|1": "verified", "Apple Search Ads|2": "failed", "Apple Search Ads|3": "uncertain"})
+        self.assertEqual(s["executions"], {"verified": 1, "failed": 1, "uncertain": 1})
         n_writes = len(fake.writes)
         # next run: the uncertain one is reconciled by reading state, not re-sent
         s2 = cycle(self.con, r, env=LIVE, adapters={"Apple Search Ads": fake}, now=NOW + dt.timedelta(hours=1))
         self.assertIn({"proposal_id": [p for p in props(self.con) if p["entity_key"] == "Apple Search Ads|3"][0]["proposal_id"],
-                       "result": "applied"}, s2["reconciled"])
+                       "result": "verified"}, s2["reconciled"])
         self.assertEqual([w for w in fake.writes[n_writes:] if w["entity_key"] == "Apple Search Ads|3"], [])
 
     def test_uncertain_blocks_new_changes_until_reconciled(self):
@@ -390,12 +396,15 @@ class ExecutionTests(unittest.TestCase):
         state.set_mode(self.con, "approval", "test")
         cycle(self.con, rules(), env=LIVE)
         p = props(self.con)[0]
-        engine.decide(self.con, p["proposal_id"], True, "admin", dry=False)
+        engine.decide(self.con, p["proposal_id"], True, "admin", dry=False, expected_hash=p["proposal_hash"])
         fake = FakeAdapter({"Apple Search Ads|1": {"status": "ACTIVE"}})
         p = props(self.con)[0]
-        r1 = engine.execute(self.con, p, {"Apple Search Ads": fake}, False, NOW)
-        r2 = engine.execute(self.con, p, {"Apple Search Ads": fake}, False, NOW)   # second worker, same proposal
-        self.assertEqual((r1, r2), ("applied", "skipped"))
+        r = rules()
+        mk = lambda w: engine.ExecContext(self.con, r, adapters={"Apple Search Ads": fake}, dry=False, now=NOW, worker=w, apps=APPS,
+                                          statuses=engine.source_statuses(self.con, r, NOW), mode="approval")
+        r1 = engine.execute(self.con, p, ctx=mk("w1"))
+        r2 = engine.execute(self.con, p, ctx=mk("w2"))   # second worker, same proposal
+        self.assertEqual((r1, r2), ("verified", "skipped"))
         self.assertEqual(len(fake.writes), 1)
 
     def test_manual_override_and_protection(self):
@@ -404,7 +413,7 @@ class ExecutionTests(unittest.TestCase):
         fake = FakeAdapter({"Apple Search Ads|2": {"status": "ACTIVE"}})
         cycle(self.con, r, env=LIVE, adapters={"Apple Search Ads": fake})     # recommend mode
         p = props(self.con)
-        self.assertEqual([(x["entity_key"], x["kind"], x["status"]) for x in p], [("Apple Search Ads|2", "manual", "applied")])
+        self.assertEqual([(x["entity_key"], x["kind"], x["status"]) for x in p], [("Apple Search Ads|2", "manual", "verified")])
         self.assertEqual(fake.writes[0]["entity_key"], "Apple Search Ads|2")
 
 
@@ -483,7 +492,10 @@ class EmergencyTests(unittest.TestCase):
         fm = FakeAdapter({"Meta Ads|A": {"status": "ACTIVE"}}, fail={"Meta Ads|A": "error"})
         cycle(self.con, r, env=LIVE, adapters={"Apple Search Ads": fa, "Meta Ads": fm})   # recommend mode + stopped
         em = {p["entity_key"]: p["status"] for p in props(self.con, "kind = 'emergency'")}
-        self.assertEqual(em, {"Apple Search Ads|campaign:301": "applied", "Meta Ads|A": "failed"})   # per-campaign results
+        self.assertEqual(em, {"Apple Search Ads|campaign:301": "verified", "Meta Ads|A": "failed"})   # per-campaign results
+        es = engine.emergency_status(self.con)
+        self.assertEqual((es["verified"], es["failed"], es["remote_requests_sent"]), (1, 1, 2))
+        self.assertTrue(es["persisted_at"] and es["acknowledged_at"])
         self.assertTrue(engine.emergency_active(self.con))
         engine.clear_emergency(self.con, "admin")
         self.assertIsNone(engine.emergency_active(self.con))
@@ -550,6 +562,314 @@ class LockTests(unittest.TestCase):
         state.set_mode(con, "approval", "t")
         con2 = duckdb.connect(con.path) if hasattr(con, "path") else con
         self.assertEqual(state.mode(con2), "approval")
+
+
+# --------------------------------------------------------------------------- #
+# Failure paths (hardening pass 2026-10-27)
+# --------------------------------------------------------------------------- #
+def approved(con, r, *, key, action, channel, entity_type, app, current=None, proposed=None, cid="c1", acct="a1", kind="manual",
+             now=None, currency="USD"):
+    """An approved proposal bound exactly like a real approval (hash + expiry)."""
+    ent_id = key.split("|", 1)[1]
+    p = engine._proposal(kind, {"channel": channel, "entity_key": key, "entity_type": entity_type, "entity_id": ent_id, "app": app,
+                                "campaign_id": cid, "account_id": acct, "name": key}, action, "test", "manual_override",
+                         {"currency": currency}, current=current, proposed=proposed)
+    p["fingerprint"] = engine.fingerprint(p)
+    engine._prepare(p, r, engine.policy_version(r))
+    t = now or NOW
+    row = {**p, "proposal_id": os.urandom(16).hex(), "created_at": t, "run_id": "t", "status": "approved", "metrics": p["metrics_json"],
+           "blockers": "[]", "decided_by": "admin", "decided_at": t, "approved_hash": p["proposal_hash"],
+           "approval_expires_at": t + dt.timedelta(hours=24)}
+    engine._insert(con, row)
+    return row["proposal_id"]
+
+
+def ctx_for(con, r, adapters, *, mode="approval", dry=False, now=NOW, pace=None, current=None, lease=None, worker="w1"):
+    return engine.ExecContext(con, r, adapters=adapters, dry=dry, now=now, worker=worker, lease=lease, apps=APPS,
+                              cmap=ingest.mapping(con), statuses=engine.source_statuses(con, r, now), pace=pace or {},
+                              current_budgets=current or {}, budgets_read_at=now - dt.timedelta(minutes=1), mode=mode)
+
+
+def status_of(con, pid):
+    return con.execute("SELECT status FROM control.proposals WHERE proposal_id = ?", [pid]).fetchone()[0]
+
+
+class FailurePathTests(unittest.TestCase):
+    def setUp(self):
+        self.con = fresh()
+        mark_sources(self.con)
+        put_rows(self.con, apple_kw("1", range(2, 9), taps=3, installs=0, spend=20, cid="111"))
+        put_rows(self.con, apple_kw("2", range(2, 9), taps=3, installs=0, spend=20, cid="112"))
+        self.r = rules(overrides={"Apple Search Ads|1": "paused", "Apple Search Ads|2": "paused"})   # two approved writes
+
+    def test_stop_requested_between_two_writes(self):
+        fake = FakeAdapter({"Apple Search Ads|1": {"status": "ACTIVE"}, "Apple Search Ads|2": {"status": "ACTIVE"}})
+        fake.on_write = lambda p: state.stop_automation(self.con, "admin", "stop mid-run") if not fake.writes else None
+        s = cycle(self.con, self.r, env=LIVE, adapters={"Apple Search Ads": fake})
+        self.assertEqual(len(fake.writes), 1)                                   # the second write never went out
+        st = sorted(p["status"] for p in props(self.con))
+        self.assertEqual(st, ["blocked", "verified"])
+        blocked = [p for p in props(self.con) if p["status"] == "blocked"][0]
+        self.assertTrue(blocked["reapproval_required"])
+        self.assertIn("stopped", blocked["blockers"].lower())
+        self.assertEqual(s["executions"].get("blocked"), 1)
+
+    def test_dry_run_emergency_pause_sends_nothing(self):
+        r = rules()
+        res = engine.request_emergency_pause(self.con, r, "admin", APPS, today=TODAY, dry=True, rule_app_fn=lambda n: app_for(n, r))
+        self.assertEqual(res["requested"], 2)
+        self.assertTrue(res["latch"]["persisted_at"])
+        self.assertIsNone(res["status"]["acknowledged_at"])                      # requested + saved, not yet seen by a worker
+        fake = FakeAdapter({"Apple Search Ads|campaign:111": {"status": "ENABLED"}, "Apple Search Ads|campaign:112": {"status": "ENABLED"}})
+        state.set_mode(self.con, "bounded_auto", "t")
+        cycle(self.con, r, env=DRY, adapters={"Apple Search Ads": fake})
+        self.assertEqual(fake.writes, [])                                        # zero remote mutations
+        # (reads are allowed: they don't change anything; budget pacing reads current budgets)
+        es = engine.emergency_status(self.con)
+        self.assertEqual((es["simulated_dry_run"], es["verified"], es["remote_requests_sent"]), (2, 0, 0))
+        self.assertTrue(es["acknowledged_at"])
+        self.assertEqual(self.con.execute("SELECT count(*) FROM control.intents").fetchone()[0], 0)
+
+    def test_live_adapter_refuses_writes_under_dry_run(self):
+        from control.adapters import AppleAdapter, DryRunViolation
+        os.environ["DRY_RUN"] = "true"
+        with self.assertRaises(DryRunViolation):
+            AppleAdapter(client=None).apply({"action": "pause_campaign", "campaign_id": "1"})
+
+    def test_emergency_scope_validation(self):
+        r = rules()
+        with self.assertRaises(ValueError):
+            engine.request_emergency_pause(self.con, r, "admin", APPS, app="Other App", today=TODAY)
+        with self.assertRaises(ValueError):
+            engine.request_emergency_pause(self.con, r, "admin", APPS, channel="TikTok Ads", today=TODAY)
+        self.assertEqual(props(self.con, "kind = 'emergency'"), [])
+        # a campaign marked "not ours" after the request is not paused
+        res = engine.request_emergency_pause(self.con, r, "admin", APPS, today=TODAY, dry=False, rule_app_fn=lambda n: app_for(n, r))
+        self.con.execute("INSERT INTO control.campaign_map VALUES ('Apple Search Ads', '112', 'org1', 'RNR | Search', NULL, NULL, TRUE, ?, ?, 't')",
+                         [NOW, NOW])
+        fake = FakeAdapter({"Apple Search Ads|campaign:111": {"status": "ENABLED"}, "Apple Search Ads|campaign:112": {"status": "ENABLED"}})
+        cycle(self.con, rules(), env=LIVE, adapters={"Apple Search Ads": fake})
+        self.assertEqual([w["entity_key"] for w in fake.writes], ["Apple Search Ads|campaign:111"])
+        self.assertEqual(res["requested"], 2)
+
+    def test_stale_approval_after_manual_campaign_change(self):
+        r = rules()
+        pid = approved(self.con, r, key="Meta Ads|201", action="set_budget", channel="Meta Ads", entity_type="ad_set",
+                       app="Rapid Nursing Review", current="60.0", proposed="45.0", cid="camp201", kind="optimization")
+        fake = FakeAdapter({"Meta Ads|201": {"status": "ACTIVE", "daily_budget": 52.0}})       # someone changed it in Ads Manager
+        res = engine.execute(self.con, {"proposal_id": pid}, ctx=ctx_for(self.con, r, {"Meta Ads": fake}))
+        self.assertEqual(res, "blocked")
+        self.assertEqual(fake.writes, [])
+        row = props(self.con, f"proposal_id = '{pid}'")[0]
+        self.assertTrue(row["reapproval_required"])
+        self.assertIn("outside AdBot", row["blockers"])
+
+    def test_approval_bound_to_values_policy_and_time(self):
+        r = rules()
+        pid = approved(self.con, r, key="Apple Search Ads|1", action="pause_keyword", channel="Apple Search Ads", entity_type="keyword",
+                       app="Rapid Nursing Review", cid="111", kind="optimization")
+        self.con.execute("UPDATE control.proposals SET proposed_value = '999' WHERE proposal_id = ?", [pid])   # row changed after approval
+        fake = FakeAdapter({"Apple Search Ads|1": {"status": "ACTIVE"}})
+        self.assertEqual(engine.execute(self.con, {"proposal_id": pid}, ctx=ctx_for(self.con, r, {"Apple Search Ads": fake})), "blocked")
+        pid2 = approved(self.con, r, key="Apple Search Ads|2", action="pause_keyword", channel="Apple Search Ads", entity_type="keyword",
+                        app="Rapid Nursing Review", cid="112", kind="optimization")
+        r2 = rules(max_cpt=0.5)                                                                     # policy changed
+        self.assertEqual(engine.execute(self.con, {"proposal_id": pid2}, ctx=ctx_for(self.con, r2, {"Apple Search Ads": fake})), "blocked")
+        pid3 = approved(self.con, r, key="Apple Search Ads|3", action="pause_keyword", channel="Apple Search Ads", entity_type="keyword",
+                        app="Rapid Nursing Review", cid="113", kind="optimization", now=NOW - dt.timedelta(hours=30))
+        self.assertEqual(engine.execute(self.con, {"proposal_id": pid3}, ctx=ctx_for(self.con, r, {"Apple Search Ads": fake})), "blocked")
+        self.assertIn("expired", props(self.con, f"proposal_id = '{pid3}'")[0]["blockers"])
+        self.assertEqual(fake.writes, [])
+        # recommend mode: an approved optimization waits, it isn't sent
+        pid4 = approved(self.con, r, key="Apple Search Ads|4", action="pause_keyword", channel="Apple Search Ads", entity_type="keyword",
+                        app="Rapid Nursing Review", cid="114", kind="optimization")
+        self.assertEqual(engine.execute(self.con, {"proposal_id": pid4}, ctx=ctx_for(self.con, r, {"Apple Search Ads": fake}, mode="recommend")),
+                         "approved")
+        self.assertEqual(fake.writes, [])
+
+    def test_worker_crash_after_remote_success_before_confirmation(self):
+        fake = FakeAdapter({"Apple Search Ads|1": {"status": "ACTIVE"}, "Apple Search Ads|2": {"status": "ACTIVE"}})
+        fake.crash_after_write = {"Apple Search Ads|1"}
+        with self.assertRaises(SystemExit):
+            cycle(self.con, self.r, env=LIVE, adapters={"Apple Search Ads": fake})
+        p1 = [p for p in props(self.con) if p["entity_key"] == "Apple Search Ads|1"][0]
+        self.assertEqual(p1["status"], "executing")
+        self.assertEqual(self.con.execute("SELECT state FROM control.intents WHERE proposal_id = ?", [p1["proposal_id"]]).fetchall(),
+                         [("pending",)])                                       # written before sending
+        fake.crash_after_write = set()
+        cycle(self.con, self.r, env=LIVE, adapters={"Apple Search Ads": fake}, now=NOW + dt.timedelta(minutes=10))
+        self.assertEqual(status_of(self.con, p1["proposal_id"]), "verified")                   # reconciled by reading
+        self.assertEqual([w["entity_key"] for w in fake.writes].count("Apple Search Ads|1"), 1)    # never re-sent
+        self.assertEqual(self.con.execute("SELECT state FROM control.intents WHERE proposal_id = ?", [p1["proposal_id"]]).fetchone()[0], "verified")
+
+    def test_crash_before_anything_was_sent_needs_reapproval(self):
+        r = rules()
+        pid = approved(self.con, r, key="Apple Search Ads|1", action="pause_keyword", channel="Apple Search Ads", entity_type="keyword",
+                       app="Rapid Nursing Review", cid="111")
+        self.con.execute("UPDATE control.proposals SET status = 'executing', claimed_by = 'dead-worker', claimed_at = ? WHERE proposal_id = ?",
+                         [NOW - dt.timedelta(minutes=5), pid])
+        fake = FakeAdapter({"Apple Search Ads|1": {"status": "ACTIVE"}})
+        out = engine.reconcile(self.con, {"Apple Search Ads": fake}, NOW, ctx_for(self.con, r, {"Apple Search Ads": fake}, worker="w2"))
+        self.assertEqual(out[0]["result"], "interrupted_not_sent")
+        self.assertEqual(status_of(self.con, pid), "blocked")
+        self.assertEqual(fake.writes, [])
+
+    def test_conflicting_changes_cannot_spend_the_same_budget(self):
+        r = rules()
+        pace = {"apps": {"Rapid Nursing Review": {"daily_allowance": 30.0}}}
+        cur = {"Rapid Nursing Review": {"Meta Ads|201": 10.0, "Meta Ads|202": 10.0}}      # 10 of headroom
+        fake = FakeAdapter({"Meta Ads|201": {"status": "ACTIVE", "daily_budget": 10.0}, "Meta Ads|202": {"status": "ACTIVE", "daily_budget": 10.0}})
+        a = approved(self.con, r, key="Meta Ads|201", action="set_budget", channel="Meta Ads", entity_type="ad_set", app="Rapid Nursing Review",
+                     current="10.0", proposed="17.0", cid="camp201")
+        b = approved(self.con, r, key="Meta Ads|202", action="set_budget", channel="Meta Ads", entity_type="ad_set", app="Rapid Nursing Review",
+                     current="10.0", proposed="17.0", cid="camp202")
+        self.assertEqual(engine.execute(self.con, {"proposal_id": a}, ctx=ctx_for(self.con, r, {"Meta Ads": fake}, pace=pace, current=cur)), "verified")
+        # a second job (or the same job later) sees the first one's reservation
+        self.assertEqual(engine.execute(self.con, {"proposal_id": b}, ctx=ctx_for(self.con, r, {"Meta Ads": fake}, pace=pace, current=cur,
+                                                                                worker="w2")), "blocked")
+        self.assertIn("Budget not available", props(self.con, f"proposal_id = '{b}'")[0]["outcome"])
+        self.assertEqual(len(fake.writes), 1)
+        # and two workers can't run at once: the lease
+        self.assertTrue(state.acquire(self.con, "hourly", "w1"))
+        self.assertFalse(state.acquire(self.con, "hourly", "w2"))
+
+    def test_budget_write_blocked_when_platform_budget_shape_is_unverified(self):
+        r = rules()
+        fake = FakeAdapter({"Meta Ads|201": {"status": "ACTIVE", "daily_budget": 20.0}})
+        fake.budget_blockers = {"Meta Ads|201": ["This campaign uses a campaign budget (Advantage campaign budget); ad-set budgets can't be set"]}
+        pid = approved(self.con, r, key="Meta Ads|201", action="set_budget", channel="Meta Ads", entity_type="ad_set", app="Rapid Nursing Review",
+                       current="20.0", proposed="15.0", cid="camp201")
+        self.assertEqual(engine.execute(self.con, {"proposal_id": pid}, ctx=ctx_for(self.con, r, {"Meta Ads": fake})), "blocked")
+        self.assertEqual(fake.writes, [])
+
+    def test_lost_lease_prevents_further_writes(self):
+        self.assertTrue(state.acquire(self.con, "hourly", "w1"))
+        fake = FakeAdapter({"Apple Search Ads|1": {"status": "ACTIVE"}, "Apple Search Ads|2": {"status": "ACTIVE"}})
+
+        def takeover(p):
+            if not fake.writes:   # during the first write the lease expires and another worker takes it
+                self.con.execute("UPDATE control.locks SET expires_at = ? WHERE name = 'hourly'", [dt.datetime(2000, 1, 1)])
+                state.acquire(self.con, "hourly", "w2")
+        fake.on_write = takeover
+        self.r._cmap = ingest.mapping(self.con)
+        s = engine.run_cycle(self.con, self.r, apps=APPS, rule_app_fn=lambda n: app_for(n, self.r), adapters={"Apple Search Ads": fake},
+                             alerter=alerts.Alerter(self.con, alerts.FakeTransport(), self.r, clock=lambda: NOW), environ=LIVE, now=NOW,
+                             lease=("hourly", "w1"))
+        self.assertTrue(s["lease_lost"])
+        self.assertEqual(len(fake.writes), 1)
+
+    def test_resume_leaves_old_approvals_blocked(self):
+        r = rules()
+        state.set_mode(self.con, "approval", "t")
+        fake = FakeAdapter({"Apple Search Ads|1": {"status": "ACTIVE"}, "Apple Search Ads|2": {"status": "ACTIVE"}})
+        cycle(self.con, r, env=LIVE, adapters={"Apple Search Ads": fake})
+        p1 = [p for p in props(self.con) if p["entity_key"] == "Apple Search Ads|1"][0]
+        engine.decide(self.con, p1["proposal_id"], True, "admin", dry=False, expected_hash=p1["proposal_hash"], now=NOW)
+        engine.stop(self.con, "admin", "pause everything")
+        self.assertEqual(status_of(self.con, p1["proposal_id"]), "blocked")       # withdrawn at stop time
+        with self.assertRaises(ValueError):                                       # no approving while stopped
+            engine.decide(self.con, p1["proposal_id"], True, "admin", dry=False, expected_hash=p1["proposal_hash"], now=NOW)
+        engine.resume(self.con, "admin")
+        self.assertIsNone(state.automation_stopped(self.con))
+        cycle(self.con, r, env=LIVE, adapters={"Apple Search Ads": fake}, now=NOW + dt.timedelta(minutes=5))
+        self.assertEqual(fake.writes, [])                                        # nothing old ran by itself after Resume
+        row = props(self.con, f"proposal_id = '{p1['proposal_id']}'")[0]
+        self.assertEqual(row["status"], "blocked")
+        self.assertTrue(row["reapproval_required"])
+        self.assertIn("Needs a new approval", row["blockers"])
+        # a person approves it again (bound to the version they see now), and only then it runs
+        engine.decide(self.con, row["proposal_id"], True, "admin", dry=False, expected_hash=row["proposal_hash"], now=NOW)
+        cycle(self.con, r, env=LIVE, adapters={"Apple Search Ads": fake}, now=NOW + dt.timedelta(minutes=10))
+        self.assertEqual([w["entity_key"] for w in fake.writes], ["Apple Search Ads|1"])
+
+    def test_stop_and_approvals_survive_restart(self):
+        con = duckdb.connect(os.path.join(__import__("tempfile").mkdtemp(), "restart.duckdb"))
+        revenue.ensure(con)
+        control.ensure(con)
+        v = engine.stop(con, "admin", "restart test")
+        self.assertTrue(v["persisted_at"])
+        path = getattr(con, "path", None)
+        con.close()
+        con2 = duckdb.connect(path) if path else con
+        control.ensure(con2)                                         # restart: migrations are idempotent
+        self.assertEqual(state.automation_stopped(con2)["request_id"], v["request_id"])
+        self.assertEqual(state.stop_stages(state.automation_stopped(con2))[2]["done"], False)
+        state.acknowledge_stop(con2, "worker-1")
+        self.assertEqual(state.automation_stopped(con2)["acknowledged_by"], "worker-1")
+        engine.resume(con2, "staging-operator")                     # an actor name outside the audit table's list is kept, not lost
+        rows_ = con2.execute("SELECT actor, detail FROM revenue.audit_logs WHERE action IN ('automation.stopped', 'automation.resumed')").fetchall()
+        self.assertEqual(len(rows_), 2)
+        self.assertTrue(any("staging-operator" in str(d) for _, d in rows_))
+
+
+class RevisionTests(unittest.TestCase):
+    def test_duplicate_and_out_of_order_revisions(self):
+        k = {"channel": "Meta Ads", "entity_id": "A", "date": "2026-10-20"}
+        rows_ = [{**k, "spend": 10.0, "_fetched_at": "2026-10-21T10:00:00"},
+                 {**k, "spend": 12.0, "_fetched_at": "2026-10-22T10:00:00"},       # newer revision in the same import
+                 {**k, "spend": 11.0, "_fetched_at": "2026-10-21T12:00:00"}]       # older one arriving last
+        dropped = []
+        out = ingest.keep_newest_revisions(rows_, {}, dropped)
+        self.assertEqual([r["spend"] for r in out], [12.0])
+        self.assertEqual(len(dropped), 2)
+        # an old revision arriving after a newer one is already stored is dropped, whatever format the stored time has
+        stored = {("Meta Ads", "A", "2026-10-20"): "2026-10-23 08:00:00+00:00"}
+        self.assertEqual(ingest.keep_newest_revisions([{**k, "spend": 9.0, "_fetched_at": "2026-10-22T10:00:00"}], stored), [])
+        self.assertEqual(len(ingest.keep_newest_revisions([{**k, "spend": 9.0, "_fetched_at": "2026-10-24T10:00:00"}], stored)), 1)
+
+    def test_engine_reads_newest_revision_not_last_loaded(self):
+        con = fresh()
+        con.execute("ALTER TABLE ads.ad_performance ADD COLUMN _fetched_at VARCHAR")
+        base = meta_adset("A", [5], spend=50.0, load="2")[0]
+        put_rows(con, [base])
+        put_rows(con, [{**base, "spend": 10.0, "_dlt_load_id": "1"}])
+        con.execute("UPDATE ads.ad_performance SET _fetched_at = CASE WHEN _dlt_load_id = '1' THEN '2026-10-25T09:00:00' "
+                    "ELSE '2026-10-24T09:00:00' END")                        # load 2 carried an OLDER revision
+        r = engine.load_rows(con, TODAY - dt.timedelta(days=10), TODAY)
+        self.assertEqual([x["spend"] for x in r], [10.0])
+
+
+class MigrationTests(unittest.TestCase):
+    def test_existing_rows_preserved_and_failed_migration_rolls_back(self):
+        from control import schema
+        con = duckdb.connect(":memory:")
+        m2 = schema.MIGRATIONS.pop()
+        try:
+            schema.ensure_schema(con)
+        finally:
+            schema.MIGRATIONS.append(m2)
+        con.execute("INSERT INTO control.proposals (proposal_id, fingerprint, kind, created_at, entity_key, action, status) "
+                    "VALUES ('p1', 'f', 'optimization', TIMESTAMP '2026-10-01 00:00:00', 'k', 'pause_keyword', 'applied')")
+        con.execute("INSERT INTO control.executions VALUES ('e1', 'p1', TIMESTAMP '2026-10-01 00:00:00', 'live', NULL, 'applied', NULL, NULL)")
+        self.assertEqual(schema.ensure_schema(con), [2])
+        self.assertEqual(schema.ensure_schema(con), [])                     # idempotent on restart
+        self.assertEqual(con.execute("SELECT status FROM control.proposals").fetchall(), [("verified",)])
+        self.assertEqual(con.execute("SELECT result FROM control.executions").fetchall(), [("applied",)])
+        self.assertEqual(con.execute("SELECT count(*) FROM control.proposals_pre_m2").fetchone()[0], 1)   # backup kept
+        schema.MIGRATIONS.append((99, "broken", ["CREATE TABLE control.half_done (x INTEGER)", "SELECT * FROM no_such_table"]))
+        try:
+            with self.assertRaises(Exception):
+                schema.ensure_schema(con)
+        finally:
+            schema.MIGRATIONS.pop()
+        self.assertEqual(con.execute("SELECT count(*) FROM control.schema_migrations WHERE version = 99").fetchone()[0], 0)
+        self.assertEqual(con.execute("SELECT count(*) FROM information_schema.tables WHERE table_name = 'half_done'").fetchone()[0], 0)
+
+
+class MoneyTests(unittest.TestCase):
+    def test_currency_precision_and_platform_units(self):
+        from control import money
+        self.assertEqual(money.meta_to_api(12.34, "USD"), 1234)
+        self.assertEqual(money.meta_to_api(1500, "JPY"), 1500)                   # Meta offset 1
+        self.assertEqual(money.meta_to_api(1500, "HUF"), 1500)                   # offset 1 although ISO has 2 decimals
+        self.assertEqual(money.meta_from_api("2000", "USD"), 20.0)
+        self.assertEqual(money.google_to_micros(12.345, "USD"), 12_340_000)      # bankers' rounding to cents
+        self.assertEqual(money.google_to_micros(1500.4, "JPY"), 1_500_000_000)   # no decimals for yen
+        self.assertEqual(money.apple_amount(5, "BHD"), "5.000")                  # three decimals
+        with self.assertRaises(money.CurrencyUnsupported):
+            money.meta_to_api(10, "XYZ")
+        with self.assertRaises(money.CurrencyUnsupported):
+            money.apple_amount(10, "XYZ")
 
 
 if __name__ == "__main__":

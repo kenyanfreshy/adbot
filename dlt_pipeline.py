@@ -108,6 +108,7 @@ class Rules:
     min_spend_for_rebalance: float = 50.0     # per app, mature window, before rebalancing may compare apps
     exploration_share: float = 0.10           # each app keeps at least this share while evidence is thin
     auto_actions: list = field(default_factory=list)       # actions bounded-automatic mode may apply on its own
+    approval_ttl_hours: float = 24.0          # an approval expires if it hasn't been carried out within this time
     app_match: dict = field(default_factory=lambda: {
         "Rapid Nursing Review": ["rnr", "rapid", "nclex"],
         "CCRN Adult": ["ccrn", "critical care", "ccc"],
@@ -702,15 +703,43 @@ class GoogleAds:
 # --------------------------------------------------------------------------- #
 # Storage (DuckDB or MotherDuck) + dlt load
 # --------------------------------------------------------------------------- #
-def db_target() -> str:
+def db_target(environ=None) -> str:
     """'md:adbot' when MOTHERDUCK_TOKEN is set (shared by the web app and the cron job), else a local file."""
-    if os.getenv("MOTHERDUCK_TOKEN"):
-        return f"md:{os.getenv('MOTHERDUCK_DATABASE', 'adbot')}"
-    return os.getenv("DUCKDB_PATH", "adbot.duckdb")
+    env = os.environ if environ is None else environ
+    if env.get("MOTHERDUCK_TOKEN"):
+        return f"md:{env.get('MOTHERDUCK_DATABASE', 'adbot')}"
+    return env.get("DUCKDB_PATH", "adbot.duckdb")
+
+
+class SharedStorageMissing(RuntimeError):
+    """Production needs one shared database for approvals, rules, stop flags, locks and audit records."""
+
+
+def production(environ=None) -> bool:
+    env = os.environ if environ is None else environ
+    return bool(env.get("RENDER")) or str(env.get("ADBOT_ENV", "")).lower() == "production"
+
+
+def storage_info(environ=None) -> dict:
+    t = db_target(environ)
+    shared = t.startswith("md:")
+    return {"label": f"MotherDuck database '{t[3:]}'" if shared else f"local file {t}", "shared": shared,
+            "production": production(environ)}
+
+
+def require_shared_storage(environ=None) -> None:
+    """On Render (RENDER is set by Render) or with ADBOT_ENV=production, refuse to run on a local DuckDB file:
+    the web service and the hourly job would each get their own throw-away file, so a stop flag or approval
+    written by one would never be seen by the other."""
+    info = storage_info(environ)
+    if info["production"] and not info["shared"]:
+        raise SharedStorageMissing("MOTHERDUCK_TOKEN is not set: this production process would use a private local file. "
+                                   "Set MOTHERDUCK_TOKEN (and the same MOTHERDUCK_DATABASE) on BOTH Render services.")
 
 
 def connect():
     import duckdb
+    require_shared_storage()
     target = db_target()
     if target.startswith("md:"):
         # connect to MotherDuck itself first, create the database on first run, then switch to it
@@ -783,9 +812,19 @@ def run_sync(days: int, rules: Rules, sources: dict | None = None) -> dict:
     records: list[dict] = []
     campaigns: dict = {}
 
+    from control.ingest import existing_revisions, keep_newest_revisions
+    try:
+        c0 = connect()
+        stored = existing_revisions(c0, start, end, DATASET, TABLE)
+        c0.close()
+    except Exception:  # noqa: BLE001
+        stored = {}
+    dropped: list = []
+
     @dlt.resource(name=TABLE, write_disposition="merge", primary_key=["channel", "entity_id", "date"])
     def performance():
-        for row in collect(jobs, start, end, records, campaigns):
+        rows_ = list(collect(jobs, start, end, records, campaigns))
+        for row in keep_newest_revisions(rows_, stored, dropped):
             row["app"] = row.get("app") or "Unassigned"
             yield row
 
@@ -802,8 +841,10 @@ def run_sync(days: int, rules: Rules, sources: dict | None = None) -> dict:
     except Exception as e:  # noqa: BLE001 - recorded on every import run of this sync
         load_error = f"{type(e).__name__}: {str(e)[:300]}"
         log.exception("dlt load failed")
+    if dropped:
+        log.info("Dropped %d duplicate / out-of-order report revisions", len(dropped))
     return {"records": records, "campaigns": campaigns, "configured": configured_sources(sources), "load_error": load_error,
-            "window": (start, end)}
+            "window": (start, end), "dropped_revisions": len(dropped)}
 
 
 AD_PLATFORM = {"Apple Search Ads": "apple_ads", "Meta Ads": "meta_ads", "Google Ads": "google_ads"}
@@ -843,7 +884,8 @@ def report_ad_status(con, result: dict) -> None:
 # --------------------------------------------------------------------------- #
 # Bot run: the control-plane decision engine (control/engine.py)
 # --------------------------------------------------------------------------- #
-def run_bot(con, rules: Rules, dry_run: bool | None = None, adapters: dict | None = None, alerter=None, environ=None) -> dict:
+def run_bot(con, rules: Rules, dry_run: bool | None = None, adapters: dict | None = None, alerter=None, environ=None,
+            lease: tuple | None = None, execute: bool = True) -> dict:
     """One decision cycle. Live writes need DRY_RUN=false AND a mode that allows them; see control/engine.py.
     `dry_run` is kept for old callers: when given True it forces a dry run."""
     from control import adapters as adapters_mod
@@ -854,7 +896,8 @@ def run_bot(con, rules: Rules, dry_run: bool | None = None, adapters: dict | Non
     if adapters is None:
         adapters = adapters_mod.live_adapters()
     res = engine.run_cycle(con, rules, apps=APPS, rule_app_fn=lambda name: app_for(name, rules), adapters=adapters,
-                           alerter=alerter, environ=env)
+                           alerter=alerter, environ=env, lease=lease, storage=storage_info(env)["label"],
+                           execute_changes=execute)
     plan = {a: {"daily": v.get("daily_allowance"), "share": None, "efficiency": None}
             for a, v in (res.get("pacing", {}).get("apps") or {}).items() if v.get("daily_allowance") is not None}
     return {**res, "paused": res["executions"].get("simulated", 0) + res["executions"].get("applied", 0), "plan": plan}
@@ -916,10 +959,13 @@ def main(argv: list[str] | None = None) -> int:
             result_sync = run_sync(args.days, rules)
             log.info("Import runs: %s", [(r["source"], r["account_id"], r["status"], r["rows"]) for r in result_sync["records"]])
         con = connect()
+        if not cstate.renew(con, "hourly", owner, ttl_minutes=55):
+            log.error("The run lock expired or was taken during the import; this run makes no decisions")
+            return 1
         rules = load_rules(con)
         if not args.no_sync:
             report_ad_status(con, result_sync)
-        result = run_bot(con, rules)
+        result = run_bot(con, rules, lease=("hourly", owner))
     finally:
         try:
             c2 = connect()

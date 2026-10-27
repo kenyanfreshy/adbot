@@ -62,27 +62,78 @@ def set_mode(con, m: str, by: str) -> None:
 
 # --------------------------------------------------------------------------- #
 # Stop automation (latched until someone resets it)
+#
+# Stages, each recorded separately so nobody mistakes a request for an effect:
+#   requested     the web service received the request            (requested_at)
+#   persisted     it was written AND read back from the shared DB  (persisted_at)
+#   acknowledged  the hourly worker saw it at the start of a run   (acknowledged_at, acknowledged_by)
+# The worker also re-reads the flag before EVERY advertising write, so a stop that lands between two
+# writes prevents the second one. Stopping never pauses ads by itself; that is the emergency pause.
 # --------------------------------------------------------------------------- #
+class StorageError(RuntimeError):
+    """The shared database didn't confirm a control write."""
+
+
 def automation_stopped(con) -> Optional[dict]:
     v = get(con, "automation_stop")
     return v if isinstance(v, dict) and v.get("active") else None
 
 
 def stop_automation(con, by: str, reason: str) -> dict:
-    v = {"active": True, "since": now().isoformat(), "by": by, "reason": reason[:300]}
+    rid = uuid.uuid4().hex[:12]
+    t = now()
+    v = {"active": True, "request_id": rid, "requested_at": t.isoformat(), "since": t.isoformat(), "by": by,
+         "reason": (reason or "")[:300], "persisted_at": None, "acknowledged_at": None, "acknowledged_by": None}
     put(con, "automation_stop", v, by)
+    back = get(con, "automation_stop")
+    if not (isinstance(back, dict) and back.get("request_id") == rid and back.get("active")):
+        raise StorageError("The stop request was not confirmed by the database; automation may still be running")
+    back["persisted_at"] = now().isoformat()
+    put(con, "automation_stop", back, by)
+    return back
+
+
+def acknowledge_stop(con, worker: str) -> Optional[dict]:
+    """Called by the worker at the start of each run. Returns the (acknowledged) stop, or None."""
+    v = automation_stopped(con)
+    if v and not v.get("acknowledged_at"):
+        v["acknowledged_at"], v["acknowledged_by"] = now().isoformat(), worker
+        put(con, "automation_stop", v, worker)
     return v
+
+
+def stop_stages(v: Optional[dict]) -> list[dict]:
+    if not v:
+        return []
+    return [{"stage": "requested", "done": bool(v.get("requested_at") or v.get("since")), "at": v.get("requested_at") or v.get("since")},
+            {"stage": "persisted", "done": bool(v.get("persisted_at")), "at": v.get("persisted_at")},
+            {"stage": "worker_acknowledged", "done": bool(v.get("acknowledged_at")), "at": v.get("acknowledged_at"),
+             "by": v.get("acknowledged_by")}]
 
 
 def reset_automation_stop(con, by: str) -> None:
     put(con, "automation_stop", {"active": False, "reset_at": now().isoformat(), "by": by}, by)
+    back = get(con, "automation_stop")
+    if isinstance(back, dict) and back.get("active"):
+        raise StorageError("The resume was not confirmed by the database")
 
 
 # --------------------------------------------------------------------------- #
-# Leases: one job at a time per name, survives crashes because it expires
+# Leases: one job at a time per name, survives crashes because it expires.
+# A worker that loses its lease (expired, or taken over) must stop writing: see holds() / renew().
 # --------------------------------------------------------------------------- #
+class LeaseLost(RuntimeError):
+    pass
+
+
 def owner_id() -> str:
     return f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:8]}"
+
+
+def _t(v):
+    if isinstance(v, str):
+        return dt.datetime.fromisoformat(v.replace(" ", "T"))
+    return v
 
 
 def acquire(con, name: str, owner: str, ttl_minutes: int = 50) -> bool:
@@ -95,6 +146,19 @@ def acquire(con, name: str, owner: str, ttl_minutes: int = 50) -> bool:
     return bool(r and r[0] == owner)
 
 
+def holds(con, name: str, owner: str) -> bool:
+    r = con.execute(f"SELECT owner, expires_at FROM {SCHEMA}.locks WHERE name = ?", [name]).fetchone()
+    return bool(r and r[0] == owner and r[1] is not None and _t(r[1]) > now())
+
+
+def renew(con, name: str, owner: str, ttl_minutes: int = 50) -> bool:
+    """Extend a lease we still hold. Returns False (and changes nothing) if it expired or someone else has it."""
+    t = now()
+    con.execute(f"UPDATE {SCHEMA}.locks SET expires_at = ? WHERE name = ? AND owner = ? AND expires_at > ?",
+                [t + dt.timedelta(minutes=ttl_minutes), name, owner, t])
+    return holds(con, name, owner)
+
+
 def release(con, name: str, owner: str) -> None:
     con.execute(f"UPDATE {SCHEMA}.locks SET owner = NULL, expires_at = NULL WHERE name = ? AND owner = ?", [name, owner])
 
@@ -103,9 +167,14 @@ def lock_holder(con, name: str) -> Optional[dict]:
     r = con.execute(f"SELECT owner, acquired_at, expires_at FROM {SCHEMA}.locks WHERE name = ?", [name]).fetchone()
     if not r or not r[0]:
         return None
-    exp = r[2]
-    if isinstance(exp, str):
-        exp = dt.datetime.fromisoformat(exp.replace(" ", "T"))
+    exp = _t(r[2])
     if exp and exp < now():
         return None
     return {"owner": r[0], "acquired_at": r[1], "expires_at": r[2]}
+
+
+# --------------------------------------------------------------------------- #
+# Worker heartbeat: proves the web service and the hourly job share one database
+# --------------------------------------------------------------------------- #
+def worker_heartbeat(con, worker: str, storage: str) -> None:
+    put(con, "worker_heartbeat", {"at": now().isoformat(), "worker": worker, "storage": storage}, worker)

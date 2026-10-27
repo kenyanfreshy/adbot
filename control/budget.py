@@ -151,7 +151,7 @@ def rebalance(rules, per_app: dict, apps: list[str], source_ok: bool, mode: str,
     for a in apps:
         p = per_app.get(a) or {}
         if p.get("revenue") is None:
-            b.append(f"{a}: revenue isn't reported by its ad platforms, so returns can't be compared")
+            b.append(f"{a}: " + (p.get("revenue_note") or "revenue isn't reported by its ad platforms, so returns can't be compared"))
         elif float(p.get("spend") or 0) < float(rules.min_spend_for_rebalance):
             b.append(f"{a}: only ${float(p.get('spend') or 0):,.2f} of mature spend (needs ${float(rules.min_spend_for_rebalance):,.0f})")
         elif float(p.get("conversions") or 0) < int(rules.min_conversions_for_revenue_rules):
