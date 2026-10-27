@@ -319,5 +319,62 @@ class ControlSecurityTests(unittest.TestCase):
         self.assertIn("refuses to run", p.stderr)
 
 
+class AuthAuditTests(unittest.TestCase):
+    """Session cookie flags, authentication on every API route, logout and expiry, header/origin checks."""
+
+    def setUp(self):
+        web._hits.clear()
+
+    def test_cookie_flags_behind_https_proxy(self):
+        status, _, sc = call("POST", "/api/login", {"password": "test-pass"})
+        self.assertEqual(status, 200)
+        attrs = [a.strip().lower() for a in sc.split(";")]
+        self.assertTrue(attrs[0].startswith("adbot_session="))
+        for flag in ("httponly", "secure", "samesite=lax", "path=/", "max-age=2592000"):
+            self.assertIn(flag, attrs)
+
+    def test_every_api_route_requires_a_session_and_the_header_is_not_enough(self):
+        from starlette.routing import Route
+        open_routes = {"/api/login", "/api/logout"}
+        checked = []
+        for r in web.app.routes:
+            if not isinstance(r, Route) or not r.path.startswith("/api/") or r.path in open_routes:
+                continue
+            for m in sorted(r.methods - {"HEAD"}):
+                body = {"password": "test-pass", "confirm": "PAUSE", "mode": "approval"} if m == "POST" else None
+                st = call(m, r.path, body, origin="https://test")[0]          # valid header + same origin, NO cookie
+                checked.append((m, r.path, st))
+        self.assertTrue(all(st == 401 for _, _, st in checked), [c for c in checked if c[2] != 401])
+        self.assertEqual(len(checked), 22)      # every /api route + method except login/logout (update when routes change)
+
+    def test_expired_and_tampered_sessions(self):
+        import time as _t
+        from unittest import mock
+        old = _t.time() - (web.SESSION_DAYS * 86400 + 60)
+        with mock.patch("time.time", return_value=old):
+            stale = web._signer().sign(b"ok").decode()
+        self.assertEqual(call("GET", "/api/me", cookie=f"adbot_session={stale}")[0], 401)
+        good = call("POST", "/api/login", {"password": "test-pass"})[2].split(";")[0]
+        self.assertEqual(call("GET", "/api/me", cookie=good)[0], 200)
+        self.assertEqual(call("GET", "/api/me", cookie=good[:-2] + "xx")[0], 401)
+
+    def test_logout_clears_cookie_but_token_is_not_revoked_server_side(self):
+        """FINDING (documented, not fixed: scope frozen): logout only tells the browser to delete the cookie.
+        A copy of the token keeps working until it expires (30 days) or APP_PASSWORD / SESSION_SECRET changes."""
+        good = call("POST", "/api/login", {"password": "test-pass"})[2].split(";")[0]
+        st, _, sc = call("POST", "/api/logout", {}, cookie=good)
+        self.assertEqual(st, 200)
+        self.assertIn("max-age=0", sc.lower())
+        self.assertEqual(call("GET", "/api/me", cookie=good)[0], 200)      # replayed token still accepted
+
+    def test_header_and_origin_rules(self):
+        good = call("POST", "/api/login", {"password": "test-pass"})[2].split(";")[0]
+        self.assertEqual(call("POST", "/api/control/emergency-clear", {}, cookie=good, csrf=False)[0], 403)
+        self.assertEqual(call("POST", "/api/control/emergency-clear", {}, cookie=good, origin="https://test.evil.com")[0], 403)
+        self.assertEqual(call("POST", "/api/control/emergency-clear", {}, cookie=good, origin="null")[0], 403)
+        self.assertEqual(call("POST", "/api/control/emergency-clear", {}, cookie=good, origin="https://test")[0], 200)
+        self.assertEqual(call("GET", "/api/control", cookie=good, csrf=False)[0], 200)   # reads need no header
+
+
 if __name__ == "__main__":
     unittest.main()

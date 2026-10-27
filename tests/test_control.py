@@ -783,14 +783,14 @@ class FailurePathTests(unittest.TestCase):
         self.assertEqual([w["entity_key"] for w in fake.writes], ["Apple Search Ads|1"])
 
     def test_stop_and_approvals_survive_restart(self):
-        con = duckdb.connect(os.path.join(__import__("tempfile").mkdtemp(), "restart.duckdb"))
+        path = os.path.join(__import__("tempfile").mkdtemp(), "restart.duckdb")
+        con = duckdb.connect(path)
         revenue.ensure(con)
         control.ensure(con)
         v = engine.stop(con, "admin", "restart test")
         self.assertTrue(v["persisted_at"])
-        path = getattr(con, "path", None)
         con.close()
-        con2 = duckdb.connect(path) if path else con
+        con2 = duckdb.connect(path)                                  # a new connection = a restarted process
         control.ensure(con2)                                         # restart: migrations are idempotent
         self.assertEqual(state.automation_stopped(con2)["request_id"], v["request_id"])
         self.assertEqual(state.stop_stages(state.automation_stopped(con2))[2]["done"], False)

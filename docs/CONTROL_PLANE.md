@@ -105,3 +105,19 @@ where `RENDER`, `ADBOT_ENV=production` or `MOTHERDUCK_TOKEN` is set.
 
 Limitations: one shared password (no per-user accounts or roles); sessions can't be revoked individually
 (rotate `SESSION_SECRET`); rate-limit counters are per process and reset on restart.
+
+## Verification status (2026-10-27)
+
+| Check | How | Evidence so far |
+|---|---|---|
+| Unit / failure-path tests | `python -m unittest discover -s tests` | 136 pass in Claude's sandbox through the DuckDB **CLI shim** (real DuckDB 1.5.6 engine, not the Python driver) |
+| Real `duckdb` + `dlt` runtime | `python scripts/staging_check.py` | **Not run yet.** The sandbox can't install packages from PyPI. Must run on a machine with the real packages |
+| Isolated MotherDuck staging | `python scripts/staging_check.py --motherduck adbot_staging` and `python scripts/process_check.py --motherduck adbot_staging` | **Not run yet** (needs `MOTHERDUCK_TOKEN`; both scripts refuse the production database name) |
+| Separate processes (lease race, crashed holder + expiry, reservations, web→worker→web shared state, crash after remote success) | `python scripts/process_check.py` | All pass on a local file via the shim: real separate processes, **serialised by the file lock**, not true concurrency |
+| Auth audit (cookie flags, every `/api` route needs a session, header not a substitute, expiry, tampering, origin) | `tests/test_revenue_web.py` `AuthAuditTests` | Pass in-process. The live site's cookie flags and its Host/Origin behaviour behind Render's proxy are **not** verified |
+
+Known findings, not fixed (feature scope frozen):
+* **Budget reservations are only safe under the job lease.** Without it, three processes reserved 18 of 10 headroom (check-then-insert race, reproduced by `process_check.py`). Only the lease-holding worker executes today, but `run_cycle()` will execute without a lease if a caller passes none. Fix: a conditional ledger `UPDATE`, and refuse live execution without a lease.
+* **Logout doesn't revoke the session token server-side.** A copied cookie works until it expires (30 days) or the password / `SESSION_SECRET` changes.
+* **Apple Ads Campaign Management API v5 is deprecated and will be sunset on January 26, 2027** (Apple: "Apple Ads Campaign Management API 5" page and the Apple Ads Platform API changelog). Its replacement, the Apple Ads Platform API 1.0 (August 2026), uses `/v1/campaigns/{id}` scoped to an ad account, a campaign `dailyBudget` field, `sharedBudgets` from budget orders, and the same OAuth client-credentials flow with scope `searchadsorg`. The Apple adapter (reporting and writes) must be migrated before then. Whether existing v5 API credentials work unchanged on the new API isn't stated in the pages checked.
+* The v5 Apple budget check doesn't yet block campaigns attached to budget orders.
