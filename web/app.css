@@ -468,3 +468,96 @@ details.fold-group[open] .fold-sum{display:none}
 .rev details.hx-fold>summary .chev{margin-left:12px;align-self:center}
 .rev details.hx-fold:not([open]){margin-bottom:6px}
 details.fold-group>summary h3{flex:none}
+
+/* ===================== control plane (Ads tab, Keywords, Log, Revenue price table) ===================== */
+/* touch targets: at least 44px for anything tapped often */
+.chip{height:40px}
+.seg button{height:40px}
+select{height:44px}
+.btn{min-height:46px}
+.btn.sm{min-height:40px;height:40px;padding:0 12px;font-size:13px;border-radius:11px}
+.btn.danger{background:rgba(255,75,75,.16);border-color:rgba(255,92,122,.6);color:#FFD5DC}
+.btn.danger:hover{filter:brightness(1.12)}
+.pill.stop{background:rgba(255,75,75,.16);color:#FF8FA3}
+.muted{color:var(--ink-3)}
+.txt{width:100%;height:46px;border-radius:12px;border:1px solid var(--line-2);background:rgba(15,23,42,.85);padding:0 12px;font-size:16px;margin-top:6px}
+
+.ctl{background:linear-gradient(135deg,rgba(0,194,255,.08),rgba(224,36,195,.06));border:1px solid var(--line-2);border-radius:20px;padding:14px;margin-bottom:12px}
+.ctl-row{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between}
+.ctl-mode{display:flex;flex-wrap:wrap;gap:8px;align-items:center;min-width:0;flex:1 1 240px}
+.ctl-mode select{width:auto;min-width:180px;flex:1 1 180px}
+.ctl-k{font:700 11px var(--body);letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3);width:100%}
+.ctl-help{margin:10px 0 0;font-size:13px;color:var(--ink-2)}
+.ctl .banner{margin:10px 0 0}
+
+/* one status chip for every source and decision */
+.schip{display:inline-flex;align-items:center;font:700 11px var(--body);letter-spacing:.02em;padding:4px 9px;border-radius:999px;white-space:nowrap;border:1px solid transparent;flex:none}
+.schip.ok{color:var(--green);background:rgba(0,229,163,.10);border-color:rgba(0,229,163,.35)}
+.schip.info{color:var(--cyan);background:rgba(0,194,255,.10);border-color:rgba(0,194,255,.35)}
+.schip.warn{color:var(--amber);background:rgba(255,176,32,.10);border-color:rgba(255,176,32,.4)}
+.schip.bad{color:#FF8FA3;background:rgba(255,75,75,.12);border-color:rgba(255,92,122,.45)}
+.schip.nil{color:var(--ink-3);background:rgba(148,163,184,.08);border-color:rgba(148,163,184,.22)}
+.schip.sim{color:#C4B5FD;background:rgba(124,108,255,.12);border-color:rgba(124,108,255,.45);border-style:dashed}
+
+.kpis.ov .v{font-size:19px;overflow-wrap:anywhere}
+.kpi .d{overflow-wrap:anywhere}
+
+.need .item{padding-left:12px;position:relative}
+.need .item::before,.sev-bad::before,.sev-warn::before,.sev-info::before{content:"";position:absolute;left:0;top:12px;bottom:12px;width:3px;border-radius:3px;background:var(--ink-4)}
+.list .item.sev-bad,.list .item.sev-warn,.list .item.sev-info{position:relative;padding-left:12px}
+.sev-bad::before{background:var(--red)} .sev-warn::before{background:var(--amber)} .sev-info::before{background:var(--cyan)}
+.list .item .main{min-width:0;flex:1}
+.list .item .name,.list .item .meta{overflow-wrap:anywhere}
+
+.qcard{background:linear-gradient(180deg,var(--card) 0%,#101828 100%);border:1px solid var(--line);border-radius:18px;padding:14px;margin-top:10px}
+.qcard.emergency{border-color:rgba(255,92,122,.5)} .qcard.safeguard{border-color:rgba(255,176,32,.45)} .qcard.manual{border-color:rgba(0,194,255,.4)}
+.qtop{display:flex;gap:10px;align-items:flex-start}
+.qmain{flex:1;min-width:0}
+.qname{font-weight:700;overflow-wrap:anywhere}
+.qsub{font-size:12.5px;color:var(--ink-3);margin-top:3px;display:flex;flex-wrap:wrap;align-items:center;gap:4px}
+.qsub .dot{width:7px;height:7px;border-radius:50%;display:inline-block}
+.qreason{font-size:13.5px;color:var(--ink-2);margin-top:8px;overflow-wrap:anywhere}
+.qblock{margin:8px 0 0;padding:0 0 0 18px;font-size:12.5px;color:var(--amber)}
+.qblock li{margin:2px 0;overflow-wrap:anywhere}
+.qev{margin-top:8px}
+.qev summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--lav);min-height:40px;display:flex;align-items:center}
+.qev dl,.tsl{display:grid;grid-template-columns:minmax(110px,40%) 1fr;gap:6px 12px;margin:6px 0 0;font-size:12.5px}
+.qev dt,.tsl dt{color:var(--ink-3)} .qev dd,.tsl dd{margin:0;overflow-wrap:anywhere}
+.qbtns{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+.qnote{font-size:12.5px;color:var(--ink-3);margin-top:8px}
+
+.srcrow > summary{list-style:none;cursor:pointer}
+.srcrow > summary::-webkit-details-marker{display:none}
+.srcrow .tsl{padding:0 0 12px}
+.umap-ctl{grid-template-columns:1fr auto auto;align-items:center}
+.emer .card{border-color:rgba(255,92,122,.35)}
+
+/* Revenue: Plan | iOS price | Android price | Product status */
+.ptable-wrap{overflow-x:auto;margin-top:12px;-webkit-overflow-scrolling:touch}
+.ptable{width:100%;border-collapse:collapse;font-size:12.5px;table-layout:fixed}
+.ptable col.c1{width:28%} .ptable thead th:nth-child(1){width:28%} .ptable thead th:nth-child(2),.ptable thead th:nth-child(3){width:21%}
+.ptable caption{text-align:left;font:700 11px var(--hud);letter-spacing:.14em;color:var(--ink-2);padding:0 0 8px}
+.ptable caption small{font:600 10px var(--mono);letter-spacing:.04em;color:var(--ink-3);margin-left:6px}
+.ptable th,.ptable td{text-align:left;padding:8px 8px 8px 0;border-top:1px solid rgba(148,163,184,.12);vertical-align:top}
+.ptable thead th{font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-3);border-top:0}
+.ptable tbody th{font-weight:700;color:var(--ink)}
+.ptable small{display:block;color:var(--ink-3);font-weight:500;margin-top:2px}
+.ptable td b{font:700 13px var(--mono);color:var(--ink)}
+.pstat{display:flex;flex-wrap:wrap;gap:4px}
+.st{font-size:10.5px;padding:2px 7px;border-radius:999px;background:rgba(148,163,184,.10);color:var(--ink-2)}
+.st.ok{background:rgba(0,229,163,.10);color:var(--green)} .st.nil{color:var(--ink-3)}
+.pnote{font-size:11.5px;color:var(--ink-3);margin:8px 0 0}
+.diag{margin-top:10px}
+.diag summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--lav);min-height:40px;display:flex;align-items:center}
+
+/* sticky header + filters must not cover content; bottom nav must not cover the last card */
+.view{padding-bottom:calc(110px + var(--sb))}
+@media (max-width:420px){ .kpis.ov{grid-template-columns:1fr 1fr} .ctl-mode select{min-width:0;width:100%} }
+
+.lrow b{white-space:normal;text-align:right;min-width:0;overflow-wrap:anywhere}
+details.fold > summary.h,details.group > summary{min-height:44px}
+.hx-btn{min-height:40px}
+.src details summary{min-height:40px;display:flex;align-items:center}
+.src code{white-space:normal;overflow-wrap:anywhere;display:inline-block;margin:2px 4px 2px 0}
+.ptable td,.ptable th{overflow-wrap:anywhere}
+.rev details.hx-fold>summary.hx-h{min-height:44px}

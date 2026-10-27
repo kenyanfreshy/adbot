@@ -13,11 +13,38 @@
 5. Name campaigns so the bot can tell the apps apart: include RNR, CCRN or NurseBound in each campaign name (editable under app_match in the rules). For NurseBound, also add the target country code, e.g. "NurseBound | PH | Prospecting".
 6. In the app's Rules tab, press "Send test notification", then "Run bot now". Check the Log tab.
 7. On your phone, open the address Render gives you (https://adbot-control-panel.onrender.com), sign in, then Share > Add to Home Screen (iPhone) or ⋮ > Add to Home screen / Install app (Android). It opens full-screen like an app, with tabs for Ads, Keywords, Rules, Trading and Log, and stays signed in for 30 days.
-8. DRY_RUN stays "true" until you set it to "false" on the adbot-hourly job. Until then the bot only reports what it would pause or change.
+8. DRY_RUN stays "true" and the bot starts in **Recommend** mode: it imports data and proposes changes but never writes to an ad account. Going live is a separate, deliberate step (see "Ad control plane" below).
 
 Rules edited in the dashboard: Export rules.json there, then "Import rules.json" in the control panel (or paste it into a RULES_JSON env var).
 
 Local run: `pip install -r requirements.txt`, set APP_PASSWORD, then `python dlt_pipeline.py --days 14` and `uvicorn web:app --reload`. To try the screens without a database: `python tests/local_server.py` (password test-pass).
+
+## Ad control plane
+
+Every hourly run goes DATA → QUALITY → RECOMMENDATION → POLICY → EXECUTION → VERIFICATION → AUDIT (`control/engine.py`). State lives in the `control` schema (import runs, source status, campaign map, proposals, executions, alerts, locks).
+
+**Modes** (Ads tab): Observe (import and report only) · Recommend (default; proposals, no writes) · Approval (you approve each proposal) · Bounded automatic (only action types listed in `auto_actions`, inside every limit). DRY_RUN=true overrides all modes: approved or automatic changes are recorded as *simulated*.
+
+**Stop automation** latches immediately: nothing automatic runs until you press Resume. **Emergency pause** (type PAUSE) queues pauses for every managed campaign of the chosen app/channel; it runs in any mode and never resumes anything when cleared. Because the web service holds no ad credentials, approved changes and emergency pauses are carried out by the next hourly job.
+
+**Data states** per source: not configured, unsupported, connected/not imported, imported (zero activity), imported (activity), partial, stale, failed. Missing revenue, installs or values are shown as unavailable, never 0. Apple Ads reports no revenue; Google conversions are not installs; TikTok is not integrated.
+
+**Budget policy** (Rules tab): no budget proposals until you set `monthly_budget`, `app_monthly` allocations and `campaign_daily_max`. Daily allowance = (allocation × (1 − reserve) − month-to-date spend) ÷ days left. Rebalancing is blocked without reported revenue, enough spend and conversions.
+
+**Safeguards**: per-change limit (`max_daily_change_pct`), cooldown, per-campaign and per-account daily action caps, deadband, data-maturity days, one job at a time (lease lock), dedup of proposals, read-before-write and verify-after-write, ambiguous results held as *uncertain* until reconciled.
+
+**Dry-run checks**
+
+```
+python -m unittest discover -s tests -v          # set DUCKDB_CLI=/path/to/duckdb if the duckdb package is missing
+DRY_RUN=true ALERT_TRANSPORT=log python dlt_pipeline.py --no-sync
+DRY_RUN=true ALERT_TRANSPORT=log python dlt_pipeline.py --days 14
+python tests/local_server.py                     # demo UI, password test-pass, http://localhost:8765
+```
+
+`ALERT_TRANSPORT=fake` or `log` keeps alerts off Telegram.
+
+**Before going live** (each needs your decision): set DRY_RUN=false on adbot-hourly; choose Approval or Bounded automatic; list `auto_actions` if automatic; set budgets; run one supervised live smoke test per channel (the live adapters have only been tested against fakes).
 
 ## Trading bot monitoring (read-only)
 

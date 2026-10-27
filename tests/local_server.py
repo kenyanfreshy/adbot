@@ -44,14 +44,35 @@ try:
     import duckdb as _duck
 except ImportError:  # sandbox without the duckdb package: DuckDB CLI shim
     sys.path.insert(0, os.path.dirname(__file__)); import duckdb_cli_shim as _duck
-import revenue
+import revenue, control
+from control import ingest as _ingest, state as _cstate
 REVCON = _duck.connect(":memory:")
 revenue.ensure(REVCON)
+control.ensure(REVCON)
+# made-up performance in a real table, so the control plane reads it the same way as in production
+REVCON.execute("CREATE SCHEMA IF NOT EXISTS ads")
+REVCON.execute("CREATE TABLE ads.ad_performance (date VARCHAR, channel VARCHAR, entity_id VARCHAR, entity_type VARCHAR, keyword VARCHAR, campaign_id VARCHAR, "
+               "campaign VARCHAR, adgroup_id VARCHAR, app VARCHAR, status VARCHAR, impressions DOUBLE, taps DOUBLE, installs DOUBLE, spend DOUBLE, "
+               "revenue DOUBLE, currency VARCHAR, account_id VARCHAR, import_id VARCHAR)")
+def _lit(v): return "NULL" if v is None else (repr(float(v)) if isinstance(v, (int, float)) else "'" + str(v).replace("'", "''") + "'")
+_cols = ["date", "channel", "entity_id", "entity_type", "keyword", "campaign_id", "campaign", "adgroup_id", "app", "status", "impressions", "taps", "installs", "spend", "revenue", "currency", "account_id"]
+for r in PERF:
+    r["currency"] = "USD"; r["account_id"] = {"Apple Search Ads": "org1", "Meta Ads": "act_1", "Google Ads": "123"}[r["channel"]]
+    if r["channel"] == "Apple Search Ads": r["revenue"] = None      # Apple Ads reports no revenue
+for i in range(0, len(PERF), 400):
+    REVCON.execute("INSERT INTO ads.ad_performance (" + ", ".join(_cols) + ") VALUES " + ", ".join("(" + ", ".join(_lit(r.get(c)) for c in _cols) + ")" for r in PERF[i:i + 400]))
+_recs = [{"import_id": "demo-" + s_, "source": s_, "account_id": "demo", "started_at": now, "finished_at": now, "status": "failed" if s_ == "Google Ads" else "succeeded",
+          "rows": 0 if s_ == "Google Ads" else 100, "activity_rows": 0 if s_ == "Google Ads" else 90, "window_start": today - dt.timedelta(days=13), "window_end": today,
+          "min_date": (today - dt.timedelta(days=13)).isoformat(), "max_date": (today - dt.timedelta(days=1)).isoformat(), "currencies": {"USD"}, "timezone": "account time zone",
+          "unmapped_rows": 0, "message": "HTTP 401: invalid OAuth client (made-up)" if s_ == "Google Ads" else None} for s_ in ("Apple Search Ads", "Meta Ads", "Google Ads")]
+_ingest.record(REVCON, _recs, {("Meta Ads", "c-demo-unmapped"): {"name": "Spring promo (made-up)", "account_id": "act_1", "rule_app": None}},
+               {"Apple Search Ads": True, "Meta Ads": True, "Google Ads": True}, clock=lambda: now)
+_cstate.set_mode(REVCON, os.getenv("DEMO_MODE", "approval"), "demo")
 
 class FakeCon:
     def execute(self, sql, p=None):
         l = sql.lower()
-        if "revenue." in l or "information_schema" in l: return REVCON.execute(sql, p)
+        if "revenue." in l or "information_schema" in l or "control." in l or " ads." in l: return REVCON.execute(sql, p)
         if l.startswith("insert into adbot_rules"): STORE["rules"] = p[1]; return Cur([])
         if "keyword_overrides" in l and l.startswith("insert"): STORE["overrides"][p[0]] = p[1]; return Cur([])
         if l.startswith("delete from keyword_overrides"): STORE["overrides"].pop(p[0], None); return Cur([])
@@ -72,6 +93,13 @@ class FakeCon:
             return Cur(rows)
         return Cur([])
 bot.connect = lambda: FakeCon()
+# one dry decision cycle on the made-up data so the queue has something to show
+_rules = bot.load_rules(FakeCon())
+_rules.monthly_budget = 1000.0
+_rules.app_monthly = {"Rapid Nursing Review": 450.0, "CCRN Adult": 250.0, "NurseBound": 300.0}
+STORE["rules"] = json.dumps({**{k: v for k, v in __import__("dataclasses").asdict(_rules).items() if k != "overrides"}})
+os.environ.setdefault("ALERT_TRANSPORT", "fake")
+bot.run_bot(FakeCon(), bot.load_rules(FakeCon()), adapters={}, environ={"DRY_RUN": "true", "ALERT_TRANSPORT": "fake"})
 bot.telegram = lambda text, rules=None: False
 if __name__ == "__main__":
     import uvicorn, web

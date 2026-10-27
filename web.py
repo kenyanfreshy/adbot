@@ -40,6 +40,15 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 import dlt_pipeline as bot
+from control import alerts as calerts
+from control import budget as cbudget
+from control import engine as ceng
+from control import ingest as cingest
+from control import metrics as cmetrics
+from control import state as cstate
+from control import status as cstatus
+from control.channels import CHANNELS as CH_INFO
+from control.channels import MANAGED
 from revenue import registry as rev_registry
 from revenue import store_check
 from revenue.schema import SCHEMA as REV
@@ -176,21 +185,25 @@ def guarded(fn):
 # Helpers
 # --------------------------------------------------------------------------- #
 def dry_run() -> bool:
-    return os.getenv("DRY_RUN", "true").lower() not in ("false", "0", "no")
+    return cstate.dry_run()
 
 
-def perf(days: int) -> list[dict]:
-    since = (dt.date.today() - dt.timedelta(days=days - 1)).isoformat()
-    out = rows(f"select * from {bot.DATASET}.{bot.TABLE} where cast(date as varchar) >= ?", [since])
+def perf(days: int, rules: bot.Rules | None = None) -> list[dict]:
+    """Performance rows for the last `days` days: one per channel + entity + day (newest import wins),
+    apps resolved with the current campaign mapping, ignored campaigns left out. Revenue stays None when unknown."""
+    rules = rules or bot.load_rules(con())
+    today = dt.date.today()
+    with _db_lock:
+        out = ceng.load_rows(con(), today - dt.timedelta(days=days - 1), today, bot.DATASET, bot.TABLE)
+        cmap = cingest.mapping(con())
+    keep = []
     for r in out:
-        r["date"] = str(r.get("date"))[:10]
-        r["app"] = r.get("app") or "Unassigned"
-        for f in ("impressions", "taps", "installs", "spend", "revenue"):
-            try:
-                r[f] = float(r.get(f) or 0)
-            except (TypeError, ValueError):
-                r[f] = 0.0
-    return out
+        app = cingest.resolve_app(r, cmap, lambda n: bot.app_for(n, rules))
+        if app == cingest.IGNORED:
+            continue
+        r["app"] = app if app in APPS else "Unassigned"
+        keep.append(r)
+    return keep
 
 
 def filters(request: Request):
@@ -203,19 +216,25 @@ def filters(request: Request):
 
 
 def totals(rs: list[dict], rules: bot.Rules) -> dict:
+    """Ad KPIs with their coverage. Revenue is only what platforms reported; missing is None, never 0."""
     sp = sum(r["spend"] for r in rs)
     tp = sum(r["taps"] for r in rs)
-    ins = sum(r["installs"] for r in rs)
-    rev = sum(r["revenue"] for r in rs)
-    est = False
-    if not rev and ins:
-        by = {}
-        for r in rs:
-            by[r["app"]] = by.get(r["app"], 0) + r["installs"]
-        rev = sum(v * float(rules.value_per_install.get(a, 0) or 0) for a, v in by.items())
-        est = bool(rev)
-    return {"spend": sp, "taps": tp, "installs": ins, "revenue": rev, "revenue_estimated": est,
-            "acos": sp / rev if rev else None, "cpt": sp / tp if tp else None, "roas": rev / sp if sp else None}
+    ins = sum(r["installs"] for r in rs if CH_INFO.get(r["channel"], {}).get("conversion_is_install"))
+    conv_other = sum(r["installs"] for r in rs if not CH_INFO.get(r["channel"], {}).get("conversion_is_install"))
+    rev_rows = [r for r in rs if r.get("revenue") is not None and CH_INFO.get(r["channel"], {}).get("revenue") != "none"]
+    rev = sum(r["revenue"] for r in rev_rows) if rev_rows else None
+    rev_sp = sum(r["spend"] for r in rev_rows)
+    by_app_inst: dict = {}
+    for r in rs:
+        if CH_INFO.get(r["channel"], {}).get("conversion_is_install"):
+            by_app_inst[r["app"]] = by_app_inst.get(r["app"], 0) + r["installs"]
+    est_parts = [v * rules.vpi(a) for a, v in by_app_inst.items() if rules.vpi(a)]
+    currencies = sorted({r.get("currency") for r in rs if r.get("currency")})
+    return {"spend": sp, "taps": tp, "installs": ins, "conversions_other": conv_other, "revenue": rev,
+            "revenue_coverage": (rev_sp / sp) if sp else None, "revenue_estimate": sum(est_parts) if est_parts else None,
+            "acos": (rev_sp / rev) if rev else None, "roas": (rev / rev_sp) if (rev is not None and rev_sp) else None,
+            "cpt": sp / tp if tp else None, "cpi": (sum(r["spend"] for r in rs if CH_INFO.get(r["channel"], {}).get("conversion_is_install")) / ins) if ins else None,
+            "currencies": currencies, "mixed_currency": len(currencies) > 1}
 
 
 # --------------------------------------------------------------------------- #
@@ -224,7 +243,10 @@ def totals(rs: list[dict], rules: bot.Rules) -> dict:
 @guarded
 async def me(request: Request):
     bots = trading_bots()
-    return J({"ok": True, "dry_run": dry_run(), "apps": APPS, "channels": CHANNELS,
+    with _db_lock:
+        mode, stopped, emer = cstate.mode(con()), cstate.automation_stopped(con()), ceng.emergency_active(con())
+    return J({"ok": True, "dry_run": dry_run(), "apps": APPS, "channels": CHANNELS, "mode": mode,
+              "automation_stopped": bool(stopped), "emergency_active": bool(emer),
               "trading_live": any(b["live"] for b in bots), "trading_demo": any(not b["live"] for b in bots)})
 
 
@@ -243,11 +265,12 @@ def trading_bots() -> list[dict]:
 async def ads(request: Request):
     days, app, ch, keep = filters(request)
     rules = bot.load_rules(con())
-    allr = perf(days * 2)
+    allr = perf(max(days * 2, 45), rules)
     cut = (dt.date.today() - dt.timedelta(days=days - 1)).isoformat()
+    prev_cut = (dt.date.today() - dt.timedelta(days=2 * days - 1)).isoformat()
     sel = [r for r in allr if keep(r)]
     cur = [r for r in sel if r["date"] >= cut]
-    prev = [r for r in sel if r["date"] < cut]
+    prev = [r for r in sel if prev_cut <= r["date"] < cut]
     daily = {}
     for r in cur:
         d = daily.setdefault(r["date"], {"date": r["date"], "taps": 0.0, "installs": 0.0, "spend": 0.0})
@@ -257,20 +280,14 @@ async def ads(request: Request):
     for i in range(days):
         day = (dt.date.today() - dt.timedelta(days=days - 1 - i)).isoformat()
         series.append(daily.get(day, {"date": day, "taps": 0, "installs": 0, "spend": 0}))
-    # plan uses every app (channel filter applies), over the bot's lookback window
-    look = (dt.date.today() - dt.timedelta(days=rules.lookback_days - 1)).isoformat()
-    per_app = {}
-    for r in allr:
-        if (ch == "all" or r["channel"] == ch) and r["date"] >= look:
-            p = per_app.setdefault(r["app"], {"spend": 0.0, "revenue": 0.0, "installs": 0.0})
-            for f in ("spend", "revenue", "installs"):
-                p[f] += r[f]
-    plan = bot.rebalance(per_app, rules)
+    pace, reb = pacing_and_rebalance(rules, allr)
+    plan = {a: {"daily": v.get("daily_allowance"), "monthly": v.get("monthly"), "spent_mtd": v.get("spent_mtd")}
+            for a, v in pace.get("apps", {}).items()}
     by_app = {}
     for r in cur:
-        b = by_app.setdefault((r["app"], r["channel"]), {"app": r["app"], "channel": r["channel"], "spend": 0.0, "taps": 0.0, "installs": 0.0, "revenue": 0.0})
-        for f in ("spend", "taps", "installs", "revenue"):
-            b[f] += r[f]
+        b = by_app.setdefault((r["app"], r["channel"]), {"app": r["app"], "channel": r["channel"], "rows": []})
+        b["rows"].append(r)
+    by_app = [{"app": k[0], "channel": k[1], **totals(v["rows"], rules)} for k, v in by_app.items()]
     # NurseBound country split
     geo = []
     nb_rows = [r for r in cur if r["app"] == "NurseBound" and (ch == "all" or r["channel"] == ch)]
@@ -280,15 +297,15 @@ async def ads(request: Request):
         if not c:
             untagged += r["spend"]
             continue
-        p = per_c.setdefault(c, {"spend": 0.0, "revenue": 0.0, "installs": 0.0})
-        for f in ("spend", "revenue", "installs"):
+        p = per_c.setdefault(c, {"spend": 0.0, "installs": 0.0})    # countries compared by installs per dollar only
+        for f in ("spend", "installs"):
             p[f] += r[f]
-    split = bot.geo_split("NurseBound", plan.get("NurseBound", {}).get("daily", 0), per_c, rules)
+    split = bot.geo_split("NurseBound", (plan.get("NurseBound") or {}).get("daily") or 0, per_c, rules)
     for g in rules.geo_targets.get("NurseBound", []):
         p = per_c.get(g["code"], {})
         geo.append({**g, "plan": split.get(g["code"], 0.0), "spend": p.get("spend", 0.0), "installs": p.get("installs", 0.0)})
     return J({"days": days, "has_data": bool(allr), "kpis": totals(cur, rules), "prev": totals(prev, rules), "series": series,
-              "by_app": sorted(by_app.values(), key=lambda b: -b["spend"]), "plan": plan,
+              "by_app": sorted(by_app, key=lambda b: -b["spend"]), "plan": plan, "pacing": pace, "rebalance": reb,
               "caps": rules.app_caps, "global_cap": rules.global_daily_cap, "auto_rebalance": rules.auto_rebalance,
               "target_acos": rules.target_acos, "max_acos": rules.max_acos, "geo": geo, "geo_untagged_spend": untagged,
               "dry_run": dry_run()})
@@ -299,17 +316,25 @@ async def keywords(request: Request):
     days, app, ch, keep = filters(request)
     rules = bot.load_rules(con())
     cut = (dt.date.today() - dt.timedelta(days=days - 1)).isoformat()
-    cur = [r for r in perf(days) if keep(r) and r["date"] >= cut]
+    cur = [r for r in perf(days, rules) if keep(r) and r["date"] >= cut]
     agg = bot.aggregate(cur, rules)
+    open_p = {r["entity_key"]: r for r in rows(f"SELECT entity_key, status, reason, blockers, kind, action FROM control.proposals "
+                                                "WHERE status IN ('proposed', 'blocked', 'approved', 'executing', 'uncertain') ORDER BY created_at")}
     q = (request.query_params.get("q") or "").lower().strip()
     out = []
     for k, a in agg.items():
         if q and q not in f"{a.get('keyword') or ''} {a.get('campaign') or ''} {a.get('app') or ''}".lower():
             continue
-        action, reason = bot.keyword_decision(a, rules)
+        info = CH_INFO.get(a["channel"], {})
+        acts = info.get("actions", {}).get(a.get("entity_type") or "", [])
+        p = open_p.get(k)
         out.append({**{f: a.get(f) for f in ("channel", "entity_type", "keyword", "campaign", "app", "status", "taps", "installs", "spend", "revenue", "cpt", "acos", "country")},
-                    "key": k, "bot": action, "reason": reason, "override": rules.overrides.get(k, "auto"),
-                    "revenue_estimated": bool(a.get("revenue_estimated"))})
+                    "key": k, "override": rules.overrides.get(k, "auto"), "revenue_known": a.get("revenue_known", False),
+                    "revenue_estimate": a.get("revenue_estimate"), "click_label": info.get("click_label", "clicks"),
+                    "conversion_label": info.get("conversion_label", "conversions"),
+                    "can_pause": any(x.startswith("pause_") for x in acts), "monitor_only": not acts,
+                    "proposal": None if not p else {"status": p["status"], "reason": p["reason"], "kind": p["kind"],
+                                                    "blockers": json.loads(p["blockers"] or "[]")}})
     out.sort(key=lambda x: -(x["spend"] or 0))
     return J({"items": out[:500], "max_cpt": rules.max_cpt, "target_acos": rules.target_acos, "max_acos": rules.max_acos})
 
@@ -324,6 +349,8 @@ async def override(request: Request):
         execute("delete from keyword_overrides where entity_key = ?", [key])
     else:
         execute("insert or replace into keyword_overrides values (?, ?, ?, ?)", [key, status, "phone app", dt.datetime.utcnow()])
+    with _db_lock:
+        rev_registry.audit(con(), "admin", "override.set", key, {"status": status}, dry_run=dry_run())
     return J({"ok": True})
 
 
@@ -332,7 +359,15 @@ RULE_FIELDS = {  # name: (type, min, max)
     "zero_install_taps": (int, 1, 100000), "max_acos": (float, 0, 100), "min_spend_for_acos": (float, 0, 100000),
     "target_acos": (float, 0, 100), "auto_rebalance": (bool, None, None), "min_share": (float, 0, 1), "max_share": (float, 0, 1),
     "max_budget_step": (float, 0, 1), "lookback_days": (int, 1, 90), "telegram_chat_id": (str, None, None),
+    # shared budget policy and change safeguards
+    "reserve_pct": (float, 0, 0.5), "max_daily_change_pct": (float, 0.01, 1), "cooldown_hours": (float, 1, 24 * 14),
+    "max_actions_per_campaign_day": (int, 1, 20), "max_actions_per_account_day": (int, 1, 200), "deadband_pct": (float, 0, 0.5),
+    "min_days_data": (int, 1, 60), "stale_after_hours": (float, 2, 24 * 7), "min_conversions_for_revenue_rules": (int, 1, 10000),
+    "min_spend_for_rebalance": (float, 0, 100000), "exploration_share": (float, 0, 0.33),
 }
+NULLABLE_MONEY = {"monthly_budget": (0, 1_000_000), "campaign_daily_max": (1, 100_000)}
+AUTO_ACTIONS = ("pause_keyword", "pause_ad_set", "pause_campaign", "set_budget_decrease", "set_budget_increase", "safeguard_pause")
+ALERT_KEYS = ("daily_summary", "kill_switch", "rebalance", "high_cpt", "import_failure", "stale_data", "unmapped", "budget")
 
 
 @guarded
@@ -358,11 +393,32 @@ def _validate_rules(body: dict, base: bot.Rules) -> bot.Rules:
             if not (lo <= v <= hi):
                 raise ValueError(f"{k} must be between {lo} and {hi}")
         d[k] = v
+    for k, (lo, hi) in NULLABLE_MONEY.items():
+        if k in body:
+            v = body[k]
+            if v in (None, ""):
+                d[k] = None
+            else:
+                v = float(v)
+                if not (lo <= v <= hi):
+                    raise ValueError(f"{k} must be between {lo} and {hi}, or empty")
+                d[k] = v
     for k in ("app_caps", "app_priority", "value_per_install"):
         if isinstance(body.get(k), dict):
-            d[k] = {a: max(0.0, float(body[k].get(a, d[k].get(a, 0)))) for a in APPS}
+            d[k] = {a: max(0.0, float(body[k].get(a, d[k].get(a, 0)) or 0)) for a in APPS}
+    if isinstance(body.get("app_monthly"), dict):   # empty = not set (budget changes stay blocked); 0 = give it nothing
+        d["app_monthly"] = {a: float(v) for a, v in body["app_monthly"].items() if a in APPS and v not in (None, "")}
+    if isinstance(body.get("channel_monthly"), dict):
+        d["channel_monthly"] = {c: float(v) for c, v in body["channel_monthly"].items() if c in MANAGED and v not in (None, "")}
+    if isinstance(body.get("maturity_days"), dict):
+        d["maturity_days"] = {c: int(v) for c, v in body["maturity_days"].items() if c in MANAGED and v not in (None, "") and 0 <= int(v) <= 30}
+    if isinstance(body.get("auto_actions"), list):
+        bad = [a for a in body["auto_actions"] if a not in AUTO_ACTIONS]
+        if bad:
+            raise ValueError("Unknown automatic action: " + ", ".join(map(str, bad)))
+        d["auto_actions"] = list(dict.fromkeys(body["auto_actions"]))
     if isinstance(body.get("alerts"), dict):
-        d["alerts"] = {a: bool(body["alerts"].get(a, True)) for a in ("daily_summary", "kill_switch", "rebalance", "high_cpt")}
+        d["alerts"] = {a: bool(body["alerts"].get(a, (d.get("alerts") or {}).get(a, True))) for a in ALERT_KEYS}
     if isinstance(body.get("geo_targets"), dict) and isinstance(body["geo_targets"].get("NurseBound"), list):
         cur = {g["code"]: g for g in d["geo_targets"].get("NurseBound", [])}
         for g in body["geo_targets"]["NurseBound"]:
@@ -375,7 +431,12 @@ def _validate_rules(body: dict, base: bot.Rules) -> bot.Rules:
         raise ValueError("Target ACoS must be at or below the ACoS ceiling")
     if d["min_share"] * len(APPS) > 1 or d["max_share"] * len(APPS) < 1:
         raise ValueError("Min share must be ≤ 33% and max share ≥ 34% with three apps")
-    return bot.Rules.from_dict(d)
+    new = bot.Rules.from_dict(d)
+    if new.monthly_budget is not None:
+        errs = [e for e in cbudget.validate(new, APPS, MANAGED) if not e.startswith("Set a monthly allocation")]
+        if errs:
+            raise ValueError(errs[0])
+    return new
 
 
 @guarded
@@ -394,15 +455,27 @@ async def rules_post(request: Request):
         return J({"error": str(e)}, 400)
     d = asdict(new)
     d.pop("overrides", None)
+    old = asdict(base)
+    old.pop("overrides", None)
+    changed = {k: {"from": old.get(k), "to": v} for k, v in d.items() if old.get(k) != v}
     execute("insert into adbot_rules values (?, ?)", [dt.datetime.utcnow(), json.dumps(d)])
-    return J({"ok": True, "rules": d})
+    with _db_lock:
+        rev_registry.audit(con(), "admin", "rules.changed", None, changed, dry_run=dry_run())
+    return J({"ok": True, "rules": d, "changed": sorted(changed)})
 
 
 @guarded
 async def log(request: Request):
-    acts = rows("select * from bot_actions order by ts desc limit 200")
-    budgets = rows("select ts, app, daily from app_budgets where ts > ? order by ts", [dt.datetime.utcnow() - dt.timedelta(days=30)])
-    return J({"actions": acts, "budgets": budgets, "dry_run": dry_run()})
+    acts = rows("select * from bot_actions order by ts desc limit 100")
+    decisions = rows("SELECT proposal_id, created_at, kind, app, channel, entity_name, action, current_value, proposed_value, reason, "
+                     "status, decided_by, decided_at, outcome, outcome_at FROM control.proposals ORDER BY coalesce(outcome_at, created_at) DESC LIMIT 200")
+    execs = rows("SELECT e.attempted_at, e.mode, e.result, e.error, p.entity_name, p.channel, p.action, p.proposed_value FROM control.executions e "
+                 "JOIN control.proposals p USING (proposal_id) ORDER BY e.attempted_at DESC LIMIT 100")
+    with _db_lock:
+        al = calerts.recent(con(), 100)
+    audit = rows("SELECT ts, actor, action, target, detail, dry_run FROM revenue.audit_logs WHERE action NOT LIKE 'proposal.created' "
+                 "ORDER BY ts DESC LIMIT 100")
+    return J({"actions": acts, "decisions": decisions, "executions": execs, "alerts": al, "audit": audit, "dry_run": dry_run()})
 
 
 @guarded
@@ -450,9 +523,211 @@ async def telegram_test(request: Request):
 
 @guarded
 async def run_bot_now(request: Request):
+    """One decision cycle now (no import: the hourly job imports). Shares the hourly job's lock, so the two
+    never decide at the same time. This web service normally has no ad credentials, so approved live
+    changes wait for the hourly job."""
+    owner = cstate.owner_id()
     with _db_lock:
-        res = bot.run_bot(con(), bot.load_rules(con()), dry_run())
-    return J({"ok": True, "paused": res.get("paused", 0), "plan": {a: v["daily"] for a, v in (res.get("plan") or {}).items()}, "dry_run": dry_run()})
+        if not cstate.acquire(con(), "hourly", owner, ttl_minutes=10):
+            return J({"error": "The hourly job is running right now. Try again in a few minutes."}, 409)
+        try:
+            res = bot.run_bot(con(), bot.load_rules(con()))
+        finally:
+            cstate.release(con(), "hourly", owner)
+    return J({"ok": True, "mode": res["mode"], "dry_run": res["dry_run"], "proposals": res["proposals"],
+              "executions": res["executions"]})
+
+
+# --------------------------------------------------------------------------- #
+# Control plane: overview, decision queue, emergency controls, campaign mapping
+# --------------------------------------------------------------------------- #
+def pacing_and_rebalance(rules, allr: list[dict]) -> tuple[dict, dict]:
+    today = dt.date.today()
+    with _db_lock:
+        cmap = cingest.mapping(con())
+        statuses = ceng.source_statuses(con(), rules)
+        mode, stopped = cstate.mode(con()), cstate.automation_stopped(con())
+        last = cstate.get(con(), "last_cycle")
+    agg = ceng.aggregate(allr, rules, cmap, today, APPS, lambda n: bot.app_for(n, rules))
+    pace = cbudget.pacing(rules, agg["mtd_app"], agg["mtd_channel"], today, APPS, agg["unattributed_mtd"])
+    per_app = {}
+    for e in agg["entities"].values():
+        p = per_app.setdefault(e["app"], {"spend": 0.0, "revenue": 0.0, "conversions": 0.0, "currency": None, "_known": True})
+        p["spend"] += e["spend"]
+        p["conversions"] += e["installs"]
+        p["currency"] = ",".join(sorted(e["currencies"])) or p["currency"]
+        if e["revenue"] is None:
+            p["_known"] = False
+        else:
+            p["revenue"] += e["revenue"]
+    for p in per_app.values():
+        if not p.pop("_known"):
+            p["revenue"] = None
+    configured = [s for c, s in statuses.items() if CH_INFO[c]["supported"] and s["state"] != "not_configured"]
+    source_ok = bool(configured) and all(s["state"] in cstatus.USABLE for s in configured)
+    reb = cbudget.rebalance(rules, per_app, APPS, source_ok, mode, bool(stopped), (last or {}).get("at"))
+    return pace, reb
+
+
+def _parse(r: dict) -> dict:
+    for k in ("metrics", "blockers"):
+        try:
+            r[k] = json.loads(r.get(k) or ("[]" if k == "blockers" else "{}"))
+        except (TypeError, ValueError):
+            pass
+    return r
+
+
+@guarded
+async def control_get(request: Request):
+    rules = bot.load_rules(con())
+    days, app, ch, keep = filters(request)
+    allr = perf(45, rules)
+    cut = (dt.date.today() - dt.timedelta(days=days - 1)).isoformat()
+    cur = [r for r in allr if keep(r) and r["date"] >= cut]
+    with _db_lock:
+        c = con()
+        mode, stopped, emer = cstate.mode(c), cstate.automation_stopped(c), ceng.emergency_active(c)
+        last = cstate.get(c, "last_cycle")
+        ad_status = list(ceng.source_statuses(c, rules).values())
+        reg = rev_registry.registry(c)
+        unm = cingest.unmapped(c)
+        failed_alerts = calerts.recent(c, 30)
+        today = dt.date.today()
+        money = cmetrics.store_money(c, today.replace(day=1), today)
+    store_status = [{**cstatus.from_revenue_source({**s, "rows": {}}), "source": {"apple_app_store": "App Store Connect", "google_play": "Google Play"}[s["platform"]]}
+                    for s in reg["sources"] if s["platform"] in ("apple_app_store", "google_play")]
+    queue = [_parse(r) for r in rows("SELECT * FROM control.proposals WHERE status IN ('proposed', 'blocked', 'approved', 'executing', 'uncertain') "
+                                     "ORDER BY CASE kind WHEN 'emergency' THEN 0 WHEN 'safeguard' THEN 1 WHEN 'manual' THEN 2 ELSE 3 END, created_at DESC")]
+    recent = [_parse(r) for r in rows("SELECT * FROM control.proposals WHERE status NOT IN ('proposed', 'blocked', 'approved', 'executing', 'uncertain') "
+                                      "ORDER BY coalesce(outcome_at, created_at) DESC LIMIT 25")]
+    pace, reb = pacing_and_rebalance(rules, allr)
+    budget_errors = cbudget.validate(rules, APPS, MANAGED)
+    kp = totals(cur, rules)
+    # Action needed, most important first
+    need = []
+    if emer:
+        need.append({"severity": "critical", "title": "Emergency pause is active",
+                     "text": "Paused campaigns stay paused until you resume them in each platform. Clear the latch when you're done.", "action": "emergency"})
+    if stopped:
+        need.append({"severity": "critical", "title": "Automation is stopped",
+                     "text": (stopped.get("reason") or "") + " Ads keep running; only AdBot's optimization changes are stopped.", "action": "resume"})
+    for p in queue:
+        if p["status"] == "uncertain":
+            need.append({"severity": "critical", "title": f"Unconfirmed change: {p['entity_name']}", "text": p.get("outcome") or "", "action": "log"})
+    for s in ad_status + store_status:
+        sev = cstatus.ATTENTION.get(s["state"])
+        if sev:
+            need.append({"severity": sev, "title": f"{s.get('source')}: {s['label']}", "text": s.get("detail") or "", "action": "sources"})
+    tot = pace.get("total") or {}
+    if tot.get("used_pct") is not None and tot["used_pct"] >= 0.9:
+        need.append({"severity": "critical" if tot["used_pct"] >= 1 else "warning", "title": "Monthly budget",
+                     "text": f"{tot['used_pct']*100:.0f}% of the monthly budget spent (observed)", "action": "budget"})
+    if budget_errors:
+        need.append({"severity": "warning", "title": "Budget policy needs attention", "text": budget_errors[0], "action": "rules"})
+    if unm:
+        need.append({"severity": "warning", "title": f"{len(unm)} campaign(s) not mapped to an app",
+                     "text": "Excluded from decisions until mapped or ignored.", "action": "unmapped"})
+    n_prop = sum(1 for p in queue if p["status"] == "proposed")
+    if n_prop and mode == "approval":
+        need.append({"severity": "info", "title": f"{n_prop} change(s) waiting for your approval", "text": "", "action": "queue"})
+    if any(a["delivery_status"] == "failed" for a in failed_alerts[:10]):
+        need.append({"severity": "warning", "title": "Some alerts couldn't be delivered", "text": "See the Log tab.", "action": "log"})
+    if not cur and not any(s["state"] not in ("not_configured", "unsupported") for s in ad_status):
+        need.append({"severity": "info", "title": "No ad channel is connected",
+                     "text": "Add Apple Ads, Meta or Google Ads credentials to the adbot-hourly job on Render.", "action": "sources"})
+    order = {"critical": 0, "warning": 1, "info": 2}
+    need.sort(key=lambda x: order.get(x["severity"], 3))
+    return J({"mode": mode, "modes": [{"id": m, "label": cstate.MODE_LABEL[m]} for m in cstate.MODES], "dry_run": dry_run(),
+              "automation_stopped": stopped, "emergency": emer, "last_cycle": last,
+              "sources": ad_status, "store_sources": store_status, "action_needed": need, "queue": queue, "recent": recent,
+              "kpis": kp, "store_money": money, "pacing": pace, "rebalance": reb, "budget_errors": budget_errors,
+              "unmapped": unm, "apps": APPS, "definitions": cmetrics.DEFINITIONS, "unavailable": cmetrics.UNAVAILABLE,
+              "days": days, "auto_actions": rules.auto_actions, "budget_note": cbudget.LIMITS_NOTE})
+
+
+async def _body(request: Request) -> dict:
+    try:
+        return await request.json()
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+@guarded
+async def control_mode(request: Request):
+    body = await _body(request)
+    try:
+        with _db_lock:
+            prev = cstate.mode(con())
+            cstate.set_mode(con(), str(body.get("mode", "")), "admin")
+            rev_registry.audit(con(), "admin", "mode.changed", None, {"from": prev, "to": body.get("mode")}, dry_run=dry_run())
+    except ValueError as e:
+        return J({"error": str(e)}, 400)
+    return J({"ok": True, "mode": body.get("mode")})
+
+
+@guarded
+async def control_stop(request: Request):
+    body = await _body(request)
+    with _db_lock:
+        v = cstate.stop_automation(con(), "admin", str(body.get("reason") or "Stopped from the phone app"))
+        rev_registry.audit(con(), "admin", "automation.stopped", None, v, dry_run=dry_run())
+    return J({"ok": True, "automation_stopped": v,
+              "note": "AdBot will make no optimization changes until you resume it. Your ads keep running."})
+
+
+@guarded
+async def control_resume(request: Request):
+    with _db_lock:
+        cstate.reset_automation_stop(con(), "admin")
+        rev_registry.audit(con(), "admin", "automation.resumed", None, None, dry_run=dry_run())
+    return J({"ok": True})
+
+
+@guarded
+async def control_emergency(request: Request):
+    body = await _body(request)
+    app_ = body.get("app") if body.get("app") in APPS else None
+    ch = body.get("channel") if body.get("channel") in MANAGED else None
+    if body.get("confirm") != "PAUSE":
+        return J({"error": "Type PAUSE to confirm"}, 400)
+    rules = bot.load_rules(con())
+    with _db_lock:
+        res = ceng.request_emergency_pause(con(), rules, "admin", APPS, app=app_, channel=ch, dry=dry_run(),
+                                           dataset=bot.DATASET, table=bot.TABLE, rule_app_fn=lambda n: bot.app_for(n, rules))
+    return J({"ok": True, **res, "note": "Pauses run on the hourly job, which has the platform credentials. Each campaign's result "
+                                         "appears in the decision queue. Nothing is resumed automatically later."})
+
+
+@guarded
+async def control_emergency_clear(request: Request):
+    with _db_lock:
+        ceng.clear_emergency(con(), "admin", dry=dry_run())
+    return J({"ok": True, "note": "Latch cleared. Paused campaigns stay paused until you resume them in each platform."})
+
+
+@guarded
+async def proposal_decide(request: Request):
+    body = await _body(request)
+    try:
+        with _db_lock:
+            res = ceng.decide(con(), str(body.get("proposal_id", "")), bool(body.get("approve")), "admin", dry_run())
+    except ValueError as e:
+        return J({"error": str(e)}, 400)
+    return J({"ok": True, **res})
+
+
+@guarded
+async def campaign_map(request: Request):
+    body = await _body(request)
+    try:
+        with _db_lock:
+            res = cingest.set_mapping(con(), str(body.get("channel", "")), str(body.get("campaign_id", "")),
+                                      body.get("app") or None, APPS, ignored=bool(body.get("ignored")), by="admin")
+            rev_registry.audit(con(), "admin", "campaign.mapped", f"{res['channel']}|{res['campaign_id']}", res, dry_run=dry_run())
+    except ValueError as e:
+        return J({"error": str(e)}, 400)
+    return J({"ok": True, **res})
 
 
 # --------------------------------------------------------------------------- #
@@ -483,8 +758,13 @@ async def revenue_get(request: Request):
             p["prices"] = us or p["prices"][:1]
             for x in p["prices"]:
                 x["amount"] = _money_str(x["amount"])
+    with _db_lock:
+        ad_state = ceng.source_statuses(con(), bot.load_rules(con()))
+    plat_src = {CH_INFO[c]["platform"]: st for c, st in ad_state.items()}
     for s in reg["sources"]:
         s["rows"] = counts.get(s["platform"], {})
+        # one status model everywhere: ad accounts use their import history, stores their report state
+        s["shared"] = plat_src.get(s["platform"]) or cstatus.from_revenue_source(s)
     return J({**reg, "has_revenue_data": any(counts.get(p, {}).get(t) for p in ("apple_app_store", "google_play")
                                              for t in ("sales_reports", "financial_reports")),
               "stage": "B", "dry_run": dry_run()})
@@ -583,6 +863,14 @@ routes = [
     Route("/api/trading", trading),
     Route("/api/telegram-test", telegram_test, methods=["POST"]),
     Route("/api/run-bot", run_bot_now, methods=["POST"]),
+    Route("/api/control", control_get),
+    Route("/api/control/mode", control_mode, methods=["POST"]),
+    Route("/api/control/stop", control_stop, methods=["POST"]),
+    Route("/api/control/resume", control_resume, methods=["POST"]),
+    Route("/api/control/emergency-pause", control_emergency, methods=["POST"]),
+    Route("/api/control/emergency-clear", control_emergency_clear, methods=["POST"]),
+    Route("/api/proposals/decide", proposal_decide, methods=["POST"]),
+    Route("/api/campaigns/map", campaign_map, methods=["POST"]),
     Route("/api/revenue", revenue_get),
     Route("/api/revenue/listing", revenue_listing, methods=["POST"]),
     Route("/api/revenue/check-ids", revenue_check_ids, methods=["POST"]),

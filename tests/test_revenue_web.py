@@ -146,5 +146,84 @@ class RevenueWebTests(unittest.TestCase):
         self.assertEqual(call("GET", "/healthz")[0], 200)
 
 
+class ControlWebTests(unittest.TestCase):
+    """The control endpoints behind sign-in: mode, stop latch, emergency pause, approvals, mapping, budget validation."""
+
+    @classmethod
+    def setUpClass(cls):
+        status, _, sc = call("POST", "/api/login", {"password": "test-pass"})
+        cls.cookie = sc.split(";")[0]
+
+    def test_requires_sign_in(self):
+        for path in ("/api/control/mode", "/api/control/stop", "/api/control/emergency-pause", "/api/proposals/decide", "/api/campaigns/map"):
+            with self.subTest(path=path):
+                self.assertEqual(call("POST", path, {})[0], 401)
+        self.assertEqual(call("GET", "/api/control")[0], 401)
+
+    def test_overview_and_states(self):
+        status, d, _ = call("GET", "/api/control", cookie=self.cookie)
+        self.assertEqual(status, 200, d)
+        self.assertTrue(d["dry_run"])
+        states = {s["source"]: s["state"] for s in d["sources"]}
+        self.assertEqual(states["TikTok Ads"], "unsupported")
+        self.assertIn(states["Meta Ads"], ("not_configured", "connected_not_imported", "imported_zero", "imported_activity", "partial", "stale", "failed"))
+        self.assertIsNone(d["kpis"]["revenue"])                 # nothing reported: unknown, not $0
+        self.assertTrue(any("monthly budget" in e.lower() for e in d["budget_errors"]))
+        self.assertFalse(d["rebalance"]["eligible"])
+
+    def test_mode_and_stop_latch(self):
+        self.assertEqual(call("POST", "/api/control/mode", {"mode": "nonsense"}, cookie=self.cookie)[0], 400)
+        self.assertEqual(call("POST", "/api/control/mode", {"mode": "approval"}, cookie=self.cookie)[0], 200)
+        status, d, _ = call("POST", "/api/control/stop", {"reason": "test"}, cookie=self.cookie)
+        self.assertEqual(status, 200)
+        self.assertIn("keep running", d["note"])
+        _, me, _ = call("GET", "/api/me", cookie=self.cookie)
+        self.assertTrue(me["automation_stopped"])
+        call("POST", "/api/control/resume", cookie=self.cookie)
+        _, me, _ = call("GET", "/api/me", cookie=self.cookie)
+        self.assertFalse(me["automation_stopped"])
+        call("POST", "/api/control/mode", {"mode": "recommend"}, cookie=self.cookie)
+
+    def test_emergency_needs_typed_confirmation(self):
+        self.assertEqual(call("POST", "/api/control/emergency-pause", {}, cookie=self.cookie)[0], 400)
+        status, d, _ = call("POST", "/api/control/emergency-pause", {"confirm": "PAUSE"}, cookie=self.cookie)
+        self.assertEqual(status, 200, d)
+        self.assertTrue(d["latch"]["active"])
+        call("POST", "/api/control/emergency-clear", cookie=self.cookie)
+        _, d, _ = call("GET", "/api/control", cookie=self.cookie)
+        self.assertIsNone(d["emergency"])
+
+    def test_decide_and_map_errors(self):
+        self.assertEqual(call("POST", "/api/proposals/decide", {"proposal_id": "nope", "approve": True}, cookie=self.cookie)[0], 400)
+        self.assertEqual(call("POST", "/api/campaigns/map", {"channel": "Meta Ads", "campaign_id": "unseen", "app": "NurseBound"}, cookie=self.cookie)[0], 400)
+
+    def test_budget_rules_validated_and_audited(self):
+        bad = {"monthly_budget": 100, "app_monthly": {"Rapid Nursing Review": 90, "CCRN Adult": 20, "NurseBound": 0}}
+        status, d, _ = call("POST", "/api/rules", bad, cookie=self.cookie)
+        self.assertEqual(status, 400)
+        self.assertIn("more than", d["error"])
+        self.assertEqual(call("POST", "/api/rules", {"auto_actions": ["delete_everything"]}, cookie=self.cookie)[0], 400)
+        ok = {"monthly_budget": 1000, "app_monthly": {"Rapid Nursing Review": 450, "CCRN Adult": 250, "NurseBound": 300},
+              "auto_actions": ["pause_keyword"], "reserve_pct": 0.1}
+        status, d, _ = call("POST", "/api/rules", ok, cookie=self.cookie)
+        self.assertEqual(status, 200, d)
+        self.assertIn("monthly_budget", d["changed"])
+        _, r, _ = call("GET", "/api/rules", cookie=self.cookie)
+        self.assertEqual(r["monthly_budget"], 1000)
+        _, log, _ = call("GET", "/api/log", cookie=self.cookie)
+        self.assertTrue(any(a["action"] == "rules.changed" for a in log["audit"]))
+        status, d, _ = call("POST", "/api/rules", {"monthly_budget": None}, cookie=self.cookie)   # back to "not set"
+        self.assertEqual(status, 200)
+
+    def test_run_now_is_dry_and_locked(self):
+        from control import state as cstate
+        cstate.acquire(_CON, "hourly", "someone-else", ttl_minutes=5)
+        self.assertEqual(call("POST", "/api/run-bot", cookie=self.cookie)[0], 409)
+        cstate.release(_CON, "hourly", "someone-else")
+        status, d, _ = call("POST", "/api/run-bot", cookie=self.cookie)
+        self.assertEqual(status, 200, d)
+        self.assertTrue(d["dry_run"])
+
+
 if __name__ == "__main__":
     unittest.main()

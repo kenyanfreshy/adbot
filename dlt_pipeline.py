@@ -80,12 +80,34 @@ class Rules:
     max_acos: float = 0.60                    # pause when ACoS (spend / revenue) is above this, once spend >= min_spend_for_acos
     min_spend_for_acos: float = 10.0
     target_acos: float = 0.40                 # shown as the goal on dashboards
-    auto_rebalance: bool = True
+    auto_rebalance: bool = False              # configured on/off; it still only runs when eligible
     min_share: float = 0.10                   # each app keeps at least 10% of the portfolio cap
     max_share: float = 0.60                   # and at most 60%
     max_budget_step: float = 0.25             # a run may move an app's budget by at most 25%
     lookback_days: int = 7                    # decisions use the last N days
-    value_per_install: dict = field(default_factory=lambda: {a: 0.0 for a in APPS})  # used when a platform reports no revenue
+    # A labeled ESTIMATE shown next to installs. Empty / 0 = not set. Never used to decide anything:
+    # revenue-based rules need revenue the platform actually reported.
+    value_per_install: dict = field(default_factory=dict)
+    # ---- shared budget policy (one policy across every managed channel) ----
+    monthly_budget: float | None = None        # explicit monthly total; budget changes stay blocked until it is set
+    app_monthly: dict = field(default_factory=dict)       # app -> monthly allocation (must add up to <= monthly_budget)
+    channel_monthly: dict = field(default_factory=dict)   # channel -> monthly limit across apps (optional)
+    campaign_daily_max: float | None = None   # no single campaign / ad set above this per day (optional)
+    reserve_pct: float = 0.10                 # held back for spend that platforms report late
+    budget_currency: str = "USD"
+    # ---- change safeguards (enforced on the server, across runs and workers) ----
+    max_daily_change_pct: float = 0.30        # cumulative budget change per campaign per 24 h
+    cooldown_hours: float = 24.0              # after a change, leave that campaign alone this long
+    max_actions_per_campaign_day: int = 2
+    max_actions_per_account_day: int = 10
+    deadband_pct: float = 0.10                # ignore budget changes smaller than this
+    min_days_data: int = 3                    # days of mature data before a performance rule may act
+    maturity_days: dict = field(default_factory=dict)     # channel -> days to leave out while conversions arrive
+    stale_after_hours: float = 36.0
+    min_conversions_for_revenue_rules: int = 5
+    min_spend_for_rebalance: float = 50.0     # per app, mature window, before rebalancing may compare apps
+    exploration_share: float = 0.10           # each app keeps at least this share while evidence is thin
+    auto_actions: list = field(default_factory=list)       # actions bounded-automatic mode may apply on its own
     app_match: dict = field(default_factory=lambda: {
         "Rapid Nursing Review": ["rnr", "rapid", "nclex"],
         "CCRN Adult": ["ccrn", "critical care", "ccc"],
@@ -99,10 +121,21 @@ class Rules:
     @classmethod
     def from_dict(cls, d: dict | None) -> "Rules":
         r = cls()
+        nullable = {"monthly_budget", "campaign_daily_max"}
         for k, v in (d or {}).items():
-            if hasattr(r, k) and v is not None:
+            if k in cls.__dataclass_fields__ and (v is not None or k in nullable):
                 setattr(r, k, v)
         return r
+
+    # campaign -> app choices made on the phone app (control.campaign_map); not part of the saved rules
+    def manual_app(self, channel: str, campaign_id) -> str | None:
+        v = getattr(self, "_cmap", {}).get((channel, str(campaign_id)))
+        return v if v in APPS else None
+
+    def vpi(self, app: str) -> float | None:
+        """The value-per-install estimate for an app, or None when not set (0 means not set)."""
+        v = (self.value_per_install or {}).get(app)
+        return float(v) if v else None
 
 
 def load_rules(con=None) -> Rules:
@@ -119,12 +152,19 @@ def load_rules(con=None) -> Rules:
         try:
             row = con.execute("select rules from adbot_rules order by updated_at desc limit 1").fetchone()
             if row:
-                data = {**data, **json.loads(row[0])}
+                data = {**data, **(row[0] if isinstance(row[0], dict) else json.loads(row[0]))}
             for key, status in con.execute("select entity_key, status from keyword_overrides").fetchall():
                 data.setdefault("overrides", {})[key] = status
         except Exception:  # tables not created yet
             pass
-    return Rules.from_dict(data)
+    rules = Rules.from_dict(data)
+    if con is not None:
+        try:
+            from control import ingest
+            rules._cmap = ingest.mapping(con)
+        except Exception:  # noqa: BLE001 - control tables not created yet
+            rules._cmap = {}
+    return rules
 
 
 def app_for(name: str, rules: Rules) -> str | None:
@@ -177,13 +217,19 @@ def aggregate(rows: Iterable[dict], rules: Rules) -> dict[str, dict]:
     for r in rows:
         k = entity_key(r)
         a = out.setdefault(k, {**{f: r.get(f) for f in ("channel", "entity_id", "entity_type", "keyword", "campaign_id", "campaign", "adgroup_id", "app", "status")},
-                                "taps": 0, "impressions": 0, "installs": 0.0, "spend": 0.0, "revenue": 0.0})
-        for f in ("taps", "impressions", "installs", "spend", "revenue"):
+                                "taps": 0, "impressions": 0, "installs": 0.0, "spend": 0.0, "revenue": 0.0, "revenue_known": True})
+        for f in ("taps", "impressions", "installs", "spend"):
             a[f] += float(r.get(f) or 0)
+        if r.get("revenue") is None or r.get("channel") == "Apple Search Ads":
+            a["revenue_known"] = False      # not reported: unknown, never zero
+        else:
+            a["revenue"] += float(r["revenue"])
     for a in out.values():
-        if not a["revenue"] and a["installs"] and a.get("app"):
-            a["revenue"] = a["installs"] * float(rules.value_per_install.get(a["app"], 0) or 0)
-            a["revenue_estimated"] = bool(a["revenue"])
+        if not a["revenue_known"]:
+            a["revenue"] = None
+        vpi = rules.vpi(a.get("app") or "")
+        # a labeled estimate for display only; decisions never use it
+        a["revenue_estimate"] = a["installs"] * vpi if (vpi and a["installs"]) else None
         a["cpt"] = a["spend"] / a["taps"] if a["taps"] else None
         a["acos"] = a["spend"] / a["revenue"] if a["revenue"] else None
         a["country"] = country_for(f"{a.get('campaign') or ''} {a.get('keyword') or ''}", a.get("app"), rules)
@@ -205,8 +251,8 @@ def keyword_decision(a: dict, rules: Rules) -> tuple[str, str]:
         return "pause", f"{int(a['taps'])} taps and no installs"
     if a["spend"] >= rules.min_spend_for_acos and a["acos"] is not None and a["acos"] > rules.max_acos:
         return "pause", f"ACoS {a['acos']*100:.0f}% is above {rules.max_acos*100:.0f}%"
-    if a["spend"] >= rules.min_spend_for_acos and not a["revenue"] and a["installs"] == 0:
-        return "pause", f"${a['spend']:.2f} spent with no installs or revenue"
+    if a["spend"] >= rules.min_spend_for_acos and a["installs"] == 0:
+        return "pause", f"${a['spend']:.2f} spent with no installs"
     return "keep", ""
 
 
@@ -300,7 +346,8 @@ def http(method: str, url: str, *, retries: int = 4, **kw) -> requests.Response:
     for attempt in range(retries):
         r = requests.request(method, url, **kw)
         if r.status_code in (429, 500, 502, 503, 504) and attempt < retries - 1:
-            time.sleep(min(60, 2 ** attempt * 3))
+            wait = r.headers.get("Retry-After", "")
+            time.sleep(min(120, float(wait)) if str(wait).isdigit() else min(60, 2 ** attempt * 3))   # bounded backoff
             continue
         if r.status_code >= 400:
             raise RuntimeError(f"{method} {url} -> {r.status_code}: {r.text[:500]}")
@@ -417,18 +464,26 @@ class AppleSearchAds:
                            "impressions": int(g.get("impressions") or 0),
                            "taps": int(g.get("taps") or 0), "installs": float(installs),
                            "spend": float((g.get("localSpend") or {}).get("amount") or 0),
-                           "revenue": 0.0}
+                           "currency": (g.get("localSpend") or {}).get("currency") or (c.get("budgetAmount") or {}).get("currency"),
+                           "revenue": None}   # Apple Ads reports no revenue: unknown, never zero
             if len(rows) < 1000:
                 break
             offset += 1000
+
+    def jobs(self, start: dt.date, end: dt.date, rules: Rules) -> list:
+        from control.ingest import Job
+        return [Job("Apple Search Ads", self.org_id, lambda: self.keyword_rows(start, end, rules), "ORTZ (organization time zone)")]
 
     def keyword_rows(self, start: dt.date, end: dt.date, rules: Rules) -> Iterator[dict]:
         """Compatibility entry point: one reporting level per campaign."""
         campaigns = []
         for campaign in self.campaigns():
-            app = app_for(campaign.get("name", ""), rules)
+            app = rules.manual_app("Apple Search Ads", campaign.get("id")) or app_for(campaign.get("name", ""), rules)
             if app not in APPS:
-                log.info("Apple Search Ads: skipping campaign %s (not mapped to a supported app)", campaign["id"])
+                # not reported (it may belong to another product in the same Apple Ads organization), but listed
+                # so it can be reviewed and mapped on the phone app instead of disappearing silently
+                log.info("Apple Search Ads: campaign %s is not mapped to a managed app; listed for review", campaign["id"])
+                yield {"_campaign_only": True, "campaign_id": str(campaign["id"]), "campaign": campaign.get("name"), "app": None}
                 continue
             campaigns.append(campaign)
         yield from self.campaign_rows(
@@ -436,7 +491,7 @@ class AppleSearchAds:
         for c in campaigns:
             if not self.supports_keywords(c):
                 continue
-            app = app_for(c.get("name", ""), rules)
+            app = rules.manual_app("Apple Search Ads", c.get("id")) or app_for(c.get("name", ""), rules)
             offset = 0
             while True:
                 body = {"startTime": start.isoformat(), "endTime": end.isoformat(), "granularity": "DAILY", "timeZone": "ORTZ",
@@ -454,7 +509,8 @@ class AppleSearchAds:
                                "campaign_id": str(c["id"]), "campaign": c.get("name"), "adgroup_id": str(m.get("adGroupId")),
                                "app": app, "status": m.get("keywordStatus") or m.get("keywordDisplayStatus"),
                                "impressions": int(g.get("impressions") or 0), "taps": int(g.get("taps") or 0),
-                               "installs": float(installs), "spend": spend, "revenue": 0.0}
+                               "installs": float(installs), "spend": spend,
+                               "currency": (g.get("localSpend") or {}).get("currency"), "revenue": None}
                 if len(rows) < 1000:
                     break
                 offset += 1000
@@ -495,22 +551,35 @@ class MetaAds:
         vals = [float(i.get("value") or 0) for i in (items or []) if i.get("action_type") in types]
         return max(vals) if vals else 0.0
 
-    def adset_rows(self, start: dt.date, end: dt.date, rules: Rules) -> Iterator[dict]:
-        for acct in self.accounts:
+    @classmethod
+    def _value(cls, items: list | None, types: tuple):
+        """Purchase value when Meta reported one; None (unknown) when no purchase value was reported at all."""
+        vals = [float(i.get("value") or 0) for i in (items or []) if i.get("action_type") in types]
+        return max(vals) if vals else None
+
+    def jobs(self, start: dt.date, end: dt.date, rules: Rules) -> list:
+        from control.ingest import Job
+        return [Job("Meta Ads", acct, (lambda a=acct: self.adset_rows(start, end, rules, accounts=[a])), "ad account time zone")
+                for acct in self.accounts]
+
+    def adset_rows(self, start: dt.date, end: dt.date, rules: Rules, accounts: list | None = None) -> Iterator[dict]:
+        for acct in (accounts or self.accounts):
             url = self._url(f"act_{acct}/insights")
             params = {"access_token": self.token, "level": "adset", "time_increment": 1, "limit": 500,
                       "time_range": json.dumps({"since": start.isoformat(), "until": end.isoformat()}),
-                      "fields": "adset_id,adset_name,campaign_id,campaign_name,spend,clicks,impressions,actions,action_values"}
+                      "fields": "adset_id,adset_name,campaign_id,campaign_name,spend,clicks,impressions,actions,action_values,account_currency"}
             while url:
                 j = http("GET", url, params=params).json()
                 for x in j.get("data") or []:
                     yield {"date": x["date_start"], "channel": "Meta Ads", "entity_type": "ad_set",
                            "entity_id": x["adset_id"], "keyword": x.get("adset_name"),
                            "campaign_id": x.get("campaign_id"), "campaign": x.get("campaign_name"), "adgroup_id": x["adset_id"],
-                           "app": app_for(f"{x.get('campaign_name','')} {x.get('adset_name','')}", rules), "status": None,
+                           "app": rules.manual_app("Meta Ads", x.get("campaign_id"))
+                                  or app_for(f"{x.get('campaign_name','')} {x.get('adset_name','')}", rules), "status": None,
                            "impressions": int(x.get("impressions") or 0), "taps": int(x.get("clicks") or 0),
                            "installs": self._sum(x.get("actions"), self.INSTALL_ACTIONS),
-                           "spend": float(x.get("spend") or 0), "revenue": self._sum(x.get("action_values"), self.PURCHASE_ACTIONS)}
+                           "spend": float(x.get("spend") or 0), "currency": x.get("account_currency"),
+                           "revenue": self._value(x.get("action_values"), self.PURCHASE_ACTIONS)}
                 url = (j.get("paging") or {}).get("next")
                 params = None  # the next link already carries every parameter
 
@@ -557,30 +626,46 @@ class GoogleAds:
         for batch in svc.search_stream(customer_id=cid, query=query):
             yield from batch.results
 
-    def rows(self, start: dt.date, end: dt.date, rules: Rules) -> Iterator[dict]:
+    @staticmethod
+    def _value(conversions: float, value: float):
+        """Google returns 0 value when conversion values aren't set up; with conversions > 0 that is 'not reported', not $0."""
+        if value:
+            return float(value)
+        return 0.0 if not conversions else None
+
+    def jobs(self, start: dt.date, end: dt.date, rules: Rules) -> list:
+        from control.ingest import Job
+        return [Job("Google Ads", cid, (lambda c=cid: self.rows(start, end, rules, customers=[c])), "account time zone")
+                for cid in self.customer_ids]
+
+    def rows(self, start: dt.date, end: dt.date, rules: Rules, customers: list | None = None) -> Iterator[dict]:
         rng = f"segments.date BETWEEN '{start.isoformat()}' AND '{end.isoformat()}'"
-        for cid in self.customer_ids:
+        for cid in (customers or self.customer_ids):
             # Search keywords
-            q = ("SELECT campaign.id, campaign.name, ad_group.id, ad_group_criterion.criterion_id, ad_group_criterion.keyword.text, "
+            q = ("SELECT customer.currency_code, campaign.id, campaign.name, ad_group.id, ad_group_criterion.criterion_id, ad_group_criterion.keyword.text, "
                  "ad_group_criterion.status, segments.date, metrics.impressions, metrics.clicks, metrics.cost_micros, "
                  f"metrics.conversions, metrics.conversions_value FROM keyword_view WHERE {rng}")
             for r in self._stream(cid, q):
                 yield {"date": r.segments.date, "channel": "Google Ads", "entity_type": "keyword",
                        "entity_id": f"{cid}~{r.ad_group.id}~{r.ad_group_criterion.criterion_id}", "keyword": r.ad_group_criterion.keyword.text,
                        "campaign_id": f"{cid}~{r.campaign.id}", "campaign": r.campaign.name, "adgroup_id": str(r.ad_group.id),
-                       "app": app_for(r.campaign.name, rules), "status": r.ad_group_criterion.status.name,
+                       "app": rules.manual_app("Google Ads", f"{cid}~{r.campaign.id}") or app_for(r.campaign.name, rules),
+                       "status": r.ad_group_criterion.status.name,
                        "impressions": int(r.metrics.impressions), "taps": int(r.metrics.clicks), "installs": float(r.metrics.conversions),
-                       "spend": r.metrics.cost_micros / 1e6, "revenue": float(r.metrics.conversions_value)}
+                       "spend": r.metrics.cost_micros / 1e6, "currency": r.customer.currency_code,
+                       "revenue": self._value(float(r.metrics.conversions), float(r.metrics.conversions_value))}
             # App campaigns have no keywords: track them at campaign level
-            q = ("SELECT campaign.id, campaign.name, campaign.status, segments.date, metrics.impressions, metrics.clicks, metrics.cost_micros, "
+            q = ("SELECT customer.currency_code, campaign.id, campaign.name, campaign.status, segments.date, metrics.impressions, metrics.clicks, metrics.cost_micros, "
                  f"metrics.conversions, metrics.conversions_value FROM campaign WHERE campaign.advertising_channel_type = 'MULTI_CHANNEL' AND {rng}")
             for r in self._stream(cid, q):
                 yield {"date": r.segments.date, "channel": "Google Ads", "entity_type": "app_campaign",
                        "entity_id": f"{cid}~c{r.campaign.id}", "keyword": f"App campaign: {r.campaign.name}",
                        "campaign_id": f"{cid}~{r.campaign.id}", "campaign": r.campaign.name, "adgroup_id": None,
-                       "app": app_for(r.campaign.name, rules), "status": r.campaign.status.name,
+                       "app": rules.manual_app("Google Ads", f"{cid}~{r.campaign.id}") or app_for(r.campaign.name, rules),
+                       "status": r.campaign.status.name,
                        "impressions": int(r.metrics.impressions), "taps": int(r.metrics.clicks), "installs": float(r.metrics.conversions),
-                       "spend": r.metrics.cost_micros / 1e6, "revenue": float(r.metrics.conversions_value)}
+                       "spend": r.metrics.cost_micros / 1e6, "currency": r.customer.currency_code,
+                       "revenue": self._value(float(r.metrics.conversions), float(r.metrics.conversions_value))}
 
     def pause_keyword(self, a: dict) -> None:
         cid, *rest = a["entity_id"].split("~")
@@ -654,33 +739,55 @@ def ensure_tables(con) -> None:
         revenue.ensure(con)
     except Exception:  # noqa: BLE001
         log.exception("revenue schema setup failed; the ad bot carries on without it")
+    # Control plane (schema "control"): data states, imports, campaign map, proposals, alerts, locks.
+    try:
+        import control
+        control.ensure(con)
+    except Exception:  # noqa: BLE001
+        log.exception("control schema setup failed")
 
 
-def run_sync(days: int, rules: Rules) -> dict:
+def ad_sources() -> dict:
+    return {"Apple Search Ads": AppleSearchAds(), "Meta Ads": MetaAds(), "Google Ads": GoogleAds()}
+
+
+def configured_sources(sources: dict | None = None) -> dict:
+    """Which sources have credentials on this process (TikTok has no integration, so it's reported as unsupported)."""
+    sources = sources or ad_sources()
+    out = {name: bool(src.configured) for name, src in sources.items()}
+    out["TikTok Ads"] = bool(os.getenv("TIKTOK_ACCESS_TOKEN"))
+    return out
+
+
+def build_jobs(start: dt.date, end: dt.date, rules: Rules, sources: dict | None = None) -> list:
+    sources = sources or ad_sources()
+    jobs = []
+    for name, src in sources.items():
+        if not src.configured:
+            log.info("%s: credentials not set, skipped", name)
+            continue
+        jobs += src.jobs(start, end, rules)
+    return jobs
+
+
+def run_sync(days: int, rules: Rules, sources: dict | None = None) -> dict:
+    """Import the last `days` days (the refresh window re-reads recent days, so late conversions and revised
+    reports replace earlier numbers; dlt merges on channel + entity + date, so nothing is counted twice).
+    Returns the import records for control.ingest.record(); a load failure is reported, not raised."""
     import dlt
+    from control.ingest import collect
     end = dt.date.today()
     start = end - dt.timedelta(days=days - 1)
-    sources = {"Apple Search Ads": AppleSearchAds(), "Meta Ads": MetaAds(), "Google Ads": GoogleAds()}
-    counts = {}
+    sources = sources or ad_sources()
+    jobs = build_jobs(start, end, rules, sources)
+    records: list[dict] = []
+    campaigns: dict = {}
 
     @dlt.resource(name=TABLE, write_disposition="merge", primary_key=["channel", "entity_id", "date"])
     def performance():
-        for name, src in sources.items():
-            if not src.configured:
-                log.info("%s: credentials not set, skipped", name)
-                continue
-            n = 0
-            try:
-                gen = src.keyword_rows(start, end, rules) if name == "Apple Search Ads" else src.adset_rows(start, end, rules) if name == "Meta Ads" else src.rows(start, end, rules)
-                for row in gen:
-                    row["date"] = str(row["date"])
-                    row["app"] = row.get("app") or "Unassigned"
-                    n += 1
-                    yield row
-            except Exception as e:  # one broken source must not stop the others
-                log.exception("%s sync failed", name)
-                counts[name + " error"] = str(e)[:300]
-            counts[name] = n
+        for row in collect(jobs, start, end, records, campaigns):
+            row["app"] = row.get("app") or "Unassigned"
+            yield row
 
     target = db_target()
     if target.startswith("md:"):
@@ -688,151 +795,69 @@ def run_sync(days: int, rules: Rules) -> dict:
     else:
         destination = dlt.destinations.duckdb(credentials=target)
     pipeline = dlt.pipeline(pipeline_name="adbot", destination=destination, dataset_name=DATASET)
-    info = pipeline.run(performance())
-    log.info("Loaded: %s", info)
-    return counts
+    load_error = None
+    try:
+        info = pipeline.run(performance())
+        log.info("Loaded: %s", info)
+    except Exception as e:  # noqa: BLE001 - recorded on every import run of this sync
+        load_error = f"{type(e).__name__}: {str(e)[:300]}"
+        log.exception("dlt load failed")
+    return {"records": records, "campaigns": campaigns, "configured": configured_sources(sources), "load_error": load_error,
+            "window": (start, end)}
 
 
 AD_PLATFORM = {"Apple Search Ads": "apple_ads", "Meta Ads": "meta_ads", "Google Ads": "google_ads"}
 
 
-def report_ad_status(con, counts: dict) -> None:
-    """Tell the Revenue tab which ad accounts synced (the keys live on this job, not the web app)."""
+def report_ad_status(con, result: dict) -> None:
+    """Record imports (control.*) and mirror each ad account's state on the Revenue tab (revenue.store_accounts).
+    An account is 'verified' only when an import finished; a finished import with no rows says so."""
+    try:
+        from control import ingest
+        ingest.record(con, result["records"], result["campaigns"], result["configured"], result.get("load_error"))
+    except Exception:  # noqa: BLE001
+        log.exception("could not record import runs")
     try:
         from revenue import registry as rreg
         from revenue.schema import SCHEMA as R
         for name, platform in AD_PLATFORM.items():
-            if name not in counts and f"{name} error" not in counts:
+            mine = [r for r in result["records"] if r["source"] == name]
+            if not mine:
                 continue  # credentials not set: nothing to report
-            err = counts.get(f"{name} error")
+            bad = [r for r in mine if r["status"] == "failed"]
+            rows = sum(r["rows"] for r in mine if r["status"] == "succeeded")
+            act = sum(r["activity_rows"] for r in mine if r["status"] == "succeeded")
+            status = "failed" if len(bad) == len(mine) else ("partial" if bad else "succeeded")
+            msg = ("; ".join(r["message"] or "" for r in bad)[:300] if bad else "") or (
+                f"{rows} rows, {act} with activity" if rows else "Import finished: the platform returned no rows for the window")
             job = rreg.start_job(con, platform, "ad_sync")
-            rreg.finish_job(con, job, "failed" if err else "succeeded", int(counts.get(name, 0) or 0), 0,
-                            message=err or f"{counts.get(name, 0)} rows")
+            rreg.finish_job(con, job, status, rows, 0, message=msg)
+            ok = status != "failed"
             con.execute(f"UPDATE {R}.store_accounts SET status = ?, last_error = ?, last_verified_at = CASE WHEN ? THEN ? ELSE last_verified_at END, "
                         "updated_at = ? WHERE platform = ? AND purpose = 'reporting'",
-                        ["error" if err else "verified", rreg.scrub_text(err)[:500] if err else None, not err, rreg.now(), rreg.now(), platform])
+                        ["verified" if ok else "error", None if ok else rreg.scrub_text(msg)[:500], ok, rreg.now(), rreg.now(), platform])
     except Exception:  # noqa: BLE001
         log.exception("could not record ad sync status")
 
 
 # --------------------------------------------------------------------------- #
-# Bot run
+# Bot run: the control-plane decision engine (control/engine.py)
 # --------------------------------------------------------------------------- #
-def run_bot(con, rules: Rules, dry_run: bool) -> dict:
-    since = (dt.date.today() - dt.timedelta(days=rules.lookback_days - 1)).isoformat()
-    try:
-        df = con.execute(f"select * from {DATASET}.{TABLE} where cast(date as varchar) >= ?", [since]).fetch_df()
-    except Exception:
-        log.warning("No performance data yet. Run a sync first.")
-        return {}
-    rows = df.to_dict("records")
-    # Exclude previously stored out-of-scope Apple campaigns from decisions and totals.
-    rows = [r for r in rows if r.get("channel") != "Apple Search Ads"
-            or app_for(r.get("campaign") or "", rules) in APPS]
-    agg = aggregate(rows, rules)
-    sources = {"Apple Search Ads": AppleSearchAds(), "Meta Ads": MetaAds(), "Google Ads": GoogleAds()}
-    now = dt.datetime.utcnow()
-    paused, alerts = [], []
-
-    # skip anything already paused by the bot, and don't repeat a dry-run alert more than once a day
-    already = {k for (k,) in con.execute("select distinct entity_key from bot_actions where kind='pause' and (applied or ts > ?)",
-                                         [now - dt.timedelta(hours=24)]).fetchall()}
-    for k, a in agg.items():
-        action, reason = keyword_decision(a, rules)
-        if action != "pause" or k in already or str(a.get("status") or "").upper() in ("PAUSED", "REMOVED"):
-            continue
-        applied, err = False, None
-        if not dry_run:
-            try:
-                sources[a["channel"]].pause_keyword(a)
-                applied = True
-            except Exception as e:  # noqa: BLE001
-                err = str(e)[:500]
-        con.execute("insert into bot_actions values (?,?,?,?,?,?,?,?,?,?)", [now, dry_run, "pause", a["channel"], a.get("app"), k, a.get("keyword"), reason, applied, err])
-        paused.append((a, reason, applied, err))
-
-    # rebalance
-    per_app: dict[str, dict] = {}
-    for a in agg.values():
-        p = per_app.setdefault(a.get("app") or "Unassigned", {"spend": 0.0, "revenue": 0.0, "installs": 0.0})
-        for f in ("spend", "revenue", "installs"):
-            p[f] += a[f]
-    last = {app: d for app, d in con.execute("select app, arg_max(daily, ts) from app_budgets group by app").fetchall()}
-    plan = rebalance(per_app, rules, last) if rules.auto_rebalance else {}
-    for app, v in plan.items():
-        con.execute("insert into app_budgets values (?,?,?,?,?)", [now, app, v["daily"], v["share"], v["efficiency"]])
-    if plan and not dry_run:
-        apply_budgets(plan, agg, sources, con, now, rules)
-
-    # alerts
-    tag = "🧪 DRY RUN · " if dry_run else ""
-    if paused and rules.alerts.get("kill_switch", True):
-        lines = [f"{'⏸' if ap or dry_run else '⚠️'} <b>{a.get('keyword')}</b> ({a['channel']}, {a.get('app')}): {r}" + (f" — failed: {e}" if e else "") for a, r, ap, e in paused[:25]]
-        alerts.append(f"{tag}<b>Kill-switch</b> {'would pause' if dry_run else 'paused'} {len(paused)}:\n" + "\n".join(lines))
-    hi = [a for a in agg.values() if a["cpt"] and a["cpt"] > rules.max_cpt * 0.85 and a["cpt"] <= rules.max_cpt and a["taps"] >= rules.min_taps_for_cpt]
-    if hi and rules.alerts.get("high_cpt", True):
-        alerts.append(f"{tag}<b>High CPT warning</b> (within 15% of ${rules.max_cpt:.2f}):\n" + "\n".join(f"• {a.get('keyword')} ${a['cpt']:.2f}" for a in hi[:15]))
-    if plan and rules.alerts.get("rebalance", True):
-        alerts.append(f"{tag}<b>Budget plan</b> (cap ${rules.global_daily_cap:.2f}/day):\n" + "\n".join(f"• {app}: ${v['daily']:.2f}/day ({v['share']*100:.0f}%)" for app, v in plan.items()))
-    if rules.alerts.get("daily_summary", True) and dt.datetime.now().hour < 10:
-        sp = sum(a["spend"] for a in agg.values()); rev = sum(a["revenue"] for a in agg.values()); ins = sum(a["installs"] for a in agg.values())
-        alerts.append(f"{tag}<b>Last {rules.lookback_days} days</b>: spend ${sp:,.2f} · installs {ins:,.0f} · revenue ${rev:,.2f} · ACoS {(sp/rev*100 if rev else float('nan')):.0f}%")
-    for msg in alerts:
-        telegram(msg, rules)
-    return {"paused": len(paused), "plan": plan}
-
-
-def apply_budgets(plan: dict, agg: dict, sources: dict, con, now, rules: Rules) -> None:
-    """Split each app's daily budget across its active campaigns in proportion to their recent spend."""
-    camp: dict[tuple, float] = {}
-    for a in agg.values():
-        if a.get("channel") == "Apple Search Ads" and a.get("entity_type") == "campaign":
-            continue  # Newly supported placements are reporting-only.
-        if a.get("app") not in plan or str(a.get("status") or "").upper() in ("PAUSED", "REMOVED"):
-            continue
-        # Apple and Google budgets live on the campaign; Meta budgets on the ad set
-        budget_id = a["entity_id"] if a["channel"] == "Meta Ads" else a.get("campaign_id")
-        key = (a["channel"], a["app"], budget_id)
-        camp[key] = camp.get(key, 0.0) + a["spend"]
-    country_of = {(a["channel"], a.get("app"), a["entity_id"] if a["channel"] == "Meta Ads" else a.get("campaign_id")): a.get("country") for a in agg.values()}
-    for app, v in plan.items():
-        mine = {k: s for k, s in camp.items() if k[1] == app}
-        if not mine:
-            continue
-        # apps with country targets: first split the app budget by country, then by spend inside each country
-        per_country: dict[str, dict] = {}
-        for a in agg.values():
-            if a.get("app") == app and a.get("country"):
-                p = per_country.setdefault(a["country"], {"spend": 0.0, "revenue": 0.0, "installs": 0.0})
-                for f in ("spend", "revenue", "installs"):
-                    p[f] += a[f]
-        geo = geo_split(app, v["daily"], per_country, rules) if rules.geo_targets.get(app) else {}
-        groups: dict[str | None, dict] = {}
-        for k, s in mine.items():
-            c = country_of.get(k) if geo else None
-            groups.setdefault(c if c in geo else None, {})[k] = s
-        budgets: dict[tuple, float] = {}
-        untagged_budget = v["daily"] - sum(geo[c] for c in groups if c in geo)
-        for c, members in groups.items():
-            pool = geo[c] if c in geo else max(0.0, untagged_budget)
-            spent = sum(members.values())
-            for k, s in members.items():
-                budgets[k] = pool * (s / spent if spent else 1 / len(members))
-        for (channel, _, cid), daily in budgets.items():
-            daily = round(daily, 2)
-            if daily < 1:
-                continue  # platforms reject tiny budgets; leave these alone
-            err = None
-            try:
-                if channel == "Apple Search Ads":
-                    sources[channel].set_campaign_budget(cid, daily)
-                elif channel == "Meta Ads":
-                    sources[channel].set_adset_budget(cid, daily)
-                else:
-                    sources[channel].set_campaign_budget(cid, daily)
-            except Exception as e:  # e.g. Meta ad sets using campaign budget optimisation
-                err = str(e)[:500]
-            con.execute("insert into bot_actions values (?,?,?,?,?,?,?,?,?,?)", [now, False, "budget", channel, app, f"{channel}|{cid}", None, f"daily budget ${daily:.2f}", err is None, err])
+def run_bot(con, rules: Rules, dry_run: bool | None = None, adapters: dict | None = None, alerter=None, environ=None) -> dict:
+    """One decision cycle. Live writes need DRY_RUN=false AND a mode that allows them; see control/engine.py.
+    `dry_run` is kept for old callers: when given True it forces a dry run."""
+    from control import adapters as adapters_mod
+    from control import engine
+    env = dict(os.environ if environ is None else environ)
+    if dry_run:
+        env["DRY_RUN"] = "true"
+    if adapters is None:
+        adapters = adapters_mod.live_adapters()
+    res = engine.run_cycle(con, rules, apps=APPS, rule_app_fn=lambda name: app_for(name, rules), adapters=adapters,
+                           alerter=alerter, environ=env)
+    plan = {a: {"daily": v.get("daily_allowance"), "share": None, "efficiency": None}
+            for a, v in (res.get("pacing", {}).get("apps") or {}).items() if v.get("daily_allowance") is not None}
+    return {**res, "paused": res["executions"].get("simulated", 0) + res["executions"].get("applied", 0), "plan": plan}
 
 
 def check_trading(con, rules: Rules) -> None:
@@ -872,7 +897,6 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--test-telegram", action="store_true")
     args = ap.parse_args(argv)
     logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
-    dry_run = os.getenv("DRY_RUN", "true").lower() not in ("false", "0", "no")
     con = connect()
     rules = load_rules(con)
     con.close()  # dlt opens its own connection while loading
@@ -880,14 +904,28 @@ def main(argv: list[str] | None = None) -> int:
         ok = telegram("✅ <b>AdBot test</b>\nTelegram alerts are working for Rapid Nursing Review, CCRN Adult and NurseBound.", rules)
         print("sent" if ok else "not sent (check TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)")
         return 0 if ok else 1
-    if not args.no_sync:
-        counts = run_sync(args.days, rules)
-        log.info("Rows per source: %s", counts)
+    from control import state as cstate
     con = connect()
-    rules = load_rules(con)
-    if not args.no_sync:
-        report_ad_status(con, counts)
-    result = run_bot(con, rules, dry_run)
+    owner = cstate.owner_id()
+    if not cstate.acquire(con, "hourly", owner, ttl_minutes=55):
+        log.warning("Another AdBot run holds the lock (%s); this run exits without importing or deciding", cstate.lock_holder(con, "hourly"))
+        return 0
+    con.close()
+    try:
+        if not args.no_sync:
+            result_sync = run_sync(args.days, rules)
+            log.info("Import runs: %s", [(r["source"], r["account_id"], r["status"], r["rows"]) for r in result_sync["records"]])
+        con = connect()
+        rules = load_rules(con)
+        if not args.no_sync:
+            report_ad_status(con, result_sync)
+        result = run_bot(con, rules)
+    finally:
+        try:
+            c2 = connect()
+            cstate.release(c2, "hourly", owner)
+        except Exception:  # noqa: BLE001
+            log.exception("could not release the run lock (it expires on its own)")
     check_trading(con, rules)
     # Store ID check (read-only): answers "Check store IDs" from the phone app and re-checks once a day.
     try:
@@ -906,7 +944,8 @@ def main(argv: list[str] | None = None) -> int:
         log.info("Google Play sync: %s", google_play.run(con))
     except Exception:  # noqa: BLE001
         log.exception("Google Play sync failed")
-    log.info("Bot result (dry_run=%s): %s", dry_run, {k: (v if k != "plan" else {a: x['daily'] for a, x in v.items()}) for k, v in result.items()})
+    log.info("Decision cycle (mode %s, dry_run=%s): proposals %s, executions %s", result["mode"], result["dry_run"],
+             result["proposals"], result["executions"])
     return 0
 
 

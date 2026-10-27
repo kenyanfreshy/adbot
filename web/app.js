@@ -43,11 +43,16 @@
   async function start() {
     try { ME = await api("/api/me"); } catch (e) { if (e.message !== "signin") { $("boot").hidden = true; showLogin(); $("loginErr").textContent = e.message; } return; }
     $("boot").hidden = true; $("login").hidden = true; $("app").hidden = false;
-    $("modePill").className = "pill " + (ME.dry_run ? "dry" : "live"); $("modePill").textContent = ME.dry_run ? "DRY RUN" : "LIVE";
-    $("modePill").title = ME.dry_run ? "The bot only reports what it would do" : "The bot pauses keywords and changes budgets";
+    setModePill();
     applyTradingVisibility();
     renderChips(); $("channel").value = S.channel; $("days").value = String(S.days);
     go(S.tab);
+  }
+  function setModePill() {
+    const stopped = ME.automation_stopped, live = !ME.dry_run;
+    $("modePill").className = "pill " + (stopped ? "stop" : live ? "live" : "dry");
+    $("modePill").textContent = stopped ? "STOPPED" : live ? "LIVE" : "DRY RUN";
+    $("modePill").title = stopped ? "Automation is stopped" : live ? "Approved changes are sent to the platforms" : "Every change is simulated; nothing is sent to the ad platforms";
   }
   // the Trading tab appears whenever a trading bot (live or demo) reports in
   function applyTradingVisibility() {
@@ -132,65 +137,165 @@
   const flag = a2 => /^[A-Z]{2}$/.test(a2) ? String.fromCodePoint(...[...a2].map(ch => 0x1F1E6 + ch.charCodeAt(0) - 65)) : "";
   let regionName = c => c; try { const dn = new Intl.DisplayNames(["en"], {type: "region"}); regionName = c => { try { return dn.of(c) || c; } catch (e) { return c; } }; } catch (e) {}
 
-  /* ---------- Ads ---------- */
+  /* ---------- Ads: control overview, action needed, decision queue, pacing, performance ---------- */
+  const SEV = {critical: "bad", warning: "warn", info: "info"};
+  const PSTAT = {proposed: ["info", "Proposed"], blocked: ["nil", "Blocked"], approved: ["warn", "Approved · waiting to run"], executing: ["warn", "Running"],
+                 uncertain: ["bad", "Unconfirmed"], applied: ["ok", "Applied (live)"], simulated: ["sim", "Simulated (dry run)"], failed: ["bad", "Failed"],
+                 rejected: ["nil", "Rejected"], superseded: ["nil", "Replaced"], expired: ["nil", "Expired"], already_done: ["ok", "Already done"]};
+  const ACT = {pause_keyword: "Pause keyword", pause_ad_set: "Pause ad set", pause_campaign: "Pause campaign", set_budget: "Set daily budget"};
+  const KIND = {optimization: "Optimization", safeguard: "Spend safeguard", emergency: "Emergency", manual: "Your override"};
+  const pchip = st => { const [c, l] = PSTAT[st] || ["nil", st]; return `<span class="schip ${c}">${esc(l)}</span>`; };
+  const ts = t => t ? when(t) : "never";
+  const mval = v => v == null || v === "" ? "—" : esc(String(v));
+
+  function qCard(p, mode) {
+    const m = p.metrics || {}, bl = Array.isArray(p.blockers) ? p.blockers : [];
+    const ev = [["Window", p.window_start ? `${p.window_start} → ${p.window_end} (mature days only)` : null],
+      [m.click_label ? m.click_label[0].toUpperCase() + m.click_label.slice(1) : "Clicks", m.taps != null ? num(m.taps) : null],
+      [m.conversion_label ? m.conversion_label[0].toUpperCase() + m.conversion_label.slice(1) : "Conversions", m.conversions != null ? num(m.conversions) : null],
+      ["Spend", m.spend != null ? money(m.spend) + (m.currency ? " " + m.currency : "") : null],
+      ["Revenue", m.revenue_known === false ? "Not reported by the platform" : m.revenue != null ? money(m.revenue) + " (platform-attributed)" : null],
+      ["Cost per click", m.cpt != null ? money(m.cpt) : null], ["Recent spend", m.spend_7d != null ? money(m.spend_7d) + " in 7 days" : null],
+      ["Pacing allowance", m.allowance != null ? money(m.allowance) + "/day" : null],
+      ["Data", p.freshness], ["Evidence", p.sufficiency], ["Rule", p.rule_id ? `${p.rule_id} · v${p.rule_version}` : null],
+      ["Expected effect", p.expected_effect], ["Next eligible", p.next_eligible_at ? when(p.next_eligible_at) : null],
+      ["Decided", p.decided_by ? `${p.decided_by} · ${when(p.decided_at)}` : null], ["Outcome", p.outcome && !String(p.outcome).startsWith("claim:") ? p.outcome : null]].filter(x => x[1] != null && x[1] !== "");
+    const change = p.action === "set_budget" ? `${money(+p.current_value)} → ${money(+p.proposed_value)} /day` : "";
+    return `<div class="qcard ${p.kind}" data-pid="${esc(p.proposal_id)}">
+      <div class="qtop"><div class="qmain"><div class="qname">${esc(ACT[p.action] || p.action)}: ${esc(p.entity_name || p.entity_key)}</div>
+        <div class="qsub"><span class="dot" style="background:${COLOR[p.app] || "#666"}"></span>${esc(SHORT[p.app] || p.app || "—")} · ${esc(p.channel)} · ${esc(KIND[p.kind] || p.kind)}${change ? " · " + change : ""}</div></div>${pchip(p.status)}</div>
+      <div class="qreason">${esc(p.reason || "")}</div>
+      ${bl.length ? `<ul class="qblock">${bl.map(b => `<li>${esc(b)}</li>`).join("")}</ul>` : ""}
+      <details class="qev"><summary>Evidence and details</summary><dl>${ev.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl></details>
+      ${p.status === "proposed" && mode === "approval" ? `<div class="qbtns"><button class="btn" data-dec="0">Reject</button><button class="btn primary" data-dec="1">Approve</button></div>` : ""}
+      ${p.status === "proposed" && mode !== "approval" ? `<div class="qnote">${mode === "bounded_auto" ? "Not in your list of automatic actions; switch to Approval mode to approve it." : "Recommend mode: nothing is applied. Switch to Approval mode to approve changes."}</div>` : ""}
+    </div>`;
+  }
+
   async function viewAds(my) {
-    const d = await api("/api/ads?" + qs()); if (my !== seq) return;
+    const [d, C] = await Promise.all([api("/api/ads?" + qs()), api("/api/control?" + qs())]); if (my !== seq) return;
+    ME.mode = C.mode; setModePill();
     const T = d.kpis, P = d.prev;
     const k = (label, v, foot, cls) => `<div class="kpi ${cls || ""}"><div class="k">${label}</div><div class="v">${v}</div><div class="d">${foot || "&nbsp;"}</div></div>`;
-    const acosBadge = T.acos == null ? "needs revenue" : `<span class="badge ${T.acos <= d.target_acos ? "good" : T.acos <= d.max_acos ? "warn" : "bad"}">target &lt; ${pct(d.target_acos, 0)}</span>`;
-    const planParts = Object.entries(d.plan).map(([a, v]) => ({a, v: v.daily, c: HEX[a] || "#666", share: v.share}));
-    const planTot = planParts.reduce((s, p) => s + p.v, 0);
-    const geoShow = (S.app === "all" || S.app === "NurseBound") && d.geo.length;
-    const geoMax = Math.max(0.01, ...d.geo.map(g => g.plan || 0));
+    const cur1 = T.currencies && T.currencies.length === 1 ? " " + T.currencies[0] : "";
+    const usable = C.sources.filter(s => ["imported_activity", "imported_zero"].includes(s.state)).length;
+    const connected = C.sources.filter(s => !["not_configured", "unsupported"].includes(s.state)).length;
+    const sm = C.store_money || {}; const est = (sm.estimated || []);
+    const proceeds = est.length ? est.map(e => `${e.proceeds ?? "—"} ${e.currency}`).join(" · ") : null;
+    const tot = (C.pacing && C.pacing.total) || null;
+    const queueOpen = C.queue.filter(p => ["proposed", "approved", "uncertain", "executing"].includes(p.status));
+    const pace = C.pacing || {apps: {}};
+    const reb = C.rebalance || {};
     document.getElementById("view").innerHTML = `
-      ${!d.has_data ? `<div class="banner"><b>No ad data yet.</b> Once Meta, Google or Apple Search Ads keys are added on Render, the hourly job pulls your campaigns in and this fills up.</div>` : ""}
-      <div class="kpis">
-        ${k("Spend", money(T.spend), delta(T.spend, P.spend, true) + " vs prior")}
-        ${k("Taps / clicks", num(T.taps), delta(T.taps, P.taps))}
-        ${k("Installs", num(T.installs), T.taps ? pct(T.installs / T.taps) + " tap→install" : "")}
-        ${k("Revenue", money(T.revenue), T.roas ? T.roas.toFixed(2) + "× ROAS" + (T.revenue_estimated ? " · est." : "") : "")}
-        ${k("ACoS", T.acos == null ? "—" : pct(T.acos), acosBadge)}
-        ${k("Avg CPT", money(T.cpt), delta(T.cpt, P.cpt, true))}
+      <section class="ctl">
+        <div class="ctl-row">
+          <div class="ctl-mode"><span class="ctl-k">Automation</span>
+            <select id="modeSel" aria-label="Operating mode">${C.modes.map(m => `<option value="${m.id}" ${m.id === C.mode ? "selected" : ""}>${esc(m.label.split(":")[0])}</option>`).join("")}</select>
+            <span class="schip ${C.dry_run ? "sim" : "bad"}">${C.dry_run ? "Dry run: changes are simulated" : "Live: approved changes are sent"}</span></div>
+          ${C.automation_stopped ? `<button class="btn" id="resumeBtn">Resume automation</button>` : `<button class="btn danger" id="stopBtn">Stop automation</button>`}
+        </div>
+        <p class="ctl-help">${esc((C.modes.find(m => m.id === C.mode) || {}).label || "")}. Last decision run: ${C.last_cycle ? when(C.last_cycle.at) : "not yet"}.</p>
+        ${C.automation_stopped ? `<div class="banner bad"><b>Automation is stopped</b> since ${when(C.automation_stopped.since)}. AdBot makes no optimization changes. <b>Your ads are still running</b>; use Emergency pause to stop them.</div>` : ""}
+        ${C.emergency ? `<div class="banner bad"><b>Emergency pause active</b> since ${when(C.emergency.since)} (${C.emergency.count} campaign${C.emergency.count === 1 ? "" : "s"}). Results are in the queue below. Nothing is resumed automatically. <button class="btn sm" id="emClear">Clear latch</button></div>` : ""}
+      </section>
+
+      <div class="kpis ov">
+        ${k("Spend", money(T.spend), (T.mixed_currency ? "mixed currencies · " : cur1 ? cur1.trim() + " · " : "") + "last " + d.days + " days")}
+        ${k("Store proceeds", proceeds ? esc(proceeds) : "Unavailable", proceeds ? "estimated, month to date" : "no store reports imported")}
+        ${k("Data coverage", `${usable}/${C.sources.filter(s => s.state !== "unsupported").length}`, `${connected} connected · revenue on ${T.revenue_coverage == null ? "—" : pct(T.revenue_coverage, 0)} of spend`)}
+        ${k("Decisions", num(queueOpen.length), `${C.queue.filter(p => p.status === "blocked").length} blocked · ${esc(C.mode)}`)}
       </div>
-      <div class="h">Bot budget plan <small>${money(d.global_cap)}/day cap · ${d.auto_rebalance ? "auto" : "manual"}</small></div>
-      <div class="card"><div class="plan"><div class="donut">${donut(planParts)}<div class="mid"><div>${money(planTot)}<small>per day</small></div></div></div>
-        <div>${planParts.map(p => `<div class="lrow"><span class="dot" style="background:${p.c}"></span>${esc(SHORT[p.a] || p.a)}<b>${money(p.v)}<small> · cap ${money(d.caps[p.a])}</small></b></div>`).join("")}</div></div></div>
-      <div class="h">Taps, installs &amp; spend <small>last ${d.days} days</small></div>
+
+      ${C.action_needed.length ? `<div class="h">Action needed <small>${C.action_needed.length}</small></div>
+        <div class="card list need">${C.action_needed.map(n => `<div class="item sev-${SEV[n.severity]}"><div class="main"><div class="name">${esc(n.title)}</div>${n.text ? `<div class="meta">${esc(n.text)}</div>` : ""}</div></div>`).join("")}</div>` : ""}
+
+      <div class="h">Decision queue <small>${C.queue.length} open</small></div>
+      ${C.queue.length ? C.queue.map(p => qCard(p, C.mode)).join("") : `<div class="empty">${C.mode === "observe" ? "Observe mode: AdBot collects and displays data but makes no proposals." : C.sources.some(s => ["imported_activity", "imported_zero"].includes(s.state)) ? "No open proposals. Rules found nothing to change in the mature data." : "No proposals: no ad data has been imported yet."}</div>`}
+      ${C.recent.length ? `<details class="fold" id="recentFold"><summary class="h">Recent outcomes <small>${C.recent.length}</small><i class="chev" aria-hidden="true"></i></summary>${C.recent.map(p => qCard(p, C.mode)).join("")}</details>` : ""}
+
+      <div class="h">Data freshness <small>per source</small></div>
+      <div class="card list">${C.sources.concat(C.store_sources).map(s => `<details class="srcrow"><summary class="item"><div class="main"><div class="name">${esc(s.source)}</div><div class="meta">${esc(s.detail || (s.last_success ? "Last import " + when(s.last_success) : ""))}</div></div>${stateChip(s)}</summary>
+        <dl class="tsl"><dt>Connection check</dt><dd>${ts(s.last_connection_check)}</dd><dt>Last import attempt</dt><dd>${ts(s.last_attempt)}</dd><dt>Last successful import</dt><dd>${ts(s.last_success)}</dd><dt>Latest date covered</dt><dd>${s.latest_date_covered ? esc(String(s.latest_date_covered).slice(0, 10)) : "—"}</dd>${s.currency ? `<dt>Currency</dt><dd>${esc(s.currency)}</dd>` : ""}${s.timezone ? `<dt>Reporting time zone</dt><dd>${esc(s.timezone)}</dd>` : ""}</dl></details>`).join("")}</div>
+
+      <div class="h">Budget pacing <small>${esc(pace.month || "")} · ${pace.days_left || "—"} of ${pace.days_in_month || "—"} days left</small></div>
+      <div class="card">
+        ${C.budget_errors.length ? `<div class="banner warn" style="margin:0 0 10px"><b>Budget changes are blocked.</b> ${esc(C.budget_errors[0])}</div>` : ""}
+        ${tot ? `<div class="lrow" style="padding-top:0">All apps<b>${money(tot.spent_mtd)} of ${money(tot.monthly)}<small> · ${money(tot.daily_allowance)}/day left to pace</small></b></div><div class="bar"><i style="width:${Math.min(100, (tot.used_pct || 0) * 100)}%;${tot.used_pct >= 0.9 ? "background:var(--red)" : ""}"></i></div>` : ""}
+        ${APPS.map(a => { const v = (pace.apps || {})[a] || {}; return `<div class="lrow"><span class="dot" style="background:${COLOR[a]}"></span>${esc(SHORT[a])}<b>${v.monthly != null ? `${money(v.spent_mtd)} of ${money(v.monthly)}<small> · ${money(v.daily_allowance)}/day</small>` : `<span class="muted">${money(v.spent_mtd)} spent · no allocation</span>`}</b></div>${v.monthly ? `<div class="bar"><i style="width:${Math.min(100, (v.used_pct || 0) * 100)}%;background:${COLOR[a]}"></i></div>` : ""}`; }).join("")}
+        ${pace.unattributed_spend_mtd ? `<p class="sub" style="margin-top:8px">${money(pace.unattributed_spend_mtd)} this month in campaigns not mapped to an app.</p>` : ""}
+        <p class="sub" style="margin-top:8px">${esc(pace.note || C.budget_note || "")} Spend shown is what platforms have reported so far; reserve ${pct(pace.reserve_pct || 0, 0)}.</p>
+      </div>
+
+      <div class="h">Rebalancing</div>
+      <div class="card"><div class="lrow" style="padding-top:0">Configured<b>${reb.configured ? "On" : "Off"}</b></div>
+        <div class="lrow">Right now<b>${reb.eligible ? '<span class="schip ok">Eligible</span>' : '<span class="schip nil">Blocked</span>'}</b></div>
+        ${!reb.eligible && reb.blockers && reb.blockers.length ? `<ul class="qblock">${reb.blockers.map(b => `<li>${esc(b)}</li>`).join("")}</ul>` : ""}
+        ${reb.eligible ? APPS.map(a => `<div class="lrow">${esc(SHORT[a])}<b>${money(reb.baseline[a])} → ${money(reb.proposed[a])}<small>/month (recommendation)</small></b></div>`).join("") : `<p class="sub">Baseline kept: your monthly allocations stay as set.</p>`}
+        <p class="sub">${esc(reb.method || "")} Last evaluation: ${reb.last_evaluation ? when(reb.last_evaluation) : "not yet"}.</p></div>
+
+      ${C.unmapped.length ? `<div class="h">Campaigns not mapped to an app <small>${C.unmapped.length}</small></div>
+        <div class="card list">${C.unmapped.map(u => `<div class="item umap" data-ch="${esc(u.channel)}" data-cid="${esc(u.campaign_id)}"><div class="main"><div class="name">${esc(u.campaign_name || u.campaign_id)}</div><div class="meta">${esc(u.channel)} · seen ${when(u.last_seen)}</div>
+          <div class="row2 umap-ctl"><select aria-label="App for ${esc(u.campaign_name || "")}"><option value="">Choose app…</option>${APPS.map(a => `<option>${esc(a)}</option>`).join("")}</select><button class="btn sm" data-map="1">Map</button><button class="btn sm" data-ign="1">Not ours</button></div></div></div>`).join("")}</div>` : ""}
+
+      <div class="h">Performance <small>live data · last ${d.days} days</small></div>
+      ${!d.has_data ? `<div class="banner">No ad performance has been imported. ${C.sources.every(s => ["not_configured", "unsupported"].includes(s.state)) ? "No ad channel has credentials on the hourly job yet." : "Check Data freshness above for each source's state."}</div>` : ""}
+      <div class="kpis">
+        ${k("Taps / clicks", num(T.taps), delta(T.taps, P.taps))}
+        ${k("Installs", num(T.installs), T.cpi != null ? money(T.cpi) + " per install" : T.conversions_other ? num(T.conversions_other) + " Google conversions" : "")}
+        ${k("Attributed revenue", T.revenue == null ? "Not reported" : money(T.revenue), T.revenue == null ? (T.revenue_estimate ? "estimate " + money(T.revenue_estimate) + " (value per install)" : "platforms report none") : `${T.roas != null ? T.roas.toFixed(2) + "× ROAS" : ""} on ${pct(T.revenue_coverage, 0)} of spend`)}
+        ${k("ACoS", T.acos == null ? "—" : pct(T.acos), T.acos == null ? "needs reported revenue" : "over spend with revenue")}
+        ${k("Avg cost per tap", money(T.cpt), delta(T.cpt, P.cpt, true))}
+        ${k("Prior period spend", money(P.spend), delta(T.spend, P.spend, true) + " now vs then")}
+      </div>
       <div class="card"><div class="legend"><span><i style="background:#00C2FF"></i>Taps</span><span><i style="background:#00E5A3"></i>Installs</span><span><i style="background:#FFB020"></i>Spend (right)</span></div>
         <div class="chart">${lineChart(d.series, ["taps", "installs", "spend"], ["#00C2FF", "#00E5A3", "#FFB020"], "spend")}</div></div>
-      ${d.by_app.length ? `<div class="h">By app &amp; channel</div><div class="card list">${d.by_app.map(b => `<div class="item"><span class="dot" style="background:${COLOR[b.app] || "#666"};margin-top:6px"></span><div class="main"><div class="name">${esc(SHORT[b.app] || b.app)} · ${esc(b.channel)}</div><div class="meta">${num(b.taps)} taps · ${num(b.installs)} installs · CPT ${money(b.taps ? b.spend / b.taps : null)}</div></div><div class="right">${money(b.spend)}<small>${b.revenue ? "ACoS " + pct(b.spend / b.revenue, 0) : ""}</small></div></div>`).join("")}</div>` : ""}
-      ${geoShow ? `<details class="fold" id="geoFold" ${store.get("adbot-geo-open", false) ? "open" : ""}>
-        <summary class="h">NurseBound countries <small>${(() => { const on = d.geo.filter(g => g.enabled !== false).sort((a, b) => (b.plan || 0) - (a.plan || 0));
-          return `${on.length} · ${on.slice(0, 3).map(g => flag(g.code)).join(" ")}${on.length > 3 ? " +" + (on.length - 3) : ""} · ${money(d.plan.NurseBound ? d.plan.NurseBound.daily : 0)}/day`; })()}</small><i class="chev" aria-hidden="true"></i></summary>
-        <div class="card list">${d.geo.filter(g => g.enabled !== false).map(g => `<div class="item"><span class="flag">${flag(g.code)}</span><div class="main"><div class="name">${esc(regionName(g.code))} ${g.flag === "who_safeguards" ? '<span class="badge warn">WHO list</span>' : ""}${g.flag === "china_reach" ? '<span class="badge mute">limited reach</span>' : ""}</div>
-          <div class="bar" style="margin-top:6px"><i style="width:${(g.plan || 0) / geoMax * 100}%"></i></div><div class="meta">${g.spend ? money(g.spend) + " spent · " + num(g.installs) + " installs" : "no spend yet"} · going to ${(g.dest || []).map(flag).join(" ")}</div></div><div class="right">${money(g.plan)}<small>${g.plan && g.plan < 1 ? "under $1" : "per day"}</small></div></div>`).join("")}</div>
-        ${d.geo_untagged_spend ? `<p class="sub" style="margin:8px 2px">${money(d.geo_untagged_spend)} of NurseBound spend has no country code in the campaign name.</p>` : ""}</details>` : ""}`;
-    const fold = $("geoFold");
-    if (fold) fold.addEventListener("toggle", () => store.set("adbot-geo-open", fold.open));
+      ${d.by_app.length ? `<div class="h">By app &amp; channel</div><div class="card list">${d.by_app.map(b => `<div class="item"><span class="dot" style="background:${COLOR[b.app] || "#666"};margin-top:6px"></span><div class="main"><div class="name">${esc(SHORT[b.app] || b.app)} · ${esc(b.channel)}</div><div class="meta">${num(b.taps)} clicks · ${b.channel === "Google Ads" ? num(b.conversions_other) + " conversions" : num(b.installs) + " installs"} · CPT ${money(b.cpt)}</div></div><div class="right">${money(b.spend)}<small>${b.revenue == null ? "revenue not reported" : "ACoS " + (b.acos == null ? "—" : pct(b.acos, 0))}</small></div></div>`).join("")}</div>` : ""}
+      <details class="fold emer" id="emFold"><summary class="h">Emergency pause <small>stops ads</small><i class="chev" aria-hidden="true"></i></summary>
+        <div class="card"><p class="sub" style="margin-top:0">Pauses every active managed campaign / ad set in scope. Separate from Stop automation. Runs on the hourly job (it has the platform credentials) and reports each campaign's result. Nothing is resumed automatically.</p>
+          <div class="row2"><select id="emApp" aria-label="App"><option value="">All apps</option>${APPS.map(a => `<option>${esc(a)}</option>`).join("")}</select><select id="emCh" aria-label="Channel"><option value="">All channels</option><option>Apple Search Ads</option><option>Meta Ads</option><option>Google Ads</option></select></div>
+          <label class="sub" for="emConfirm" style="display:block;margin-top:10px">Type PAUSE to confirm</label><input id="emConfirm" class="txt" autocomplete="off" autocapitalize="characters">
+          <button class="btn danger block" id="emGo" style="margin-top:10px">Pause managed campaigns</button></div></details>`;
+    // wiring
+    const after = msg => { toast(msg); load(false, true); };
+    $("modeSel").onchange = async e => { try { await api("/api/control/mode", {method: "POST", body: JSON.stringify({mode: e.target.value})}); after("Mode saved: " + e.target.selectedOptions[0].text); } catch (err) { if (err.message !== "signin") toast(err.message); } };
+    if ($("stopBtn")) $("stopBtn").onclick = async () => { try { const r = await api("/api/control/stop", {method: "POST", body: JSON.stringify({reason: "Stopped from the phone app."})}); after(r.note); } catch (err) { if (err.message !== "signin") toast(err.message); } };
+    if ($("resumeBtn")) $("resumeBtn").onclick = async () => { try { await api("/api/control/resume", {method: "POST"}); after("Automation resumed in " + C.mode + " mode"); } catch (err) { if (err.message !== "signin") toast(err.message); } };
+    if ($("emClear")) $("emClear").onclick = async () => { try { const r = await api("/api/control/emergency-clear", {method: "POST"}); after(r.note); } catch (err) { if (err.message !== "signin") toast(err.message); } };
+    $("emGo").onclick = async () => { $("emGo").disabled = true; try { const r = await api("/api/control/emergency-pause", {method: "POST", body: JSON.stringify({app: $("emApp").value, channel: $("emCh").value, confirm: $("emConfirm").value.trim().toUpperCase()})}); after(`${r.requested} pause(s) queued. ${r.note}`); } catch (err) { if (err.message !== "signin") toast(err.message); } finally { $("emGo").disabled = false; } };
+    document.querySelectorAll("[data-dec]").forEach(b => b.onclick = async () => { const pid = b.closest("[data-pid]").dataset.pid; b.disabled = true;
+      try { await api("/api/proposals/decide", {method: "POST", body: JSON.stringify({proposal_id: pid, approve: b.dataset.dec === "1"})}); after(b.dataset.dec === "1" ? "Approved. It runs on the next decision run" + (C.dry_run ? " as a simulation (dry run)." : ".") : "Rejected."); } catch (err) { if (err.message !== "signin") toast(err.message); b.disabled = false; } });
+    document.querySelectorAll(".umap").forEach(row => {
+      const send = async body => { try { await api("/api/campaigns/map", {method: "POST", body: JSON.stringify({channel: row.dataset.ch, campaign_id: row.dataset.cid, ...body})}); after("Saved. Decisions use it from the next run."); } catch (err) { if (err.message !== "signin") toast(err.message); } };
+      row.querySelector("[data-map]").onclick = () => { const a = row.querySelector("select").value; if (!a) { toast("Choose an app first"); return; } send({app: a}); };
+      row.querySelector("[data-ign]").onclick = () => send({app: null, ignored: true});
+    });
   }
 
   /* ---------- Keywords ---------- */
   async function viewKeywords(my) {
     const d = await api("/api/keywords?" + qs() + "&q=" + encodeURIComponent(S.q || "")); if (my !== seq) return;
-    const counts = {all: d.items.length, pause: d.items.filter(i => i.bot === "pause" && i.override === "auto").length, paused: d.items.filter(i => i.override === "paused").length, protected: d.items.filter(i => i.override === "protected").length};
-    const items = d.items.filter(i => S.kwFilter === "all" || (S.kwFilter === "pause" ? i.bot === "pause" && i.override === "auto" : i.override === S.kwFilter));
-    const status = i => i.override === "protected" ? `<span class="badge info">Protected</span>` : i.override === "paused" ? `<span class="badge bad">Paused by you</span>` : i.bot === "pause" ? `<span class="badge warn">Bot would pause</span>` : `<span class="badge good">Running</span>`;
-    const acos = i => i.acos == null ? "—" : pct(i.acos, 0);
+    const hasProp = i => i.proposal && i.override === "auto";
+    const counts = {all: d.items.length, pause: d.items.filter(hasProp).length, paused: d.items.filter(i => i.override === "paused").length, protected: d.items.filter(i => i.override === "protected").length};
+    const items = d.items.filter(i => S.kwFilter === "all" || (S.kwFilter === "pause" ? hasProp(i) : i.override === S.kwFilter));
+    const status = i => i.override === "protected" ? `<span class="badge info">Protected</span>` : i.override === "paused" ? `<span class="badge bad">Paused by you</span>`
+      : i.proposal ? pchip(i.proposal.status) : String(i.status || "").toUpperCase().includes("PAUSED") ? `<span class="badge mute">Paused</span>` : i.monitor_only ? `<span class="badge mute">Monitor only</span>` : `<span class="badge good">No change proposed</span>`;
+    const acos = i => !i.revenue_known ? "n/a" : i.acos == null ? "—" : pct(i.acos, 0);
     $("view").innerHTML = `
       <label class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><span class="sr">Search</span><input id="kwq" type="search" placeholder="Search keywords or campaigns" value="${esc(S.q || "")}"></label>
-      <div class="chips static">${[["all", "All"], ["pause", "Bot would pause"], ["paused", "Paused"], ["protected", "Protected"]].map(([v, l]) => `<button class="chip" data-f="${v}" aria-pressed="${S.kwFilter === v}">${l} · ${counts[v]}</button>`).join("")}</div>
+      <div class="chips static">${[["all", "All"], ["pause", "Has a proposal"], ["paused", "Paused"], ["protected", "Protected"]].map(([v, l]) => `<button class="chip" data-f="${v}" aria-pressed="${S.kwFilter === v}">${l} · ${counts[v]}</button>`).join("")}</div>
       ${items.length ? items.map(i => `<div class="card" data-key="${esc(i.key)}">
         <div style="display:flex;gap:10px;align-items:flex-start"><div style="flex:1;min-width:0"><div class="name" style="font-weight:700">${esc(i.keyword || "—")}</div>
           <div class="sub"><span class="dot" style="display:inline-block;background:${COLOR[i.app] || "#666"};width:7px;height:7px;margin-right:4px"></span>${esc(SHORT[i.app] || i.app || "Other")} · ${esc(i.channel)}${i.country ? " · " + flag(i.country) : ""}</div></div>${status(i)}</div>
-        ${i.bot === "pause" && i.override === "auto" ? `<div class="sub" style="margin-top:6px;color:var(--amber)">${esc(i.reason)}</div>` : ""}
-        <div class="stats"><div><small>Taps</small><b>${num(i.taps)}</b></div><div><small>Installs</small><b>${num(i.installs)}</b></div><div><small>CPT</small><b style="${i.cpt != null && i.cpt > d.max_cpt ? "color:var(--red)" : ""}">${money(i.cpt)}</b></div><div><small>ACoS</small><b>${acos(i)}</b></div></div>
-        <div class="seg" role="group" aria-label="Override">${[["auto", "Auto", ""], ["paused", "Pause", "p"], ["protected", "Protect", "s"]].map(([v, l, c]) => `<button class="${c}" data-o="${v}" aria-pressed="${i.override === v}">${l}</button>`).join("")}</div></div>`).join("")
+        ${hasProp(i) ? `<div class="sub" style="margin-top:6px;color:var(--amber)">${esc(i.proposal.reason)}${i.proposal.blockers.length ? ` · blocked: ${esc(i.proposal.blockers[0])}` : ""}</div>` : ""}
+        <div class="stats"><div><small>${esc(i.click_label)}</small><b>${num(i.taps)}</b></div><div><small>${esc(i.channel === "Google Ads" ? "Conversions" : "Installs")}</small><b>${num(i.installs)}</b></div><div><small>Cost / click</small><b style="${i.cpt != null && i.cpt > d.max_cpt ? "color:var(--red)" : ""}">${money(i.cpt)}</b></div><div><small>ACoS</small><b title="${i.revenue_known ? "" : "Revenue not reported for this item"}">${acos(i)}</b></div></div>
+        ${i.monitor_only ? `<div class="sub">AdBot can't change this item on ${esc(i.channel)}; reporting only.</div>` : ""}
+        <div class="seg" role="group" aria-label="Override" ${i.can_pause ? "" : "hidden"}>${[["auto", "Auto", ""], ["paused", "Pause", "p"], ["protected", "Protect", "s"]].map(([v, l, c]) => `<button class="${c}" data-o="${v}" aria-pressed="${i.override === v}">${l}</button>`).join("")}</div></div>`).join("")
       : `<div class="empty">${d.items.length ? "Nothing matches." : "No keywords or campaigns yet. They appear once an ad channel is connected."}</div>`}`;
     let t; $("kwq").oninput = e => { clearTimeout(t); t = setTimeout(() => { S.q = e.target.value; load(false, true); }, 350); };
     $("view").querySelectorAll("[data-f]").forEach(b => b.onclick = () => { S.kwFilter = b.dataset.f; save(); load(false, true); });
     $("view").querySelectorAll("[data-o]").forEach(b => b.onclick = async () => {
       const key = b.closest("[data-key]").dataset.key; const o = b.dataset.o;
-      try { await api("/api/override", {method: "POST", body: JSON.stringify({key, status: o})}); toast(o === "paused" ? "Will be paused on the bot's next run" : o === "protected" ? "Protected: the bot won't pause it" : "Back to automatic"); load(false, true); }
+      try { await api("/api/override", {method: "POST", body: JSON.stringify({key, status: o})}); toast(o === "paused" ? (ME.dry_run ? "Saved. The next run records a simulated pause (dry run): nothing is sent." : "Saved. The next run pauses it.") : o === "protected" ? "Protected: AdBot won't propose changes to it" : "Back to automatic"); load(false, true); }
       catch (e) { if (e.message !== "signin") toast(e.message); }
     });
   }
@@ -202,7 +307,13 @@
     const sw = (id, on, label, hint) => `<div class="field"><label for="${id}">${label}${hint ? `<small>${hint}</small>` : ""}</label><span class="switch"><input id="${id}" type="checkbox" ${on ? "checked" : ""}><i></i></span></div>`;
     const geo = (R.geo_targets && R.geo_targets.NurseBound) || [];
     $("view").innerHTML = `
-      <div class="group"><h3>Daily spend limits</h3><p class="hint">The bot never sets budgets above these. ${money(R.global_daily_cap * 30.4, 0)} a month at the current cap.</p>
+      <div class="group"><h3>Monthly budget</h3><p class="hint">One policy across Apple Ads, Meta and Google Ads. Leave the monthly budget empty to keep budget changes off. Pacing uses the real calendar month. Platforms report spend late and can overspend a daily budget, so this is a pacing target, not a guaranteed cap.</p>
+        ${n("monthly_budget", R.monthly_budget ?? "", "0.01", "Monthly budget", "all apps, all channels", "$")}
+        ${APPS.map((a, i) => n("am" + i, (R.app_monthly || {})[a] ?? "", "0.01", esc(a), "monthly allocation", "$")).join("")}
+        ${["Apple Search Ads", "Meta Ads", "Google Ads"].map((c, i) => n("cm" + i, (R.channel_monthly || {})[c] ?? "", "0.01", esc(c), "monthly limit (optional)", "$")).join("")}
+        ${n("campaign_daily_max", R.campaign_daily_max ?? "", "0.01", "Per campaign / ad set", "daily maximum (optional)", "$")}
+        ${n("reserve_pct", Math.round((R.reserve_pct ?? 0.1) * 100), "1", "Reserve for late-reported spend", "", "%")}</div>
+      <div class="group"><h3>Daily spend limits</h3><p class="hint">Hard daily ceilings per app, kept from the earlier setup. ${money(R.global_daily_cap * 30.4, 0)} a month at the current cap.</p>
         ${n("global_daily_cap", R.global_daily_cap, "0.01", "All apps", "per day", "$")}
         ${APPS.map((a, i) => n("cap" + i, R.app_caps[a], "0.01", esc(a), "per day", "$")).join("")}</div>
       <div class="group"><h3>Priority</h3><p class="hint">Multiplies each app's score when the budget is split. Higher gets more.</p>
@@ -218,18 +329,34 @@
         ${sw("auto_rebalance", R.auto_rebalance, "Auto-rebalance budget", "move money toward the apps that earn the most per dollar")}
         ${n("min_share", Math.round(R.min_share * 100), "1", "Minimum share per app", "", "%")}
         ${n("max_share", Math.round(R.max_share * 100), "1", "Maximum share per app", "", "%")}
-        ${n("max_budget_step", Math.round(R.max_budget_step * 100), "1", "Biggest change per run", "", "%")}</div>
-      <div class="group"><h3>Value per install</h3><p class="hint">Used to estimate revenue when an ad platform reports none.</p>
+        ${n("max_budget_step", Math.round(R.max_budget_step * 100), "1", "Biggest change per recommendation", "", "%")}
+        ${n("exploration_share", Math.round((R.exploration_share ?? 0.1) * 100), "1", "Exploration share per app", "kept while evidence is thin", "%")}
+        ${n("min_spend_for_rebalance", R.min_spend_for_rebalance ?? 50, "1", "Mature spend per app before comparing", "", "$")}</div>
+      <div class="group"><h3>Change safeguards</h3><p class="hint">Enforced on the server across runs. Emergency and spend-limit pauses aren't held back by these.</p>
+        ${n("max_daily_change_pct", Math.round((R.max_daily_change_pct ?? 0.3) * 100), "1", "Total budget change per campaign", "per 24 hours", "%")}
+        ${n("cooldown_hours", R.cooldown_hours ?? 24, "1", "Cooldown after a change", "", "h")}
+        ${n("max_actions_per_campaign_day", R.max_actions_per_campaign_day ?? 2, "1", "Changes per campaign", "per 24 hours")}
+        ${n("max_actions_per_account_day", R.max_actions_per_account_day ?? 10, "1", "Changes per ad account", "per 24 hours")}
+        ${n("deadband_pct", Math.round((R.deadband_pct ?? 0.1) * 100), "1", "Ignore budget changes smaller than", "", "%")}
+        ${n("min_days_data", R.min_days_data ?? 3, "1", "Mature days before a rule may act")}
+        ${n("min_conversions_for_revenue_rules", R.min_conversions_for_revenue_rules ?? 5, "1", "Conversions before revenue rules apply")}
+        ${n("stale_after_hours", R.stale_after_hours ?? 36, "1", "Data counts as stale after", "", "h")}
+        ${["Apple Search Ads", "Meta Ads", "Google Ads"].map((c, i) => n("mat" + i, (R.maturity_days || {})[c] ?? "", "1", esc(c) + " conversion delay", "days left out (empty = default)", "d")).join("")}</div>
+      <div class="group"><h3>Automatic actions</h3><p class="hint">Only used in Bounded automatic mode. Anything not ticked waits for your approval.</p>
+        ${[["pause_keyword", "Pause keywords"], ["pause_ad_set", "Pause Meta ad sets"], ["pause_campaign", "Pause campaigns"], ["set_budget_decrease", "Lower budgets"], ["set_budget_increase", "Raise budgets"], ["safeguard_pause", "Pause when a monthly limit is reached"]]
+          .map(([id, l]) => sw("aa_" + id, (R.auto_actions || []).includes(id), l)).join("")}</div>
+      <div class="group"><h3>Value per install</h3><p class="hint">A labeled estimate shown next to installs. It never drives a decision: revenue rules need revenue a platform reported. Leave at 0 if you don't have a measured value.</p>
         ${APPS.map((a, i) => n("vpi" + i, (R.value_per_install || {})[a] ?? 0, "0.01", esc(a), "", "$")).join("")}</div>
       <details class="group fold-group" id="rulesGeo" ${store.get("adbot-rules-geo-open", false) ? "open" : ""}><summary><h3>NurseBound countries</h3><span class="fold-sum">${geo.filter(g => g.enabled !== false).length} on · ${geo.filter(g => g.enabled !== false).sort((a, b) => b.weight - a.weight).slice(0, 4).map(g => flag(g.code)).join(" ")}</span><i class="chev" aria-hidden="true"></i></summary><p class="hint">Weight is each country's share of NurseBound's budget. Put the code in campaign names, e.g. “NurseBound | PH | Prospecting”.</p>
         ${geo.map((g, i) => `<div class="field"><label for="gw${i}"><span class="flag">${flag(g.code)}</span> ${esc(regionName(g.code))}${g.flag === "who_safeguards" ? "<small>On WHO's 2023 safeguards list: advertise the study app, not recruitment</small>" : g.flag === "china_reach" ? "<small>Meta and Google ads don't serve in mainland China</small>" : ""}</label><input id="gw${i}" type="number" inputmode="decimal" step="1" min="0" value="${g.weight}" style="width:70px"><span class="switch"><input id="ge${i}" type="checkbox" ${g.enabled !== false ? "checked" : ""} aria-label="${esc(regionName(g.code))} on"><i></i></span></div>`).join("")}</details>
       <div class="group"><h3>Telegram alerts</h3><p class="hint">The bot token stays on Render (TELEGRAM_BOT_TOKEN), never in the app.</p>
         <div class="field"><label for="telegram_chat_id">Chat ID</label><input id="telegram_chat_id" type="text" inputmode="numeric" value="${esc(R.telegram_chat_id || "")}" placeholder="123456789"></div>
-        ${sw("al_daily_summary", R.alerts.daily_summary, "Daily summary")}${sw("al_kill_switch", R.alerts.kill_switch, "Kill-switch alerts")}${sw("al_rebalance", R.alerts.rebalance, "Rebalance logs")}${sw("al_high_cpt", R.alerts.high_cpt, "High CPT warnings")}</div>
+        ${sw("al_daily_summary", R.alerts.daily_summary, "Daily summary")}${sw("al_kill_switch", R.alerts.kill_switch !== false, "Proposed and applied changes")}${sw("al_import_failure", R.alerts.import_failure !== false, "Import failures")}${sw("al_stale_data", R.alerts.stale_data !== false, "Stale data")}${sw("al_unmapped", R.alerts.unmapped !== false, "Unmapped campaigns")}${sw("al_budget", R.alerts.budget !== false, "Budget warnings")}
+        <p class="hint">Emergency and execution-failure alerts are always on. Repeats are held back (critical 1 h, warning 6 h, info 24 h).</p></div>
       <div class="actions">
         <button class="btn primary block" id="saveRules">Save rules</button>
         <button class="btn" id="tgTest">Send test notification</button>
-        <button class="btn orange" id="runBot">Run bot now ${ME.dry_run ? "(dry run)" : ""}</button>
+        <button class="btn orange" id="runBot">Run a decision cycle now ${ME.dry_run ? "(dry run)" : ""}</button>
         <label class="btn" for="importFile">Import rules.json from the dashboard</label><input id="importFile" type="file" accept=".json,application/json" hidden>
         <button class="btn" id="signOut">Sign out</button>
       </div>`;
@@ -237,11 +364,14 @@
     // fold every other rules group into a tappable header with a one-line summary
     const shortName = a => SHORT[a] || a;
     const SUMMARY = {
+      "Monthly budget": R.monthly_budget == null ? "not set · budget changes off" : `${money(R.monthly_budget, 0)}/month · reserve ${Math.round((R.reserve_pct ?? .1) * 100)}%`,
+      "Change safeguards": `${Math.round((R.max_daily_change_pct ?? .3) * 100)}%/day · cooldown ${R.cooldown_hours ?? 24} h`,
+      "Automatic actions": (R.auto_actions || []).length ? `${(R.auto_actions || []).length} allowed` : "none: all need approval",
       "Daily spend limits": `${money(R.global_daily_cap)}/day · ${APPS.map(a => shortName(a) + " " + money(R.app_caps[a], 0)).join(" · ")}`,
       "Priority": APPS.map(a => `${shortName(a)} ${(R.app_priority || {})[a] ?? 1}`).join(" · "),
       "Kill switch": `CPT > ${money(R.max_cpt)} · ACoS > ${Math.round(R.max_acos * 100)}%`,
-      "Rebalancing": R.auto_rebalance ? `auto · ${Math.round(R.min_share * 100)}–${Math.round(R.max_share * 100)}%` : "manual",
-      "Value per install": APPS.map(a => `${shortName(a)} ${money((R.value_per_install || {})[a] ?? 0)}`).join(" · "),
+      "Rebalancing": R.auto_rebalance ? `on when eligible · ${Math.round(R.min_share * 100)}–${Math.round(R.max_share * 100)}%` : "off",
+      "Value per install": APPS.map(a => `${shortName(a)} ${(R.value_per_install || {})[a] ? money(R.value_per_install[a]) : "not set"}`).join(" · "),
       "Telegram alerts": R.telegram_chat_id ? "chat set" : "no chat ID",
     };
     const openMap = store.get("adbot-rules-open", {});
@@ -257,20 +387,31 @@
       d.addEventListener("toggle", () => { const m = store.get("adbot-rules-open", {}); m[title] = d.open; store.set("adbot-rules-open", m); });
     });
     const v = id => +$(id).value;
+    const opt = id => $(id).value.trim() === "" ? null : +$(id).value;
     $("saveRules").onclick = async () => {
       const body = {global_daily_cap: v("global_daily_cap"), max_cpt: v("max_cpt"), min_taps_for_cpt: v("min_taps_for_cpt"), zero_install_taps: v("zero_install_taps"),
         max_acos: v("max_acos") / 100, min_spend_for_acos: v("min_spend_for_acos"), target_acos: v("target_acos") / 100, auto_rebalance: $("auto_rebalance").checked,
         min_share: v("min_share") / 100, max_share: v("max_share") / 100, max_budget_step: v("max_budget_step") / 100, telegram_chat_id: $("telegram_chat_id").value.trim(),
         app_caps: Object.fromEntries(APPS.map((a, i) => [a, v("cap" + i)])), app_priority: Object.fromEntries(APPS.map((a, i) => [a, v("pri" + i)])),
         value_per_install: Object.fromEntries(APPS.map((a, i) => [a, v("vpi" + i)])),
-        alerts: {daily_summary: $("al_daily_summary").checked, kill_switch: $("al_kill_switch").checked, rebalance: $("al_rebalance").checked, high_cpt: $("al_high_cpt").checked},
+        alerts: {daily_summary: $("al_daily_summary").checked, kill_switch: $("al_kill_switch").checked, import_failure: $("al_import_failure").checked,
+          stale_data: $("al_stale_data").checked, unmapped: $("al_unmapped").checked, budget: $("al_budget").checked},
+        monthly_budget: opt("monthly_budget"), campaign_daily_max: opt("campaign_daily_max"), reserve_pct: v("reserve_pct") / 100,
+        app_monthly: Object.fromEntries(APPS.map((a, i) => [a, opt("am" + i)]).filter(x => x[1] != null)),
+        channel_monthly: Object.fromEntries(["Apple Search Ads", "Meta Ads", "Google Ads"].map((c, i) => [c, opt("cm" + i)]).filter(x => x[1] != null)),
+        maturity_days: Object.fromEntries(["Apple Search Ads", "Meta Ads", "Google Ads"].map((c, i) => [c, opt("mat" + i)]).filter(x => x[1] != null)),
+        max_daily_change_pct: v("max_daily_change_pct") / 100, cooldown_hours: v("cooldown_hours"), max_actions_per_campaign_day: v("max_actions_per_campaign_day"),
+        max_actions_per_account_day: v("max_actions_per_account_day"), deadband_pct: v("deadband_pct") / 100, min_days_data: v("min_days_data"),
+        min_conversions_for_revenue_rules: v("min_conversions_for_revenue_rules"), stale_after_hours: v("stale_after_hours"),
+        exploration_share: v("exploration_share") / 100, min_spend_for_rebalance: v("min_spend_for_rebalance"),
+        auto_actions: ["pause_keyword", "pause_ad_set", "pause_campaign", "set_budget_decrease", "set_budget_increase", "safeguard_pause"].filter(id => $("aa_" + id).checked),
         geo_targets: {NurseBound: geo.map((g, i) => ({code: g.code, weight: v("gw" + i), enabled: $("ge" + i).checked}))}};
       $("saveRules").disabled = true;
-      try { await api("/api/rules", {method: "POST", body: JSON.stringify(body)}); toast("Rules saved. The bot uses them on its next run."); }
+      try { const r = await api("/api/rules", {method: "POST", body: JSON.stringify(body)}); toast(r.changed && r.changed.length ? `Saved ${r.changed.length} change${r.changed.length > 1 ? "s" : ""}. Used from the next decision run.` : "Saved. Nothing changed."); }
       catch (e) { if (e.message !== "signin") toast(e.message); } finally { $("saveRules").disabled = false; }
     };
     $("tgTest").onclick = async () => { try { const r = await api("/api/telegram-test", {method: "POST"}); toast(r.ok ? "Sent. Check Telegram." : r.error); } catch (e) { if (e.message !== "signin") toast(e.message); } };
-    $("runBot").onclick = async () => { $("runBot").disabled = true; try { const r = await api("/api/run-bot", {method: "POST"}); toast(`${r.dry_run ? "Dry run: would pause" : "Paused"} ${r.paused} · plan ${Object.entries(r.plan).map(([a, d]) => (SHORT[a] || a) + " " + money(d)).join(", ")}`); } catch (e) { if (e.message !== "signin") toast(e.message); } finally { $("runBot").disabled = false; } };
+    $("runBot").onclick = async () => { $("runBot").disabled = true; try { const r = await api("/api/run-bot", {method: "POST"}); const pr = Object.entries(r.proposals).map(([k, n]) => `${n} ${k}`).join(", ") || "no proposals"; const ex = Object.entries(r.executions).map(([k, n]) => `${n} ${k}`).join(", ") || "nothing executed"; toast(`${r.mode}${r.dry_run ? " · dry run" : ""}: ${pr}; ${ex}`); } catch (e) { if (e.message !== "signin") toast(e.message); } finally { $("runBot").disabled = false; } };
     $("importFile").onchange = async () => { const f = $("importFile").files[0]; if (!f) return; try { const data = JSON.parse(await f.text()); await api("/api/rules", {method: "POST", body: JSON.stringify({import: data})}); toast("Imported."); load(false, true); } catch (e) { if (e.message !== "signin") toast("Couldn't import: " + e.message); } };
     $("signOut").onclick = async () => { try { await api("/api/logout", {method: "POST"}); } catch (e) {} showLogin(); };
   }
@@ -315,7 +456,11 @@
   const APP_HUE = {rnr_pro: ["#FF6A2B", "#FF2E63"], ccrn_adult: ["#2DD4BF", "#00C2FF"], nursebound_pro: ["#8B5CF6", "#E024C3"]};
   const when = t => t ? new Date(String(t).replace(" ", "T") + (String(t).endsWith("Z") ? "" : "Z")).toLocaleString("en-US", {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"}) : "NEVER";
   const REP_BAD = ["access_denied", "not_found", "error"];
-  const srcState = s => s.status === "verified" ? (s.reports && REP_BAD.includes(s.reports.state) ? "part" : "on")
+  // the shared status model (control/status.py): one chip for every source on every tab
+  const STATE_CLS = {imported_activity: "ok", imported_zero: "ok", connected_not_imported: "info", partial: "warn", stale: "warn",
+                     failed: "bad", not_configured: "nil", unsupported: "nil"};
+  const stateChip = sh => `<span class="schip ${STATE_CLS[sh.state] || "nil"}" title="${esc(sh.detail || "")}">${esc(sh.label || sh.state)}</span>`;
+  const srcState = s => s.shared && s.shared.state ? ({ok: "on", info: "keys", warn: "part", bad: "err", nil: "off"}[STATE_CLS[s.shared.state]] || "off") : s.status === "verified" ? (s.reports && REP_BAD.includes(s.reports.state) ? "part" : "on")
     : (s.status === "error" || s.last_status === "failed") ? "err" : s.status === "configured" ? "keys" : "off";
   const STATE_TXT = {on: "LINKED", part: "PARTIAL", err: "ERROR", keys: "KEYS SET", off: "OFFLINE"};
 
@@ -332,6 +477,40 @@
         stroke-dasharray="${seg.toFixed(2)} ${(C - seg).toFixed(2)}" stroke-dashoffset="${(-i * (C / n)).toFixed(2)}" transform="rotate(-90 70 70)" ${st !== "off" ? 'filter="url(#glow)"' : ""}><title>${esc(s.name)}: ${STATE_TXT[st]}</title></circle>`; }).join("")}
       <text x="70" y="68" text-anchor="middle" class="ring-n">${linked}/${n}</text>
       <text x="70" y="86" text-anchor="middle" class="ring-l">LINKED</text></svg>`;
+  }
+
+  // Plan | iOS price | Android price | Product status. Identity, price and availability are separate facts.
+  function planRows(a) {
+    const order = Object.keys(PLAN);
+    const codes = [...new Set(a.products.map(p => p.plan_code))].sort((x, y) => order.indexOf(x) - order.indexOf(y));
+    const usd = p => (p.prices || []).find(x => x.currency === "USD" && x.territory === "US") || null;
+    const cell = (verified, ref, platform) => {
+      if (verified) {
+        const pr = usd(verified);
+        if (pr && pr.source === "store_api") return `<b>${money(+pr.amount)}</b>`;
+        return `<span class="muted">Not retrieved</span>${ref && usd(ref) ? `<small>reference ${money(+usd(ref).amount)}</small>` : ""}`;
+      }
+      if (ref && usd(ref)) return `<span class="muted">${money(+usd(ref).amount)}</span><small>reference only</small>`;
+      return platform === "google_play" ? `<span class="muted">Not retrieved</span>` : `<span class="muted">—</span>`;
+    };
+    return codes.map(code => {
+      const of = (plat, ver) => a.products.find(p => p.plan_code === code && p.platform === plat && !!p.verified === ver);
+      const iv = of("apple_app_store", true), ir = of("apple_app_store", false), av = of("google_play", true), ar = of("google_play", false);
+      const typed = iv || av;
+      let label = PLAN[code] || code, sub = "";
+      if (typed && typed.product_type === "auto_renewable_subscription") {
+        label = {P1M: "Monthly subscription", P3M: "Quarterly subscription", P1Y: "Annual subscription"}[typed.billing_period] || label;
+        sub = "auto-renewing";
+      } else if (typed && typed.product_type === "non_renewing_subscription") { sub = "non-renewing pass"; }
+      else if (typed && ["non_consumable", "one_time_product"].includes(typed.product_type)) { sub = "one-time purchase"; }
+      else if (!typed) { sub = "type not verified"; }
+      const st = [];
+      st.push(iv ? `<span class="st ok">iOS identity ✓</span>` : `<span class="st nil">iOS not verified</span>`);
+      st.push(av ? `<span class="st ok">Android identity ✓</span>` : `<span class="st nil">Android not verified</span>`);
+      const avail = [iv, av].filter(Boolean).map(p => p.availability && p.availability !== "unknown" ? `${p.platform === "google_play" ? "Android" : "iOS"}: ${esc(String(p.availability).replace(/_/g, " ").toLowerCase())}` : "").filter(Boolean);
+      if (avail.length) st.push(`<span class="st">${avail.join(" · ")}</span>`);
+      return {label, sub, ios: cell(iv, ir, "apple_app_store"), and: cell(av, ar, "google_play"), status: st.join("")};
+    });
   }
 
   async function viewRevenue(my) {
@@ -355,8 +534,8 @@
         ${r.retry_requested_at ? `<div class="idnote">Retry queued for the hourly job at :07</div>`
           : (bad || r.state === "never_checked") ? `<button class="hx-btn" type="button" data-retry-play style="--h1:#00E5A3;margin-top:8px">Retry reports</button>` : ""}
       </div>`; };
-    const srcCard = s => { const st = srcState(s); return `<div class="src ${st}" style="--hue:${PLAT_HUE[s.platform] || "#00C2FF"}">
-        <div class="src-top"><span class="led"></span><b>${esc(PLAT[s.platform] || s.name)}</b><span class="chip ${st}">${STATE_TXT[st]}</span></div>
+    const srcCard = s => { const st = srcState(s); const sh = s.shared || {}; return `<div class="src ${st}" style="--hue:${PLAT_HUE[s.platform] || "#00C2FF"}">
+        <div class="src-top"><span class="led"></span><b>${esc(PLAT[s.platform] || s.name)}</b>${sh.state ? stateChip(sh) : `<span class="chip ${st}">${STATE_TXT[st]}</span>`}</div>
         <div class="src-meta">LAST SYNC <b>${when(s.last_success)}</b>${s.period_end ? ` · DATA TO ${esc(String(s.period_end).slice(0, 10))}` : ""}</div>
         ${s.last_status === "failed" && s.last_message ? `<div class="src-err">${esc(s.last_message)}</div>` : s.status === "error" && s.last_error ? `<div class="src-err">${esc(s.last_error)}</div>` : ""}
         ${s.last_status === "partial" && s.last_message ? `<div class="src-warn">${esc(String(s.last_message).split(" | ")[0])}</div>` : ""}
@@ -429,23 +608,23 @@
           <summary><header><div><div class="appx-name">${esc(a.name)}</div><div class="appx-sub">AD BOT · ${esc(a.bot_app_name || "—")}</div>
               <div class="appx-brief">${esc(brief)}</div></div>
             <span class="appx-right"><button class="hx-btn" type="button" data-edit="${esc(a.app_id)}">Edit IDs</button><i class="chev" aria-hidden="true"></i></span></header></summary>
+          <div class="ptable-wrap"><table class="ptable"><caption>Plans and prices <small>US storefront · USD</small></caption>
+            <thead><tr><th scope="col">Plan</th><th scope="col">iOS price</th><th scope="col">Android price</th><th scope="col">Product status</th></tr></thead>
+            <tbody>${planRows(a).map(r => `<tr><th scope="row">${esc(r.label)}${r.sub ? `<small>${esc(r.sub)}</small>` : ""}</th>
+              <td>${r.ios}</td><td>${r.and}</td><td class="pstat">${r.status}</td></tr>`).join("")}</tbody></table></div>
+          <p class="pnote">Identity = the store confirmed the product exists · Price = read from the store (reference = your price list, not a store price) · Availability = as the store reports it.</p>
+          <details class="diag"><summary>Store IDs and checks</summary>
           <div class="ids">
             <div class="idcol"><div class="idh">App Store</div>${idRow("Apple ID", ios.apple_app_id)}${idRow("Bundle", ios.bundle_id)}${checkRows(ios, !!ios.apple_app_id)}</div>
             <div class="idcol"><div class="idh">Google Play</div>${idRow("Package", and.package_name)}${checkRows(and, !!and.package_name)}</div>
-          </div>
+          </div></details>
           <form class="idform" data-app="${esc(a.app_id)}" hidden>
             <div class="field"><label>Apple ID<small>App Store Connect → App Information</small></label><input type="text" name="apple_app_id" inputmode="numeric" value="${esc(ios.apple_app_id || "")}" placeholder="1234567890"></div>
             <div class="field"><label>Bundle ID</label><input type="text" name="bundle_id" autocapitalize="off" value="${esc(ios.bundle_id || "")}" placeholder="com.example.app"></div>
             <div class="field"><label>Play package</label><input type="text" name="package_name" autocapitalize="off" value="${esc(and.package_name || "")}" placeholder="com.example.app"></div>
             <button class="btn primary block" type="submit">Save IDs</button>
           </form>
-          <div class="ladder-h">PRICE LADDER <small>${prods.some(p => p.verified) ? "✓ = confirmed by the store · US prices" : "iOS reference list · not sales"}</small></div>
-          <div class="ladder">${prods.map(p => { const v = price(p); return `<div class="rung">
-              <div class="rung-l"><b>${esc(PLAN[p.plan_code] || p.plan_code)}${p.verified ? ' <i class="vchk" title="Confirmed by App Store Connect">✓</i>' : ""}</b><small>${p.platform === "google_play" ? "Android · " : "iOS · "}${esc(TYPE[p.product_type] || p.product_type)}</small></div>
-              <div class="rung-bar"><i style="width:${v != null ? Math.max(6, v / max * 100) : 0}%"></i></div>
-              <div class="rung-v">${v != null ? money(v) : "—"}</div></div>`; }).join("")}
-            ${prods.some(p => p.platform === "google_play") ? "" : `<div class="rung nil"><div class="rung-l"><b>Android</b><small>read from Google Play</small></div><div class="rung-bar"><i style="width:0"></i></div><div class="rung-v">UNAVAILABLE</div></div>`}
-          </div></details></article>`; }).join("")}</div>
+          </details></article>`; }).join("")}</div>
 
       <details class="fold hx-fold" id="adsFold" ${store.get("adbot-adplat-open", false) ? "open" : ""}>
         <summary class="hx-h"><span>AD PLATFORMS</span><small>${ads.filter(x => srcState(x) === "on").length}/${ads.length} linked${ads.some(x => srcState(x) === "err") ? " · " + ads.filter(x => srcState(x) === "err").length + " error" : ""}</small><i class="chev" aria-hidden="true"></i></summary>
@@ -491,9 +670,18 @@
   /* ---------- Log ---------- */
   async function viewLog(my) {
     const d = await api("/api/log"); if (my !== seq) return;
+    const t = x => x ? new Date(String(x).replace(" ", "T") + (String(x).endsWith("Z") ? "" : "Z")).toLocaleString("en-US", {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"}) : "";
+    const DS = {delivered: "ok", logged: "info", suppressed: "nil", failed: "bad", disabled: "nil"};
+    const RES = {applied: "ok", reconciled_applied: "ok", simulated: "sim", failed: "bad", uncertain: "bad", reconciled_not_applied: "bad", already_done: "ok", skipped: "nil"};
+    const sec = (id, title, n, body) => `<details class="fold" id="${id}" ${store.get("adbot-log-" + id, id === "lgDec") ? "open" : ""}><summary class="h">${title} <small>${n}</small><i class="chev" aria-hidden="true"></i></summary>${body}</details>`;
     $("view").innerHTML = `
-      ${d.dry_run ? `<div class="banner warn"><b>Dry run.</b> These are decisions the bot <i>would</i> make. Set DRY_RUN to false on the adbot-hourly job in Render to let it act.</div>` : ""}
-      <div class="card list">${d.actions.length ? d.actions.map(x => `<div class="item"><span class="badge ${x.kind === "pause" ? "warn" : "info"}" style="margin-top:2px">${esc(x.kind)}</span><div class="main"><div class="name">${esc(x.keyword || x.entity_key || "")}</div><div class="meta">${esc(SHORT[x.app] || x.app || "")} · ${esc(x.channel || "")} · ${esc(x.detail || "")}${x.error ? ` · <span style="color:var(--red)">${esc(x.error)}</span>` : ""}</div></div><div class="right"><small>${new Date(x.ts + "Z").toLocaleString("en-US", {month: "short", day: "numeric", hour: "numeric", minute: "2-digit"})}</small>${x.applied ? "done" : x.dry_run ? "would" : "—"}</div></div>`).join("") : `<div class="empty">The bot hasn't acted yet.</div>`}</div>`;
+      ${d.dry_run ? `<div class="banner warn"><b>Dry run.</b> Changes marked <b>Simulated</b> were never sent to an ad platform. Set DRY_RUN=false on the hourly job and choose Approval or Bounded automatic mode to allow live changes.</div>` : ""}
+      ${sec("lgDec", "Decisions", d.decisions.length, `<div class="card list">${d.decisions.length ? d.decisions.map(x => `<div class="item"><div class="main"><div class="name">${esc(ACT[x.action] || x.action)}: ${esc(x.entity_name || "")}</div><div class="meta">${esc(SHORT[x.app] || x.app || "")} · ${esc(x.channel || "")} · ${esc(KIND[x.kind] || x.kind)} · ${esc(x.reason || "")}${x.outcome && !String(x.outcome).startsWith("claim:") ? " · " + esc(x.outcome) : ""}</div></div><div class="right">${pchip(x.status)}<small>${t(x.outcome_at || x.created_at)}</small></div></div>`).join("") : `<div class="empty">No decisions yet.</div>`}</div>`)}
+      ${sec("lgEx", "Executions", d.executions.length, `<div class="card list">${d.executions.length ? d.executions.map(x => `<div class="item"><div class="main"><div class="name">${esc(ACT[x.action] || x.action)}: ${esc(x.entity_name || "")}</div><div class="meta">${esc(x.channel)} · ${x.mode === "live" ? "live" : "simulated"}${x.error ? ` · <span style="color:var(--red)">${esc(x.error)}</span>` : ""}</div></div><div class="right"><span class="schip ${RES[x.result] || "nil"}">${esc(String(x.result).replace(/_/g, " "))}</span><small>${t(x.attempted_at)}</small></div></div>`).join("") : `<div class="empty">Nothing executed yet.</div>`}</div>`)}
+      ${sec("lgAl", "Alerts", d.alerts.length, `<div class="card list">${d.alerts.length ? d.alerts.map(a => `<div class="item sev-${SEV[a.severity] || "info"}"><div class="main"><div class="name">${esc(a.title)}</div><div class="meta">${esc(a.category)} · via ${esc(a.transport || "—")}${a.error ? ` · <span style="color:var(--red)">${esc(a.error)}</span>` : ""}</div></div><div class="right"><span class="schip ${DS[a.delivery_status] || "nil"}">${esc(a.delivery_status)}</span><small>${t(a.created_at)}</small></div></div>`).join("") : `<div class="empty">No alerts yet.</div>`}</div>`)}
+      ${sec("lgAu", "Audit trail", d.audit.length, `<div class="card list">${d.audit.length ? d.audit.map(a => `<div class="item"><div class="main"><div class="name">${esc(a.action)}</div><div class="meta">${esc(a.actor)}${a.target ? " · " + esc(a.target) : ""}${a.detail ? " · " + esc(String(a.detail).slice(0, 180)) : ""}</div></div><div class="right"><small>${t(a.ts)}</small></div></div>`).join("") : `<div class="empty">No audit entries.</div>`}</div>`)}
+      ${d.actions.length ? sec("lgOld", "Earlier bot log", d.actions.length, `<div class="card list">${d.actions.map(x => `<div class="item"><span class="badge ${x.kind === "pause" ? "warn" : "info"}" style="margin-top:2px">${esc(x.kind)}</span><div class="main"><div class="name">${esc(x.keyword || x.entity_key || "")}</div><div class="meta">${esc(SHORT[x.app] || x.app || "")} · ${esc(x.channel || "")} · ${esc(x.detail || "")}${x.error ? ` · <span style="color:var(--red)">${esc(x.error)}</span>` : ""}</div></div><div class="right"><small>${t(x.ts)}</small>${x.applied ? "done" : x.dry_run ? "would" : "—"}</div></div>`).join("")}</div>`) : ""}`;
+    document.querySelectorAll("#view details.fold").forEach(f => f.addEventListener("toggle", () => store.set("adbot-log-" + f.id, f.open)));
   }
 
   /* ---------- go ---------- */
