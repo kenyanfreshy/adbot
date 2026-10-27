@@ -288,6 +288,44 @@ class ReportTests(unittest.TestCase):
         res2 = run(con2, FakeGoogle(files={"earnings/earnings_202609.zip": ("1", zipped("e.csv", EARN_CSV, "utf-16"))}))
         self.assertEqual(res2["reports"]["inserted"], 2)
 
+    def installs_csv(self, rows, header="Date,Package Name,Current Device Installs,Daily Device Installs,Daily Device Uninstalls,Daily Device Upgrades,Current User Installs,Total User Installs,Daily User Installs,Daily User Uninstalls"):
+        return (header + "\n" + "\n".join(rows)).encode("utf-16")      # Play statistics files are UTF-16
+
+    def test_installs_overview_imported_as_downloads(self):
+        con = setup_con()
+        files = {f"stats/installs/installs_{PKG}_202610_overview.csv": ("1", self.installs_csv([
+                     f"2026-10-01,{PKG},10,3,0,1,9,40,2,0", f"2026-10-02,{PKG},11,4,1,0,10,42,3,1"])),
+                 f"stats/installs/installs_{PKG}_202610_country.csv": ("1", self.installs_csv([       # overview wins: not read
+                     f"2026-10-01,{PKG},US,10,3,0,1,9,40,2,0"], "Date,Package Name,Country,Current Device Installs,Daily Device Installs,Daily Device Uninstalls,Daily Device Upgrades,Current User Installs,Total User Installs,Daily User Installs,Daily User Uninstalls")),
+                 "stats/installs/installs_com.someone.else_202610_overview.csv": ("1", self.installs_csv([       # not our package: skipped
+                     "2026-10-01,com.someone.else,1,1,0,0,1,1,1,0"]))}
+        fake = FakeGoogle(files=files)
+        res = run(con, fake)
+        self.assertEqual(res["reports"]["files"], 1)
+        rows = q(con, f"SELECT period_start, app_id, transaction_type, units, currency, source_platform FROM {S}.sales_reports ORDER BY period_start")
+        self.assertEqual([(str(d), a, t, int(u), c, p) for d, a, t, u, c, p in rows],
+                         [("2026-10-01", "rnr_pro", "download", 2, "XXX", "google_play"),     # Daily User Installs, no currency
+                          ("2026-10-02", "rnr_pro", "download", 3, "XXX", "google_play")])
+        self.assertEqual(sum(1 for u, p in fake.calls if p.get("alt") == "media"), 1)
+
+    def test_installs_country_file_summed_and_newest_generation_wins(self):
+        con = setup_con()
+        hdr = "Date,Package Name,Country,Daily Device Installs,Daily User Installs"
+        files = {f"stats/installs/installs_{PKG}_202610_country.csv": ("1", self.installs_csv([
+            f"2026-10-01,{PKG},US,3,2", f"2026-10-01,{PKG},CA,1,1"], hdr))}
+        run(con, FakeGoogle(files=files))
+        self.assertEqual(q(con, f"SELECT units FROM {S}.sales_reports")[0][0], 3)          # US + CA
+        files[f"stats/installs/installs_{PKG}_202610_country.csv"] = ("2", self.installs_csv([
+            f"2026-10-01,{PKG},US,4,4", f"2026-10-01,{PKG},CA,1,1", f"2026-10-02,{PKG},US,1,1"], hdr))
+        run(con, FakeGoogle(files=files))
+        self.assertEqual([int(u) for (u,) in q(con, f"SELECT units FROM {S}.sales_reports ORDER BY period_start")], [5, 1])
+
+    def test_installs_unknown_layout_kept(self):
+        con = setup_con()
+        res = run(con, FakeGoogle(files={f"stats/installs/installs_{PKG}_202610_overview.csv": ("1", self.installs_csv(["x,y"], "Foo,Bar"))}))
+        self.assertEqual(res["reports"]["unparsed"], 1)
+        self.assertEqual(q(con, f"SELECT count(*) FROM {S}.sales_reports")[0][0], 0)
+
     def test_bucket_problems_dont_block_products(self):
         con = setup_con()
         res = run(con, FakeGoogle(deny=["/b/"]))

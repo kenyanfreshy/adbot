@@ -17,6 +17,9 @@ What it pulls, once a day:
   2. Money reports      (the Play Console reports bucket, Cloud Storage JSON API)
        sales/salesreport_YYYYMM.zip   -> revenue.sales_reports   ('estimated')
        earnings/earnings_YYYYMM.zip   -> revenue.financial_reports ('finalized')
+       stats/installs/installs_<pkg>_YYYYMM_overview.csv (or _country.csv)
+                                      -> revenue.sales_reports as 'download' rows, one per day
+                                         ('Daily User Installs'; the newest file for a month wins)
      Every file is archived as received; a file is re-read only when Google
      publishes a new generation of it. Lines are parsed by header name and
      only when the columns we need are present; otherwise the file is kept and
@@ -64,6 +67,8 @@ SCOPES = "https://www.googleapis.com/auth/androidpublisher https://www.googleapi
 SECRET_DIR = "/etc/secrets"
 SALES_TZ = "UTC (Google Play sales order dates)"
 EARNINGS_TZ = "Google Play earnings month (Pacific Time per Play Help)"
+INSTALLS_TZ = "Google Play statistics date (time zone not stated by Google)"
+NO_CURRENCY = "XXX"          # ISO 4217 code for "no currency": install counts carry no money
 PERIOD_PLAN = {"P1M": "monthly", "P3M": "three_month", "P1Y": "annual", "P12M": "annual"}
 
 
@@ -448,6 +453,91 @@ def parse_earnings(text: str, report_id: str, month: str, matcher: PackageMatche
     return out
 
 
+def parse_installs(text: str, report_id: str, pkg: str, matcher: PackageMatcher, now: dt.datetime) -> list[dict]:
+    """Daily first-time installs from a Play statistics file (stats/installs/installs_<pkg>_<YYYYMM>_<dimension>.csv).
+    'Daily User Installs' (users installing on their first device) is used, as the closest match to Apple's
+    first-time downloads; 'Daily Device Installs' only when the file has no user column. A per-country file is
+    summed per date."""
+    idx, rows = _rows(text)
+    c = {"date": _col(idx, "date"), "pkg": _col(idx, "package name"),
+         "units": _col(idx, "daily user installs", "daily device installs")}
+    missing = [k for k in ("date", "units") if c[k] is None]
+    if missing:
+        raise PlayFormatError(f"installs file is missing columns: {', '.join(missing)}")
+    per_day: dict = {}
+    for r in rows:
+        g = lambda k: r[c[k]].strip() if c[k] is not None and c[k] < len(r) else ""  # noqa: E731
+        try:
+            d, n = _gdate(g("date")), int(float(g("units") or 0))
+        except ValueError:
+            continue
+        per_day[d] = per_day.get(d, 0) + n
+    app_id = matcher(pkg)
+    return [{
+        "line_key": hashlib.sha256(f"google_play|installs|{pkg}|{d.isoformat()}".encode()).hexdigest(),
+        "source_platform": PLATFORM, "app_id": app_id, "source_app_ref": pkg, "store_product_id": None,
+        "currency": NO_CURRENCY, "period_start": d, "period_end": d, "reporting_timezone": INSTALLS_TZ,
+        "source_report_id": report_id, "imported_at": now, "data_status": "estimated", "territory": None,
+        "transaction_type": "download", "product_type": "installs", "units": n, "customer_price": None,
+        "gross_amount": None, "proceeds_amount": None, "proceeds_currency": None, "sku": pkg, "parent_ref": None,
+        "subscription_kind": None, "sub_period": None,
+    } for d, n in sorted(per_day.items())]
+
+
+def _upsert_installs(con, rows: list[dict]) -> int:
+    """Google re-publishes the current month's file every day and may revise earlier days: the newest file wins."""
+    if not rows:
+        return 0
+    before = int(con.execute(f"SELECT count(*) FROM {SCHEMA}.sales_reports").fetchone()[0])
+    cols = list(rows[0])
+    sql = (f"INSERT INTO {SCHEMA}.sales_reports ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))}) "
+           "ON CONFLICT (line_key) DO UPDATE SET units = excluded.units, source_report_id = excluded.source_report_id, "
+           "imported_at = excluded.imported_at")
+    params = [[r[k] for k in cols] for r in rows]
+    if hasattr(con, "executemany"):
+        con.executemany(sql, params)
+    else:
+        for p in params:
+            con.execute(sql, p)
+    return int(con.execute(f"SELECT count(*) FROM {SCHEMA}.sales_reports").fetchone()[0]) - before
+
+
+INSTALLS_FILE = re.compile(r"^stats/installs/installs_(?P<pkg>[A-Za-z0-9_.]+)_(?P<y>\d{4})(?P<m>\d{2})_(?P<dim>[a-z_]+)\.csv$")
+
+
+def sync_installs(con, client: "Client", bucket: str, matcher: PackageMatcher, now: dt.datetime, stats: dict) -> None:
+    """Daily installs for our own packages: the overview file when Google provides one, else the country file."""
+    ours = set(matcher.by_pkg)
+    pick: dict = {}
+    for obj in client.pages(f"{GCS}/b/{bucket}/o", "items", {"prefix": "stats/installs/installs_"}):
+        m = INSTALLS_FILE.match(obj.get("name", ""))
+        if not m or m.group("pkg") not in ours or m.group("dim") not in ("overview", "country"):
+            continue
+        key = (m.group("pkg"), f"{m.group('y')}-{m.group('m')}")
+        if m.group("dim") == "overview" or key not in pick:
+            pick[key] = obj
+    for (pkg, month), obj in sorted(pick.items()):
+        name = obj["name"]
+        stats["listed"] += 1
+        rid = f"google:{name}:{obj.get('generation', '')}"
+        if con.execute(f"SELECT 1 FROM {SCHEMA}.report_files WHERE report_id = ?", [rid]).fetchall():
+            continue
+        data = client.get(f"{GCS}/b/{bucket}/o/{urllib.parse.quote(name, safe='')}", {"alt": "media"}, raw=True)
+        if data is None:
+            continue
+        stats["files"] += 1
+        try:
+            lines = parse_installs(unzip_csv(data), rid, pkg, matcher, now)
+        except PlayFormatError as e:
+            log.warning("Play installs file %s kept but not parsed: %s", name, e)
+            _record(con, rid, "INSTALLS", month, INSTALLS_TZ, "estimated", data, 0, now)
+            stats["unparsed"] += 1
+            continue
+        stats["lines"] += len(lines)
+        stats["inserted"] += _upsert_installs(con, lines)
+        _record(con, rid, "INSTALLS", month, INSTALLS_TZ, "estimated", data, len(lines), now)
+
+
 def _insert(con, table: str, rows: list[dict]) -> int:
     if not rows:
         return 0
@@ -507,6 +597,7 @@ def sync_reports(con, client: Client, bucket: str) -> dict:
             stats["inserted"] += _insert(con, "sales_reports" if rtype == "ESTIMATED_SALES" else "financial_reports", lines)
             _record(con, rid, rtype, month, SALES_TZ if rtype == "ESTIMATED_SALES" else EARNINGS_TZ,
                     "estimated" if rtype == "ESTIMATED_SALES" else "finalized", data, len(lines), now)
+    sync_installs(con, client, bucket, matcher, now, stats)
     return stats
 
 
