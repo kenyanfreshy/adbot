@@ -188,75 +188,128 @@
     const queueOpen = C.queue.filter(p => ["proposed", "approved", "uncertain", "executing"].includes(p.status));
     const pace = C.pacing || {apps: {}};
     const reb = C.rebalance || {};
-    document.getElementById("view").innerHTML = `
-      <section class="ctl">
+    // ---- premium "Ad Command" layout: the Revenue tab's deck styles (.rev), every section foldable ----
+    const opened = store.get("adbot-ads-open", {});
+    const fold = (id, title, sub, body, def, brief) => `<details class="fold hx-fold" id="${id}" data-fold="${id}" ${(opened[id] ?? def) ? "open" : ""}>
+        <summary class="hx-h"><span>${title}</span><small>${sub}</small><i class="chev" aria-hidden="true"></i>${brief ? `<div class="rc-brief">${brief}</div>` : ""}</summary>${body}</details>`;
+    const idr = (label, val, cls) => `<div class="idr"><span>${label}</span><b class="${cls || ""}">${val}</b></div>`;
+    const has = d.has_data;
+    const spark = (key, hue) => {
+      const vals = (d.series || []).map(x => +x[key] || 0), mx = Math.max(...vals, 0);
+      if (!has || !(mx > 0)) return `<svg class="hx-spark" viewBox="0 0 120 26" preserveAspectRatio="none" aria-hidden="true"><path d="M0 20H120" stroke-dasharray="3 4"/></svg>`;
+      const pts = vals.map((v, i) => `${(120 * i / Math.max(1, vals.length - 1)).toFixed(1)},${(23 - 20 * v / mx).toFixed(1)}`);
+      return `<svg class="hx-spark" viewBox="0 0 120 26" preserveAspectRatio="none" aria-hidden="true"><path d="M${pts.join("L")}" style="stroke:${hue};stroke-opacity:.9"/></svg>`;
+    };
+    const tile = (k, hue, val, sub, key) => `<div class="hx-tile ${val == null ? "" : "live"}" style="--hue:${hue}"><div class="hx-k">${k}</div>
+        <div class="hx-v">${val == null ? "UNAVAILABLE" : val}</div>${spark(key, hue)}<div class="hx-d">${sub}</div><i class="scan"></i></div>`;
+    const anyImported = C.sources.some(s => ["imported_activity", "imported_zero"].includes(s.state));
+    const ringSources = C.sources.map(s => ({...s, name: s.source, shared: {state: s.state}}));
+    const modeLabel = (C.modes.find(m => m.id === C.mode) || {}).label || C.mode;
+    const blocked = C.queue.filter(p => p.status === "blocked").length;
+    const revenueVal = T.revenue != null ? money(T.revenue) : null;
+    // spend mix by app (from the app x channel rows)
+    const byApp = {}; d.by_app.forEach(b => { byApp[b.app] = (byApp[b.app] || 0) + (+b.spend || 0); });
+    const mixTotal = Object.values(byApp).reduce((t, v) => t + v, 0);
+    const mixApps = Object.keys(byApp).sort((x, y) => byApp[y] - byApp[x]);
+    const mix = mixTotal > 0 ? `<div class="mix"><div class="mix-bar" role="img" aria-label="Spend by app">${mixApps.map(a => `<i style="flex-grow:${byApp[a]};background:${COLOR[a] || "var(--ink-4)"}" title="${esc(SHORT[a] || a)} ${money(byApp[a])}"></i>`).join("")}</div>
+        <div class="mix-leg">${mixApps.map(a => `<span><i style="background:${COLOR[a] || "var(--ink-4)"}"></i>${esc(SHORT[a] || a)} <b>${money(byApp[a])}</b> <em>${pct(byApp[a] / mixTotal, 0)}</em></span>`).join("")}</div></div>` : "";
+    const empty = t => `<div class="xt-empty">${t}</div>`;
+    const noAdsWhy = C.sources.every(s => ["not_configured", "unsupported"].includes(s.state)) ? "No ad channel has credentials on the adbot-hourly job yet." : "See Data sources for each channel's state.";
+
+    document.getElementById("view").innerHTML = `<div class="rev ads">
+      <section class="hero">
+        <div class="hero-txt">
+          <div class="eyebrow"><span class="pulse ${anyImported && !C.automation_stopped ? "on" : ""}"></span>AD COMMAND</div>
+          <h2>${C.automation_stopped ? "Automation stopped" : C.dry_run ? "Dry run: nothing is sent" : "Live: approved changes are sent"}</h2>
+          <p>${esc(modeLabel)}.</p>
+          <div class="hero-meta"><span>LAST DECISION <b>${C.last_cycle ? when(C.last_cycle.at) : "NOT YET"}</b></span><span>NEXT RUN <b>${when(C.next_run)}</b></span></div>
+        </div>
+        ${readinessRing(ringSources)}
+      </section>
+      <section class="ctl ad-ctl">
         <div class="ctl-row">
           <div class="ctl-mode"><span class="ctl-k">Automation</span>
             <select id="modeSel" aria-label="Operating mode">${C.modes.map(m => `<option value="${m.id}" ${m.id === C.mode ? "selected" : ""}>${esc(m.label.split(":")[0])}</option>`).join("")}</select>
-            <span class="schip ${C.dry_run ? "sim" : "bad"}">${C.dry_run ? "Dry run: changes are simulated" : "Live: approved changes are sent"}</span></div>
+            <span class="schip ${C.dry_run ? "sim" : "bad"}">${C.dry_run ? "Dry run" : "Live"}</span></div>
           ${C.automation_stopped ? `<button class="btn" id="resumeBtn">Resume automation</button>` : `<button class="btn danger" id="stopBtn">Stop automation</button>`}
         </div>
-        <p class="ctl-help">${esc((C.modes.find(m => m.id === C.mode) || {}).label || "")}. Last decision run: ${C.last_cycle ? when(C.last_cycle.at) : "not yet"}.</p>
         ${C.automation_stopped ? `<div class="banner bad"><b>Automation is stopped</b> · requested ${when(C.automation_stopped.requested_at || C.automation_stopped.since)} · ${C.automation_stopped.persisted_at ? "saved" : "NOT confirmed saved"} · ${C.automation_stopped.acknowledged_at ? "seen by the scheduled job " + when(C.automation_stopped.acknowledged_at) : "not yet seen by the scheduled job (next run " + when(C.next_run) + ")"}. No advertising change is sent while stopped. <b>Your ads are still running</b>; use Emergency pause to stop them.</div>` : ""}
         ${C.emergency ? (() => { const E = C.emergency_status || {}; return `<div class="banner bad"><b>Emergency pause requested</b> ${when(C.emergency.requested_at || C.emergency.since)} for ${E.campaigns ?? C.emergency.count} campaign${(E.campaigns ?? C.emergency.count) === 1 ? "" : "s"} · ${E.acknowledged_at ? "seen by the scheduled job " + when(E.acknowledged_at) : "waiting for the scheduled job (next run " + when(C.next_run) + "); nothing has been sent yet"}${C.dry_run ? " · <b>DRY RUN: no pause will be sent</b>" : ""}.<br>Sent ${E.remote_requests_sent || 0} · verified paused ${E.verified || 0} · already paused ${E.already_paused || 0} · failed ${E.failed || 0} · unconfirmed ${(E.uncertain || 0) + (E.accepted_unconfirmed || 0)} · simulated ${E.simulated_dry_run || 0} · waiting ${E.waiting || 0}. Nothing is resumed automatically. <button class="btn sm" id="emClear">Clear latch</button></div>`; })() : ""}
       </section>
 
-      <div class="kpis ov">
-        ${k("Spend", money(T.spend), (T.mixed_currency ? "mixed currencies · " : cur1 ? cur1.trim() + " · " : "") + "last " + d.days + " days")}
-        ${k("Store proceeds", proceeds ? esc(proceeds) : "Unavailable", proceeds ? "estimated, month to date" : "no store reports imported")}
-        ${k("Data coverage", `${usable}/${C.sources.filter(s => s.state !== "unsupported").length}`, `${connected} connected · revenue on ${T.revenue_coverage == null ? "—" : pct(T.revenue_coverage, 0)} of spend`)}
-        ${k("Decisions", num(queueOpen.length), `${C.queue.filter(p => p.status === "blocked").length} blocked · ${esc(C.mode)}`)}
+      <div class="hx-grid">
+        ${tile("SPEND", "#FFB020", has ? money(T.spend) : null, has ? `last ${d.days} days${T.mixed_currency ? " · mixed currencies" : cur1}` : "no ad data imported", "spend")}
+        ${tile("INSTALLS", "#00E5A3", has ? num(T.installs) : null, has ? (T.conversions_other ? num(T.conversions_other) + " Google conversions" : "reported by platforms") : "no ad data imported", "installs")}
+        ${tile("COST / INSTALL", "#00C2FF", has && T.cpi != null ? money(T.cpi) : null, has ? "avg cost per tap " + money(T.cpt) : "needs installs and spend", "taps")}
+        ${tile("ATTRIBUTED REVENUE", "#E024C3", revenueVal, T.roas != null ? T.roas.toFixed(2) + "× ROAS" : proceeds ? "store proceeds " + esc(proceeds) : "platforms report none", "spend")}
       </div>
 
-      ${C.action_needed.length ? `<div class="h">Action needed <small>${C.action_needed.length}</small></div>
-        <div class="card list need">${C.action_needed.map(n => `<div class="item sev-${SEV[n.severity]}"><div class="main"><div class="name">${esc(n.title)}</div>${n.text ? `<div class="meta">${esc(n.text)}</div>` : ""}</div></div>`).join("")}</div>` : ""}
+      ${C.action_needed.length ? fold("adNeed", "ACTION NEEDED", `${C.action_needed.length}`,
+        `<div class="card list need">${C.action_needed.map(n => `<div class="item sev-${SEV[n.severity]}"><div class="main"><div class="name">${esc(n.title)}</div>${n.text ? `<div class="meta">${esc(n.text)}</div>` : ""}</div></div>`).join("")}</div>`, true,
+        idr("Top item", esc(C.action_needed[0].title), "warn") + (C.action_needed.length > 1 ? `<div class="idnote">+ ${C.action_needed.length - 1} more</div>` : "")) : ""}
 
-      <div class="h">Decision queue <small>${C.queue.length} open</small></div>
-      ${C.queue.length ? C.queue.map(p => qCard(p, C.mode)).join("") : `<div class="empty">${C.mode === "observe" ? "Observe mode: AdBot collects and displays data but makes no proposals." : C.sources.some(s => ["imported_activity", "imported_zero"].includes(s.state)) ? "No open proposals. Rules found nothing to change in the mature data." : "No proposals: no ad data has been imported yet."}</div>`}
-      ${C.recent.length ? `<details class="fold" id="recentFold"><summary class="h">Recent outcomes <small>${C.recent.length}</small><i class="chev" aria-hidden="true"></i></summary>${C.recent.map(p => qCard(p, C.mode)).join("")}</details>` : ""}
+      ${fold("adQueue", "DECISION QUEUE", `${C.queue.length} open`,
+        (C.queue.length ? C.queue.map(p => qCard(p, C.mode)).join("") : `<div class="empty">${C.mode === "observe" ? "Observe mode: AdBot collects and displays data but makes no proposals." : anyImported ? "No open proposals. Rules found nothing to change in the mature data." : "No proposals: no ad data has been imported yet."}</div>`)
+        + (C.recent.length ? `<details class="fold" id="recentFold"><summary class="h">Recent outcomes <small>${C.recent.length}</small><i class="chev" aria-hidden="true"></i></summary>${C.recent.map(p => qCard(p, C.mode)).join("")}</details>` : ""), true,
+        idr("Waiting", num(queueOpen.length)) + idr("Blocked", num(blocked), blocked ? "warn" : "") + idr("Mode", esc(modeLabel.split(":")[0]).toUpperCase()))}
 
-      <div class="h">Data freshness <small>per source</small></div>
-      <div class="card list">${C.sources.concat(C.store_sources).map(s => `<details class="srcrow"><summary class="item"><div class="main"><div class="name">${esc(s.source)}</div><div class="meta">${esc(s.detail || (s.last_success ? "Last import " + when(s.last_success) : ""))}</div></div>${stateChip(s)}</summary>
-        <dl class="tsl"><dt>Connection check</dt><dd>${ts(s.last_connection_check)}</dd><dt>Last import attempt</dt><dd>${ts(s.last_attempt)}</dd><dt>Last successful import</dt><dd>${ts(s.last_success)}</dd><dt>Latest date covered</dt><dd>${s.latest_date_covered ? esc(String(s.latest_date_covered).slice(0, 10)) : "—"}</dd>${s.currency ? `<dt>Currency</dt><dd>${esc(s.currency)}</dd>` : ""}${s.timezone ? `<dt>Reporting time zone</dt><dd>${esc(s.timezone)}</dd>` : ""}</dl></details>`).join("")}</div>
+      ${fold("adPerf", "PERFORMANCE", `last ${d.days} days`,
+        `<div class="race perf">${has ? `<div class="legend"><span><i style="background:#00C2FF"></i>Taps</span><span><i style="background:#00E5A3"></i>Installs</span><span><i style="background:#FFB020"></i>Spend (right)</span></div>
+          <div class="chart">${lineChart(d.series, ["taps", "installs", "spend"], ["#00C2FF", "#00E5A3", "#FFB020"], "spend")}</div>` : empty(`No ad performance imported yet. ${noAdsWhy}`)}
+          <div class="pstats">
+            <div><small>Taps / clicks</small><b>${has ? num(T.taps) : "—"}</b><em>${has ? delta(T.taps, P.taps) : ""}</em></div>
+            <div><small>Avg cost per tap</small><b>${has ? money(T.cpt) : "—"}</b><em>${has ? delta(T.cpt, P.cpt, true) : ""}</em></div>
+            <div><small>ACoS</small><b>${T.acos == null ? "—" : pct(T.acos)}</b><em>${T.acos == null ? "needs reported revenue" : "over spend with revenue"}</em></div>
+            <div><small>Prior period spend</small><b>${has ? money(P.spend) : "—"}</b><em>${has ? delta(T.spend, P.spend, true) : ""}</em></div>
+          </div></div>`, true,
+        has ? idr("Spend", money(T.spend)) + idr("Installs", num(T.installs)) + idr("Cost per tap", money(T.cpt)) : idr("Status", "NO AD DATA YET", "nil"))}
 
-      <div class="h">Budget pacing <small>${esc(pace.month || "")} · ${pace.days_left || "—"} of ${pace.days_in_month || "—"} days left</small></div>
-      <div class="card">
-        ${C.budget_errors.length ? `<div class="banner warn" style="margin:0 0 10px"><b>Budget changes are blocked.</b> ${esc(C.budget_errors[0])}</div>` : ""}
-        ${tot ? `<div class="lrow" style="padding-top:0">All apps<b>${money(tot.spent_mtd)} of ${money(tot.monthly)}<small> · ${money(tot.daily_allowance)}/day left to pace</small></b></div><div class="bar"><i style="width:${Math.min(100, (tot.used_pct || 0) * 100)}%;${tot.used_pct >= 0.9 ? "background:var(--red)" : ""}"></i></div>` : ""}
-        ${APPS.map(a => { const v = (pace.apps || {})[a] || {}; return `<div class="lrow"><span class="dot" style="background:${COLOR[a]}"></span>${esc(SHORT[a])}<b>${v.monthly != null ? `${money(v.spent_mtd)} of ${money(v.monthly)}<small> · ${money(v.daily_allowance)}/day</small>` : `<span class="muted">${money(v.spent_mtd)} spent · no allocation</span>`}</b></div>${v.monthly ? `<div class="bar"><i style="width:${Math.min(100, (v.used_pct || 0) * 100)}%;background:${COLOR[a]}"></i></div>` : ""}`; }).join("")}
-        ${pace.unattributed_spend_mtd ? `<p class="sub" style="margin-top:8px">${money(pace.unattributed_spend_mtd)} this month in campaigns not mapped to an app.</p>` : ""}
-        <p class="sub" style="margin-top:8px">${esc(pace.note || C.budget_note || "")} Spend shown is what platforms have reported so far; reserve ${pct(pace.reserve_pct || 0, 0)}.</p>
-      </div>
+      ${fold("adMix", "SPEND BY APP &amp; CHANNEL", `${d.by_app.length} row${d.by_app.length === 1 ? "" : "s"}`,
+        d.by_app.length ? `${mix}<div class="xt-wrap"><table class="xt"><thead><tr><th scope="col">App · channel</th><th scope="col" class="n">Spend</th><th scope="col" class="n">Clicks</th><th scope="col" class="n">Installs</th><th scope="col" class="n">CPT</th><th scope="col" class="n">ACoS</th></tr></thead>
+          <tbody>${d.by_app.map(b => `<tr><th scope="row"><span class="dot" style="background:${COLOR[b.app] || "#666"}"></span>${esc(SHORT[b.app] || b.app)}<small>${esc(b.channel)}</small></th>
+            <td class="n">${money(b.spend)}</td><td class="n">${num(b.taps)}</td><td class="n">${b.channel === "Google Ads" ? num(b.conversions_other) + "<small>conv.</small>" : num(b.installs)}</td>
+            <td class="n">${money(b.cpt)}</td><td class="n">${b.revenue == null ? `<span class="muted">n/a</span>` : b.acos == null ? "—" : pct(b.acos, 0)}</td></tr>`).join("")}</tbody>
+          <tfoot><tr><th scope="row">Total</th><td class="n">${money(T.spend)}</td><td class="n">${num(T.taps)}</td><td class="n">${num(T.installs)}</td><td class="n">${money(T.cpt)}</td><td class="n">${T.acos == null ? "—" : pct(T.acos, 0)}</td></tr></tfoot></table></div>`
+        : empty(`Nothing to break down yet. ${noAdsWhy}`), has,
+        mixApps.length ? idr("Top app", `${esc(SHORT[mixApps[0]] || mixApps[0])} · ${money(byApp[mixApps[0]])}`) : idr("Status", "NO SPEND YET", "nil"))}
 
-      <div class="h">Rebalancing</div>
-      <div class="card"><div class="lrow" style="padding-top:0">Configured<b>${reb.configured ? "On" : "Off"}</b></div>
+      ${fold("adPace", "BUDGET PACING", `${esc(pace.month || "")} · ${pace.days_left || "—"} of ${pace.days_in_month || "—"} days left`,
+        `${C.budget_errors.length ? `<div class="banner warn"><b>Budget changes are blocked.</b> ${esc(C.budget_errors[0])}</div>` : ""}
+        <div class="xt-wrap"><table class="xt pace"><thead><tr><th scope="col">App</th><th scope="col" class="n">Spent</th><th scope="col" class="n">Budget</th><th scope="col" class="n">Per day left</th></tr></thead><tbody>
+          ${tot ? `<tr class="pace-all"><th scope="row">All apps<div class="gauge"><i style="width:${Math.min(100, (tot.used_pct || 0) * 100)}%;${tot.used_pct >= 0.9 ? "background:var(--red);box-shadow:0 0 10px var(--red)" : ""}"></i></div></th><td class="n">${money(tot.spent_mtd)}</td><td class="n">${money(tot.monthly)}</td><td class="n">${money(tot.daily_allowance)}</td></tr>` : ""}
+          ${APPS.map(a => { const v = (pace.apps || {})[a] || {}; return `<tr><th scope="row"><span class="dot" style="background:${COLOR[a]}"></span>${esc(SHORT[a])}${v.monthly ? `<div class="gauge"><i style="width:${Math.min(100, (v.used_pct || 0) * 100)}%;background:${COLOR[a]}"></i></div>` : ""}</th>
+            <td class="n">${money(v.spent_mtd)}</td><td class="n">${v.monthly != null ? money(v.monthly) : `<span class="muted">no allocation</span>`}</td><td class="n">${v.monthly != null ? money(v.daily_allowance) : "—"}</td></tr>`; }).join("")}
+        </tbody></table></div>
+        ${pace.unattributed_spend_mtd ? `<p class="sub">${money(pace.unattributed_spend_mtd)} this month in campaigns not mapped to an app.</p>` : ""}
+        <p class="sub">${esc(pace.note || C.budget_note || "")} Spend shown is what platforms have reported so far; reserve ${pct(pace.reserve_pct || 0, 0)}.</p>`, false,
+        tot ? idr("This month", `${money(tot.spent_mtd)} of ${money(tot.monthly)}`, tot.used_pct >= 0.9 ? "bad" : "") + idr("Per day left", money(tot.daily_allowance)) : idr("Budget", C.budget_errors.length ? "NOT SET" : "NO TOTAL SET", "nil"))}
+
+      ${fold("adReb", "REBALANCING", reb.configured ? "on" : "off",
+        `<div class="card"><div class="lrow" style="padding-top:0">Configured<b>${reb.configured ? "On" : "Off"}</b></div>
         <div class="lrow">Right now<b>${reb.eligible ? '<span class="schip ok">Eligible</span>' : '<span class="schip nil">Blocked</span>'}</b></div>
         ${!reb.eligible && reb.blockers && reb.blockers.length ? `<ul class="qblock">${reb.blockers.map(b => `<li>${esc(b)}</li>`).join("")}</ul>` : ""}
         ${reb.eligible ? APPS.map(a => `<div class="lrow">${esc(SHORT[a])}<b>${money(reb.baseline[a])} → ${money(reb.proposed[a])}<small>/month (recommendation)</small></b></div>`).join("") : `<p class="sub">Baseline kept: your monthly allocations stay as set.</p>`}
-        <p class="sub">${esc(reb.method || "")} Last evaluation: ${reb.last_evaluation ? when(reb.last_evaluation) : "not yet"}.</p></div>
+        <p class="sub">${esc(reb.method || "")} Last evaluation: ${reb.last_evaluation ? when(reb.last_evaluation) : "not yet"}.</p></div>`, false,
+        idr("Right now", reb.eligible ? "ELIGIBLE" : "BLOCKED", reb.eligible ? "ok" : "nil") + (!reb.eligible && reb.blockers && reb.blockers.length ? `<div class="idnote">${esc(reb.blockers[0])}</div>` : ""))}
 
-      ${C.unmapped.length ? `<div class="h">Campaigns not mapped to an app <small>${C.unmapped.length}</small></div>
-        <div class="card list">${C.unmapped.map(u => `<div class="item umap" data-ch="${esc(u.channel)}" data-cid="${esc(u.campaign_id)}"><div class="main"><div class="name">${esc(u.campaign_name || u.campaign_id)}</div><div class="meta">${esc(u.channel)} · seen ${when(u.last_seen)}</div>
-          <div class="row2 umap-ctl"><select aria-label="App for ${esc(u.campaign_name || "")}"><option value="">Choose app…</option>${APPS.map(a => `<option>${esc(a)}</option>`).join("")}</select><button class="btn sm" data-map="1">Map</button><button class="btn sm" data-ign="1">Not ours</button></div></div></div>`).join("")}</div>` : ""}
+      ${fold("adSrc", "DATA SOURCES", `${C.sources.filter(s => ["imported_activity", "imported_zero"].includes(s.state)).length}/${C.sources.length} importing`,
+        `<div class="xt-wrap"><table class="xt src-t"><thead><tr><th scope="col">Source</th><th scope="col">State</th><th scope="col">Last import</th><th scope="col">Data to</th></tr></thead><tbody>
+          ${C.sources.concat(C.store_sources).map(s => `<tr title="${esc(s.detail || "")}"><th scope="row">${esc(s.source)}${s.detail ? `<small>${esc(s.detail)}</small>` : ""}</th><td>${stateChip(s)}</td><td class="t">${s.last_success ? when(s.last_success) : "—"}</td><td class="t">${s.latest_date_covered ? esc(String(s.latest_date_covered).slice(0, 10)) : "—"}</td></tr>`).join("")}
+        </tbody></table></div>`, false,
+        idr("Importing", `${usable} of ${C.sources.filter(s => s.state !== "unsupported").length}`, usable ? "ok" : "nil") + idr("Connected", num(connected)))}
 
-      <div class="h">Performance <small>live data · last ${d.days} days</small></div>
-      ${!d.has_data ? `<div class="banner">No ad performance has been imported. ${C.sources.every(s => ["not_configured", "unsupported"].includes(s.state)) ? "No ad channel has credentials on the adbot-hourly job yet." : "Check Data freshness above for each source's state."}</div>` : ""}
-      <div class="kpis">
-        ${k("Taps / clicks", num(T.taps), delta(T.taps, P.taps))}
-        ${k("Installs", num(T.installs), T.cpi != null ? money(T.cpi) + " per install" : T.conversions_other ? num(T.conversions_other) + " Google conversions" : "")}
-        ${k("Attributed revenue", T.revenue == null ? (T.revenue_by_channel && T.revenue_by_channel.length > 1 ? "Per platform" : "Not reported") : money(T.revenue), T.revenue == null ? (T.revenue_note ? T.revenue_by_channel.map(c => esc(c.channel.split(" ")[0]) + " " + money(c.revenue)).join(" · ") + " (not added: attribution overlaps)" : T.revenue_estimate ? "estimate " + money(T.revenue_estimate) + " (value per install)" : "platforms report none") : `${T.roas != null ? T.roas.toFixed(2) + "× ROAS" : ""} on ${pct(T.revenue_coverage, 0)} of spend`)}
-        ${k("ACoS", T.acos == null ? "—" : pct(T.acos), T.acos == null ? "needs reported revenue" : "over spend with revenue")}
-        ${k("Avg cost per tap", money(T.cpt), delta(T.cpt, P.cpt, true))}
-        ${k("Prior period spend", money(P.spend), delta(T.spend, P.spend, true) + " now vs then")}
-      </div>
-      <div class="card"><div class="legend"><span><i style="background:#00C2FF"></i>Taps</span><span><i style="background:#00E5A3"></i>Installs</span><span><i style="background:#FFB020"></i>Spend (right)</span></div>
-        <div class="chart">${lineChart(d.series, ["taps", "installs", "spend"], ["#00C2FF", "#00E5A3", "#FFB020"], "spend")}</div></div>
-      ${d.by_app.length ? `<div class="h">By app &amp; channel</div><div class="card list">${d.by_app.map(b => `<div class="item"><span class="dot" style="background:${COLOR[b.app] || "#666"};margin-top:6px"></span><div class="main"><div class="name">${esc(SHORT[b.app] || b.app)} · ${esc(b.channel)}</div><div class="meta">${num(b.taps)} clicks · ${b.channel === "Google Ads" ? num(b.conversions_other) + " conversions" : num(b.installs) + " installs"} · CPT ${money(b.cpt)}</div></div><div class="right">${money(b.spend)}<small>${b.revenue == null ? "revenue not reported" : "ACoS " + (b.acos == null ? "—" : pct(b.acos, 0))}</small></div></div>`).join("")}</div>` : ""}
-      <details class="fold emer" id="emFold"><summary class="h">Emergency pause <small>at the next scheduled run</small><i class="chev" aria-hidden="true"></i></summary>
+      ${C.unmapped.length ? fold("adMap", "UNMAPPED CAMPAIGNS", `${C.unmapped.length}`,
+        `<div class="card list">${C.unmapped.map(u => `<div class="item umap" data-ch="${esc(u.channel)}" data-cid="${esc(u.campaign_id)}"><div class="main"><div class="name">${esc(u.campaign_name || u.campaign_id)}</div><div class="meta">${esc(u.channel)} · seen ${when(u.last_seen)}</div>
+          <div class="row2 umap-ctl"><select aria-label="App for ${esc(u.campaign_name || "")}"><option value="">Choose app…</option>${APPS.map(a => `<option>${esc(a)}</option>`).join("")}</select><button class="btn sm" data-map="1">Map</button><button class="btn sm" data-ign="1">Not ours</button></div></div></div>`).join("")}</div>`, true,
+        idr("Waiting for an app", num(C.unmapped.length), "warn")) : ""}
+
+      <details class="fold hx-fold emer" id="emFold"><summary class="hx-h"><span>EMERGENCY PAUSE</span><small>next scheduled run</small><i class="chev" aria-hidden="true"></i></summary>
         <div class="card"><p class="sub" style="margin-top:0">Records a pause for every active managed campaign / ad set in scope. Separate from Stop automation. Nothing is paused when you press it: the scheduled job sends the pauses at its next run (${when(C.next_run)}, every ${C.every_hours} h)${C.dry_run ? ", and with DRY RUN on it only simulates them" : ""}, then reports each campaign as verified, failed or unconfirmed. Nothing is resumed automatically.</p>
           <div class="row2"><select id="emApp" aria-label="App"><option value="">All apps</option>${APPS.map(a => `<option>${esc(a)}</option>`).join("")}</select><select id="emCh" aria-label="Channel"><option value="">All channels</option><option>Apple Search Ads</option><option>Meta Ads</option><option>Google Ads</option></select></div>
           <label class="sub" for="emConfirm" style="display:block;margin-top:10px">Type PAUSE to confirm</label><input id="emConfirm" class="txt" autocomplete="off" autocapitalize="characters">
-          <button class="btn danger block" id="emGo" style="margin-top:10px">Pause managed campaigns</button></div></details>`;
+          <button class="btn danger block" id="emGo" style="margin-top:10px">Pause managed campaigns</button></div></details>
+    </div>`;
+    document.querySelectorAll("#view details[data-fold]").forEach(f => f.addEventListener("toggle", () => { const o = store.get("adbot-ads-open", {}); o[f.dataset.fold] = f.open; store.set("adbot-ads-open", o); }));
     // wiring
     const after = msg => { toast(msg); load(false, true); };
     $("modeSel").onchange = async e => { const risky = ["approval", "bounded_auto"].includes(e.target.value); const pw = risky ? prompt("Enter the AdBot password to allow changes to be applied") : null; if (risky && !pw) { e.target.value = C.mode; return; } try { await api("/api/control/mode", {method: "POST", body: JSON.stringify({mode: e.target.value, password: pw})}); after("Mode saved: " + e.target.selectedOptions[0].text); } catch (err) { if (err.message !== "signin") toast(err.message); } };
