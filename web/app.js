@@ -686,6 +686,15 @@
         ${readinessRing(d.sources)}
       </section>
 
+      <div class="hx-h"><span>DATA PIPELINE</span><small>live status</small></div>
+      <div class="pipe">
+        <div class="pcol">${stores.map(s => node(esc(PLAT[s.platform]), srcState(s), STATE_TXT[srcState(s)])).join("")}</div>
+        ${wire(anyStore ? "on" : "off")}
+        ${node("Revenue DB", "on", "19 tables ready")}
+        ${wire(d.has_revenue_data ? "on" : "off")}
+        ${node("Dashboard", d.has_revenue_data ? "on" : "keys", d.has_revenue_data ? "live" : "waiting")}
+      </div>
+
       <div class="hx-grid">
         ${tile("YESTERDAY", "#00C2FF", "App Store + Google Play")}
         ${tile("LAST 30 DAYS", "#00E5A3", "gross sales")}
@@ -695,15 +704,6 @@
 
       <div class="hx-h"><span>APP RACE</span><small>running totals</small></div>
       <section class="race" id="race"></section>
-
-      <div class="hx-h"><span>DATA PIPELINE</span><small>live status</small></div>
-      <div class="pipe">
-        <div class="pcol">${stores.map(s => node(esc(PLAT[s.platform]), srcState(s), STATE_TXT[srcState(s)])).join("")}</div>
-        ${wire(anyStore ? "on" : "off")}
-        ${node("Revenue DB", "on", "19 tables ready")}
-        ${wire(d.has_revenue_data ? "on" : "off")}
-        ${node("Dashboard", d.has_revenue_data ? "on" : "keys", d.has_revenue_data ? "live" : "waiting")}
-      </div>
 
       <div class="hx-h"><span>STORE FEEDS</span><small>read-only</small></div>
       <div class="src-grid">${stores.map(srcCard).join("")}</div>
