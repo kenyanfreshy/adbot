@@ -903,9 +903,10 @@ def run_bot(con, rules: Rules, dry_run: bool | None = None, adapters: dict | Non
     return {**res, "paused": res["executions"].get("simulated", 0) + res["executions"].get("applied", 0), "plan": plan}
 
 
-def check_trading(con, rules: Rules) -> None:
-    """Hourly safety net: alert if the trading bot has gone quiet while the FX market is open,
-    or if its kill switch is on. Read-only; it never touches the trading bot."""
+def check_trading(con, rules: Rules, now: dt.datetime | None = None) -> None:
+    """Safety net run by every scheduled job (every WORKER_EVERY_HOURS hours): alert if the trading bot has gone
+    quiet while the FX market is open, or if its kill switch was turned on since the previous run.
+    Read-only; it never touches the trading bot."""
     try:
         rows = con.execute("select bot_id, max(ts), arg_max(mode, ts) from trading.heartbeat group by bot_id").fetchall()
     except Exception:
@@ -913,10 +914,18 @@ def check_trading(con, rules: Rules) -> None:
     demo_alerts = os.getenv("TRADING_ALERT_DEMO", "").lower() in ("1", "true", "yes")
     rows = [(b, last) for b, last, mode in rows
             if demo_alerts or str(mode or "").strip().lower() not in ("paper", "demo", "practice", "sim", "simulation", "test")]
-    now = dt.datetime.utcnow()
+    now = now or dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)   # naive UTC, like the heartbeat timestamps
+    # A kill switch turned on since the previous run must alert, so the look-back covers the whole gap between
+    # runs (plus slack for a late start), not a fixed hour: with runs every 4 hours a 1-hour window missed most.
+    from revenue.store_check import every_hours
+    since_last_run = (every_hours() * 3600) + 15 * 60
     wd, h = now.weekday(), now.hour
     fx_open = not (wd == 5 or (wd == 6 and h < 21) or (wd == 4 and h >= 22))
+    def _dt(v):  # the real driver returns datetimes; tolerate ISO text (test shim, hand-written rows)
+        return dt.datetime.fromisoformat(str(v).replace(" ", "T").rstrip("Z")) if v is not None and not isinstance(v, dt.datetime) else v
+
     for bot_id, last in rows:
+        last = _dt(last)
         try:
             st = con.execute("select status, message from trading.heartbeat where bot_id = ? order by ts desc limit 1", [bot_id]).fetchone()
         except Exception:
@@ -929,7 +938,7 @@ def check_trading(con, rules: Rules) -> None:
             ks = con.execute("select kill_switch, notes, ts from trading.risk where bot_id = ? order by ts desc limit 1", [bot_id]).fetchone()
         except Exception:
             ks = None
-        if ks and ks[0] and (now - ks[2]).total_seconds() < 3600:
+        if ks and str(ks[0]).lower() in ("true", "1") and (now - _dt(ks[2])).total_seconds() < since_last_run:
             telegram(f"🛑 <b>Trading bot {bot_id}</b>: kill switch is ON. {ks[1] or ''}", rules)
 
 

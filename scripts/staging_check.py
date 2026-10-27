@@ -69,7 +69,8 @@ def deps():
     out = {"python": sys.version.split()[0], "duckdb": duckdb.__version__}
     for m in ("dlt", "starlette", "itsdangerous", "requests"):
         try:
-            out[m] = __import__(m).__version__
+            from importlib.metadata import version
+            out[m] = version(m)
         except Exception:  # noqa: BLE001
             out[m] = "missing"
     return json.dumps(out)
@@ -207,7 +208,7 @@ def cycle(args):
     today = dt.date.today()
     for d in range(2, 9):
         con.execute("INSERT INTO staging_ads.perf VALUES (?, 'Apple Search Ads', 'k1', 'keyword', 'kw', '111', 'RNR | Search', '9', NULL, "
-                    "'ACTIVE', 100, 3, 0, 20, NULL, 'USD', 'org1', ?)", [(today - dt.timedelta(days=d)).isoformat(), dt.datetime.utcnow().isoformat()])
+                    "'ACTIVE', 100, 3, 0, 20, NULL, 'USD', 'org1', ?)", [(today - dt.timedelta(days=d)).isoformat(), dt.datetime.now(dt.timezone.utc).replace(tzinfo=None).isoformat()])
     rules = bot.Rules()
     rules._cmap = ingest.mapping(con)
     state.set_mode(con, "bounded_auto", "staging")

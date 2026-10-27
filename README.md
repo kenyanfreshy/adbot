@@ -21,11 +21,11 @@ Local run: `pip install -r requirements.txt`, set APP_PASSWORD, then `python dlt
 
 ## Ad control plane
 
-Every hourly run goes DATA → QUALITY → RECOMMENDATION → POLICY → EXECUTION → VERIFICATION → AUDIT (`control/engine.py`). State lives in the `control` schema (import runs, source status, campaign map, proposals, executions, alerts, locks).
+Every scheduled run (every 4 hours at :07 UTC) goes DATA → QUALITY → RECOMMENDATION → POLICY → EXECUTION → VERIFICATION → AUDIT (`control/engine.py`). State lives in the `control` schema (import runs, source status, campaign map, proposals, executions, alerts, locks).
 
 **Modes** (Ads tab): Observe (import and report only) · Recommend (default; proposals, no writes) · Approval (you approve each proposal) · Bounded automatic (only action types listed in `auto_actions`, inside every limit). DRY_RUN=true overrides all modes: approved or automatic changes are recorded as *simulated*.
 
-**Stop automation** is saved to the shared database at once (and read back); the hourly worker confirms it at its next run and re-checks it before every advertising write, and waiting approvals are withdrawn. **Resume** (password) un-pauses nothing and leaves earlier approvals blocked until approved again. **Emergency pause** (type PAUSE) records one pause per managed campaign in scope; the worker sends them at its next run (every 4 hours at :07 UTC, so up to about 4 hours later) and only when DRY_RUN is off. Each stage (requested, saved, seen by the worker, sent, verified / failed) is shown on the Ads tab. Nothing is ever resumed automatically. Details: `docs/CONTROL_PLANE.md`; revenue bases: `docs/MEASUREMENT.md`.
+**Stop automation** is saved to the shared database at once (and read back); the scheduled worker confirms it at its next run and re-checks it before every advertising write, and waiting approvals are withdrawn. **Resume** (password) un-pauses nothing and leaves earlier approvals blocked until approved again. **Emergency pause** (type PAUSE) records one pause per managed campaign in scope; the worker sends them at its next run (every 4 hours at :07 UTC, so up to about 4 hours later) and only when DRY_RUN is off. Each stage (requested, saved, seen by the worker, sent, verified / failed) is shown on the Ads tab. Nothing is ever resumed automatically. Details: `docs/CONTROL_PLANE.md`; revenue bases: `docs/MEASUREMENT.md`.
 
 **Data states** per source: not configured, unsupported, connected/not imported, imported (zero activity), imported (activity), partial, stale, failed. Missing revenue, installs or values are shown as unavailable, never 0. Apple Ads reports no revenue; Google conversions are not installs; TikTok is not integrated.
 
@@ -55,7 +55,7 @@ The phone app's **Trading** tab shows what the trading bot reports: equity and P
 1. Copy `trading_status.py` into the trading bot and `pip install duckdb` there.
 2. On the trading machine set `MOTHERDUCK_TOKEN` (ideally its own MotherDuck token) and run `python trading_status.py` once; the Trading tab should show a test report.
 3. In the Audit/Monitoring service, create `StatusReporter(bot_id="...", mode="paper" or "live")` and call `heartbeat()`, `account()`, `positions()`, `trade()`, `signal()` and `risk()` (examples at the top of the file). Calls return instantly and never raise, so trading can't be slowed or stopped by reporting.
-4. The hourly job sends a Telegram alert if the bot goes quiet for 20+ minutes while the FX market is open, or if its kill switch turns on.
+4. Each scheduled run (every 4 hours) sends a Telegram alert if the bot has gone quiet for 20+ minutes while the FX market is open, or if its kill switch was turned on since the previous run. A problem can therefore wait up to 4 hours for an alert; the trading bot should keep its own immediate alerts.
 
 ### Trading bridge for fx_trading_system (no changes to the trading code)
 
