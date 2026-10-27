@@ -25,7 +25,7 @@ Every hourly run goes DATA → QUALITY → RECOMMENDATION → POLICY → EXECUTI
 
 **Modes** (Ads tab): Observe (import and report only) · Recommend (default; proposals, no writes) · Approval (you approve each proposal) · Bounded automatic (only action types listed in `auto_actions`, inside every limit). DRY_RUN=true overrides all modes: approved or automatic changes are recorded as *simulated*.
 
-**Stop automation** is saved to the shared database at once (and read back); the hourly worker confirms it at its next run and re-checks it before every advertising write, and waiting approvals are withdrawn. **Resume** (password) un-pauses nothing and leaves earlier approvals blocked until approved again. **Emergency pause** (type PAUSE) records one pause per managed campaign in scope; the worker sends them at its next run (:07) and only when DRY_RUN is off. Each stage (requested, saved, seen by the worker, sent, verified / failed) is shown on the Ads tab. Nothing is ever resumed automatically. Details: `docs/CONTROL_PLANE.md`; revenue bases: `docs/MEASUREMENT.md`.
+**Stop automation** is saved to the shared database at once (and read back); the hourly worker confirms it at its next run and re-checks it before every advertising write, and waiting approvals are withdrawn. **Resume** (password) un-pauses nothing and leaves earlier approvals blocked until approved again. **Emergency pause** (type PAUSE) records one pause per managed campaign in scope; the worker sends them at its next run (every 4 hours at :07 UTC, so up to about 4 hours later) and only when DRY_RUN is off. Each stage (requested, saved, seen by the worker, sent, verified / failed) is shown on the Ads tab. Nothing is ever resumed automatically. Details: `docs/CONTROL_PLANE.md`; revenue bases: `docs/MEASUREMENT.md`.
 
 **Data states** per source: not configured, unsupported, connected/not imported, imported (zero activity), imported (activity), partial, stale, failed. Missing revenue, installs or values are shown as unavailable, never 0. Apple Ads reports no revenue; Google conversions are not installs; TikTok is not integrated.
 
@@ -72,14 +72,14 @@ package with the stores, read-only (`revenue/store_check.py`). App Store Connect
 for the Apple ID (an empty bundle ID is filled in from the store); Google Play must answer for the package in
 your Play Console. Each row then shows VERIFIED, MISMATCH, NOT FOUND, NO ACCESS or NEEDS KEY, plus the store
 state (Live, In review, ...). The store keys live on `adbot-hourly`, so a press is answered by the next hourly
-run at :07; if you also add the keys to `adbot-control-panel` the check runs instantly. The hourly job re-checks
+run at its next scheduled run (every 4 hours at :07 UTC); if you also add the keys to `adbot-control-panel` the check runs instantly. The hourly job re-checks
 every listing once a day.
 
 **Google Play reports** are tracked apart from Google Play products (`revenue/google_play.py`): products sync once a
 day; the reports bucket has its own status (Not configured, Never checked, Bucket readable but empty, Reports imported,
 Access denied, Bucket not found, Failed) and its own "last success", which a failed attempt never moves. A 403/404 is
 retried once a day, other failures back off 1 h → 2 h → 4 h → 8 h → 24 h. To retry now without re-syncing products:
-press **Retry reports** on the Google Play card (runs at the next :07), or run `python -m revenue.google_play retry-reports`
+press **Retry reports** on the Google Play card (runs at the next scheduled run), or run `python -m revenue.google_play retry-reports`
 where the key is available. To test bucket access alone (lists at most one object, writes nothing, prints only the
 service account email, bucket, result and a sanitized error): `python -m revenue.google_play diagnose-reports`.
 

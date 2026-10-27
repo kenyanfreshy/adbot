@@ -608,7 +608,7 @@ async def run_bot_now(request: Request):
     owner = cstate.owner_id()
     with _db_lock:
         if not cstate.acquire(con(), "hourly", owner, ttl_minutes=10):
-            return J({"error": "The hourly job is running right now. Try again in a few minutes."}, 409)
+            return J({"error": "The scheduled job is running right now. Try again in a few minutes."}, 409)
         try:   # the web service never sends advertising changes: forced dry run, no adapters, no execution step
             res = bot.run_bot(con(), bot.load_rules(con()), dry_run=True, adapters={}, execute=False,
                               environ={**os.environ, "DRY_RUN": "true"}, lease=("hourly", owner))
@@ -727,14 +727,15 @@ async def control_get(request: Request):
     need.sort(key=lambda x: order.get(x["severity"], 3))
     storage = bot.storage_info()
     hb_at = ceng._ts(hb.get("at")) if isinstance(hb, dict) and hb.get("at") else None
-    if not hb_at or (dt.datetime.utcnow() - hb_at) > dt.timedelta(hours=3):
-        need.insert(0, {"severity": "critical" if storage["production"] else "warning", "title": "Hourly job not seen in this database",
+    if not hb_at or (dt.datetime.utcnow() - hb_at) > dt.timedelta(hours=store_check.every_hours() + 1):
+        need.insert(0, {"severity": "critical" if storage["production"] else "warning", "title": "Scheduled job not seen in this database",
                         "text": ("Last seen " + hb_at.isoformat(timespec="minutes") + " UTC. " if hb_at else "Never seen. ")
-                                + "Stop flags and approvals saved here only work if the hourly job uses the same database "
+                                + "Stop flags and approvals saved here only work if the scheduled job (adbot-hourly) uses the same database "
                                 + f"({storage['label']}).", "action": "sources"})
     return J({"mode": mode, "modes": [{"id": m, "label": cstate.MODE_LABEL[m]} for m in cstate.MODES], "dry_run": dry_run(),
               "automation_stopped": stopped, "stop_stages": cstate.stop_stages(stopped), "emergency": emer,
               "emergency_status": emer_status, "last_cycle": last, "storage": storage, "worker_heartbeat": hb,
+              "next_run": store_check.next_hourly_run().isoformat() + "Z", "every_hours": store_check.every_hours(),
               "sources": ad_status, "store_sources": store_status, "action_needed": need, "queue": queue, "recent": recent,
               "kpis": kp, "store_money": money, "pacing": pace, "rebalance": reb, "budget_errors": budget_errors,
               "unmapped": unm, "apps": APPS, "definitions": cmetrics.DEFINITIONS, "unavailable": cmetrics.UNAVAILABLE,
@@ -772,8 +773,9 @@ async def control_stop(request: Request):
     with _db_lock:
         v = ceng.stop(con(), "admin", str(body.get("reason") or "Stopped from the phone app")[:300], dry=dry_run())
     return J({"ok": True, "automation_stopped": v, "stages": cstate.stop_stages(v),
-              "note": f"Stop saved ({v['approvals_withdrawn']} waiting approval(s) withdrawn). The hourly job re-checks it before "
-                      "every advertising change and confirms it at its next run (:07). Your ads keep running."})
+              "note": f"Stop saved ({v['approvals_withdrawn']} waiting approval(s) withdrawn). The scheduled job re-checks it before "
+                      "every advertising change and confirms it at its next run (every {store_check.every_hours()} h; next at "
+                      f"{store_check.next_hourly_run():%H:%M} UTC). Your ads keep running."})
 
 
 @guarded(bucket="control")
@@ -801,7 +803,7 @@ async def control_emergency(request: Request):
     with _db_lock:
         res = ceng.request_emergency_pause(con(), rules, "admin", APPS, app=app_, channel=ch, dry=dry_run(),
                                            dataset=bot.DATASET, table=bot.TABLE, rule_app_fn=lambda n: bot.app_for(n, rules))
-    return J({"ok": True, **res, "note": ("Recorded and saved. Nothing has been paused yet: the hourly job (next run at :07) sends the "
+    return J({"ok": True, **res, "note": (f"Recorded and saved. Nothing has been paused yet: the scheduled job (next run {store_check.next_hourly_run():%H:%M} UTC) sends the "
                                           "pauses, and only when DRY_RUN is off. Each campaign's result appears in the queue. "
                                           "Nothing is resumed automatically later.")})
 
@@ -925,7 +927,7 @@ async def revenue_check_ids(request: Request):
             if not rows:
                 continue
             if cl[platform] == "no_keys":
-                queued[platform] = len(rows)      # adbot-hourly has the keys: it answers at :07
+                queued[platform] = len(rows)      # adbot-hourly has the keys: it answers at its next scheduled run
                 continue
             done += store_check.check_rows(cl[platform], rows)
         checked: dict = {}

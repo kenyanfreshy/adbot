@@ -231,8 +231,20 @@ def run(con, environ=None, apple_client=None, play_client=None, only_due: bool =
     return summary
 
 
+def every_hours() -> int:
+    """How often the adbot-hourly job runs: render.yaml schedule "7 */N * * *" (UTC). Set WORKER_EVERY_HOURS to match."""
+    try:
+        n = int(os.getenv("WORKER_EVERY_HOURS", "4"))
+    except ValueError:
+        n = 4
+    return n if n in (1, 2, 3, 4, 6, 8, 12, 24) else 4
+
+
 def next_hourly_run(now: Optional[dt.datetime] = None) -> dt.datetime:
-    """adbot-hourly runs at :07 every hour (render.yaml)."""
+    """Next scheduled run of the adbot-hourly job: minute 7 of every N-th UTC hour (cron "7 */N * * *")."""
     now = now or registry.now()
-    nxt = now.replace(minute=7, second=0, microsecond=0)
-    return nxt if nxt > now else nxt + dt.timedelta(hours=1)
+    n = every_hours()
+    t = now.replace(minute=7, second=0, microsecond=0)
+    while t <= now or t.hour % n:
+        t += dt.timedelta(hours=1)
+    return t

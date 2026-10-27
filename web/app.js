@@ -169,7 +169,7 @@
       ${bl.length ? `<ul class="qblock">${bl.map(b => `<li>${esc(b)}</li>`).join("")}</ul>` : ""}
       <details class="qev"><summary>Evidence and details</summary><dl>${ev.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl></details>
       ${(p.status === "proposed" || (p.status === "blocked" && p.reapproval_required && bl.every(b => String(b).startsWith("Needs a new approval")))) && mode === "approval" ? `<div class="qbtns"><button class="btn" data-dec="0">Reject</button><button class="btn primary" data-dec="1" data-hash="${esc(p.proposal_hash || "")}">${p.status === "blocked" ? "Approve again" : "Approve"}</button></div>` : ""}
-      ${p.status === "approved" && p.approval_expires_at ? `<div class="qnote">Approved; expires ${when(p.approval_expires_at)} if not carried out. The hourly job re-checks everything before sending.</div>` : ""}
+      ${p.status === "approved" && p.approval_expires_at ? `<div class="qnote">Approved; expires ${when(p.approval_expires_at)} if not carried out. The scheduled job (next run ${when(C.next_run)}) re-checks everything before sending.</div>` : ""}
       ${p.status === "proposed" && mode !== "approval" ? `<div class="qnote">${mode === "bounded_auto" ? "Not in your list of automatic actions; switch to Approval mode to approve it." : "Recommend mode: nothing is applied. Switch to Approval mode to approve changes."}</div>` : ""}
     </div>`;
   }
@@ -197,8 +197,8 @@
           ${C.automation_stopped ? `<button class="btn" id="resumeBtn">Resume automation</button>` : `<button class="btn danger" id="stopBtn">Stop automation</button>`}
         </div>
         <p class="ctl-help">${esc((C.modes.find(m => m.id === C.mode) || {}).label || "")}. Last decision run: ${C.last_cycle ? when(C.last_cycle.at) : "not yet"}.</p>
-        ${C.automation_stopped ? `<div class="banner bad"><b>Automation is stopped</b> · requested ${when(C.automation_stopped.requested_at || C.automation_stopped.since)} · ${C.automation_stopped.persisted_at ? "saved" : "NOT confirmed saved"} · ${C.automation_stopped.acknowledged_at ? "seen by the hourly job " + when(C.automation_stopped.acknowledged_at) : "not yet seen by the hourly job (next run at :07)"}. No advertising change is sent while stopped. <b>Your ads are still running</b>; use Emergency pause to stop them.</div>` : ""}
-        ${C.emergency ? (() => { const E = C.emergency_status || {}; return `<div class="banner bad"><b>Emergency pause requested</b> ${when(C.emergency.requested_at || C.emergency.since)} for ${E.campaigns ?? C.emergency.count} campaign${(E.campaigns ?? C.emergency.count) === 1 ? "" : "s"} · ${E.acknowledged_at ? "seen by the hourly job " + when(E.acknowledged_at) : "waiting for the hourly job (next run at :07); nothing has been sent yet"}${C.dry_run ? " · <b>DRY RUN: no pause will be sent</b>" : ""}.<br>Sent ${E.remote_requests_sent || 0} · verified paused ${E.verified || 0} · already paused ${E.already_paused || 0} · failed ${E.failed || 0} · unconfirmed ${(E.uncertain || 0) + (E.accepted_unconfirmed || 0)} · simulated ${E.simulated_dry_run || 0} · waiting ${E.waiting || 0}. Nothing is resumed automatically. <button class="btn sm" id="emClear">Clear latch</button></div>`; })() : ""}
+        ${C.automation_stopped ? `<div class="banner bad"><b>Automation is stopped</b> · requested ${when(C.automation_stopped.requested_at || C.automation_stopped.since)} · ${C.automation_stopped.persisted_at ? "saved" : "NOT confirmed saved"} · ${C.automation_stopped.acknowledged_at ? "seen by the scheduled job " + when(C.automation_stopped.acknowledged_at) : "not yet seen by the scheduled job (next run " + when(C.next_run) + ")"}. No advertising change is sent while stopped. <b>Your ads are still running</b>; use Emergency pause to stop them.</div>` : ""}
+        ${C.emergency ? (() => { const E = C.emergency_status || {}; return `<div class="banner bad"><b>Emergency pause requested</b> ${when(C.emergency.requested_at || C.emergency.since)} for ${E.campaigns ?? C.emergency.count} campaign${(E.campaigns ?? C.emergency.count) === 1 ? "" : "s"} · ${E.acknowledged_at ? "seen by the scheduled job " + when(E.acknowledged_at) : "waiting for the scheduled job (next run " + when(C.next_run) + "); nothing has been sent yet"}${C.dry_run ? " · <b>DRY RUN: no pause will be sent</b>" : ""}.<br>Sent ${E.remote_requests_sent || 0} · verified paused ${E.verified || 0} · already paused ${E.already_paused || 0} · failed ${E.failed || 0} · unconfirmed ${(E.uncertain || 0) + (E.accepted_unconfirmed || 0)} · simulated ${E.simulated_dry_run || 0} · waiting ${E.waiting || 0}. Nothing is resumed automatically. <button class="btn sm" id="emClear">Clear latch</button></div>`; })() : ""}
       </section>
 
       <div class="kpis ov">
@@ -240,7 +240,7 @@
           <div class="row2 umap-ctl"><select aria-label="App for ${esc(u.campaign_name || "")}"><option value="">Choose app…</option>${APPS.map(a => `<option>${esc(a)}</option>`).join("")}</select><button class="btn sm" data-map="1">Map</button><button class="btn sm" data-ign="1">Not ours</button></div></div></div>`).join("")}</div>` : ""}
 
       <div class="h">Performance <small>live data · last ${d.days} days</small></div>
-      ${!d.has_data ? `<div class="banner">No ad performance has been imported. ${C.sources.every(s => ["not_configured", "unsupported"].includes(s.state)) ? "No ad channel has credentials on the hourly job yet." : "Check Data freshness above for each source's state."}</div>` : ""}
+      ${!d.has_data ? `<div class="banner">No ad performance has been imported. ${C.sources.every(s => ["not_configured", "unsupported"].includes(s.state)) ? "No ad channel has credentials on the adbot-hourly job yet." : "Check Data freshness above for each source's state."}</div>` : ""}
       <div class="kpis">
         ${k("Taps / clicks", num(T.taps), delta(T.taps, P.taps))}
         ${k("Installs", num(T.installs), T.cpi != null ? money(T.cpi) + " per install" : T.conversions_other ? num(T.conversions_other) + " Google conversions" : "")}
@@ -253,7 +253,7 @@
         <div class="chart">${lineChart(d.series, ["taps", "installs", "spend"], ["#00C2FF", "#00E5A3", "#FFB020"], "spend")}</div></div>
       ${d.by_app.length ? `<div class="h">By app &amp; channel</div><div class="card list">${d.by_app.map(b => `<div class="item"><span class="dot" style="background:${COLOR[b.app] || "#666"};margin-top:6px"></span><div class="main"><div class="name">${esc(SHORT[b.app] || b.app)} · ${esc(b.channel)}</div><div class="meta">${num(b.taps)} clicks · ${b.channel === "Google Ads" ? num(b.conversions_other) + " conversions" : num(b.installs) + " installs"} · CPT ${money(b.cpt)}</div></div><div class="right">${money(b.spend)}<small>${b.revenue == null ? "revenue not reported" : "ACoS " + (b.acos == null ? "—" : pct(b.acos, 0))}</small></div></div>`).join("")}</div>` : ""}
       <details class="fold emer" id="emFold"><summary class="h">Emergency pause <small>at the next hourly run</small><i class="chev" aria-hidden="true"></i></summary>
-        <div class="card"><p class="sub" style="margin-top:0">Records a pause for every active managed campaign / ad set in scope. Separate from Stop automation. Nothing is paused when you press it: the hourly job sends the pauses at its next run (:07)${C.dry_run ? ", and with DRY RUN on it only simulates them" : ""}, then reports each campaign as verified, failed or unconfirmed. Nothing is resumed automatically.</p>
+        <div class="card"><p class="sub" style="margin-top:0">Records a pause for every active managed campaign / ad set in scope. Separate from Stop automation. Nothing is paused when you press it: the scheduled job sends the pauses at its next run (${when(C.next_run)}, every ${C.every_hours} h)${C.dry_run ? ", and with DRY RUN on it only simulates them" : ""}, then reports each campaign as verified, failed or unconfirmed. Nothing is resumed automatically.</p>
           <div class="row2"><select id="emApp" aria-label="App"><option value="">All apps</option>${APPS.map(a => `<option>${esc(a)}</option>`).join("")}</select><select id="emCh" aria-label="Channel"><option value="">All channels</option><option>Apple Search Ads</option><option>Meta Ads</option><option>Google Ads</option></select></div>
           <label class="sub" for="emConfirm" style="display:block;margin-top:10px">Type PAUSE to confirm</label><input id="emConfirm" class="txt" autocomplete="off" autocapitalize="characters">
           <button class="btn danger block" id="emGo" style="margin-top:10px">Pause managed campaigns</button></div></details>`;
@@ -266,7 +266,7 @@
     $("emGo").onclick = async () => { $("emGo").disabled = true; try { const r = await api("/api/control/emergency-pause", {method: "POST", body: JSON.stringify({app: $("emApp").value, channel: $("emCh").value, confirm: $("emConfirm").value.trim().toUpperCase()})}); after(`${r.requested} pause request(s) recorded. ${r.note}`); } catch (err) { if (err.message !== "signin") toast(err.message); } finally { $("emGo").disabled = false; } };
     document.querySelectorAll("[data-dec]").forEach(b => b.onclick = async () => { const pid = b.closest("[data-pid]").dataset.pid; b.disabled = true;
       const hash = (b.closest("[data-pid]").querySelector("[data-hash]") || {dataset: {}}).dataset.hash;
-      try { await api("/api/proposals/decide", {method: "POST", body: JSON.stringify({proposal_id: pid, approve: b.dataset.dec === "1", expected_hash: hash})}); after(b.dataset.dec === "1" ? "Approved. The hourly job (next run at :07) re-checks it and then " + (C.dry_run ? "simulates it: dry run, nothing is sent." : "sends it.") : "Rejected."); } catch (err) { if (err.message !== "signin") toast(err.message); b.disabled = false; } });
+      try { await api("/api/proposals/decide", {method: "POST", body: JSON.stringify({proposal_id: pid, approve: b.dataset.dec === "1", expected_hash: hash})}); after(b.dataset.dec === "1" ? "Approved. The scheduled job (next run " + when(C.next_run) + ") re-checks it and then " + (C.dry_run ? "simulates it: dry run, nothing is sent." : "sends it.") : "Rejected."); } catch (err) { if (err.message !== "signin") toast(err.message); b.disabled = false; } });
     document.querySelectorAll(".umap").forEach(row => {
       const send = async body => { try { await api("/api/campaigns/map", {method: "POST", body: JSON.stringify({channel: row.dataset.ch, campaign_id: row.dataset.cid, ...body})}); after("Saved. Decisions use it from the next run."); } catch (err) { if (err.message !== "signin") toast(err.message); } };
       row.querySelector("[data-map]").onclick = () => { const a = row.querySelector("select").value; if (!a) { toast("Choose an app first"); return; } send({app: a}); };
@@ -534,7 +534,7 @@
         <div class="idr"><span>Reports</span><b class="${REP_CLS[r.state] || "warn"}">${esc((r.text || r.state).toUpperCase())}</b></div>
         ${r.last_attempt ? `<div class="idnote">Last attempt ${esc(when(r.last_attempt))} · last success ${esc(when(r.last_success))}${bad && r.next_try ? ` · next automatic try ${esc(when(r.next_try))}` : ""}</div>` : ""}
         ${bad && r.message ? `<div class="src-err">${esc(String(r.message).split(" | ")[0])}</div>` : ""}
-        ${r.retry_requested_at ? `<div class="idnote">Retry queued for the hourly job at :07</div>`
+        ${r.retry_requested_at ? `<div class="idnote">Retry queued for the next scheduled run</div>`
           : (bad || r.state === "never_checked") ? `<button class="hx-btn" type="button" data-retry-play style="--h1:#00E5A3;margin-top:8px">Retry reports</button>` : ""}
       </div>`; };
     const srcCard = s => { const st = srcState(s); const sh = s.shared || {}; return `<div class="src ${st}" style="--hue:${PLAT_HUE[s.platform] || "#00C2FF"}">
@@ -557,7 +557,7 @@
     const hhmm = t => new Date(t + (String(t).endsWith("Z") ? "" : "Z")).toLocaleTimeString("en-US", {hour: "numeric", minute: "2-digit"});
     const checkRows = (l, hasId) => {
       if (!hasId) return idRow("Check", null, "ENTER IDS FIRST");
-      if (l.check_requested_at) return `<div class="idr"><span>Check</span><b class="warn">QUEUED</b></div><div class="idnote">Runs on the hourly job at :07${l.check_result ? ` · last: ${esc((CHK[l.check_result] || [])[1] || l.check_result)}` : ""}</div>`;
+      if (l.check_requested_at) return `<div class="idr"><span>Check</span><b class="warn">QUEUED</b></div><div class="idnote">Runs on the next scheduled run${l.check_result ? ` · last: ${esc((CHK[l.check_result] || [])[1] || l.check_result)}` : ""}</div>`;
       if (!l.check_result) return idRow("Check", null, "NOT CHECKED");
       const [cls, txt] = CHK[l.check_result] || ["warn", l.check_result.toUpperCase()];
       const st = l.publication_status && l.publication_status !== "unknown" && l.publication_status !== "not_found" ? (STORE_STATE[l.publication_status] || l.publication_status) : null;
@@ -642,7 +642,7 @@
     });
     document.querySelectorAll("[data-retry-play]").forEach(b => b.onclick = async () => {
       b.disabled = true;
-      try { const r = await api("/api/revenue/retry-play-reports", {method: "POST"}); toast(`Report retry queued for the hourly job (${hhmm(r.next_run)}). Products aren't re-synced.`); load(false, true); }
+      try { const r = await api("/api/revenue/retry-play-reports", {method: "POST"}); toast(`Report retry queued for the scheduled job (${hhmm(r.next_run)}). Products aren't re-synced.`); load(false, true); }
       catch (err) { if (err.message !== "signin") toast(err.message); b.disabled = false; }
     });
     const cb = $("checkIds"); if (cb) cb.onclick = async () => {
@@ -652,7 +652,7 @@
         const r = await api("/api/revenue/check-ids", {method: "POST"});
         const parts = Object.entries(r.checked || {}).map(([p, c]) => `${NAME[p]}: ${Object.entries(c).map(([k, n]) => `${n} ${(CHK[k] || [, k])[1].replace(" ✓", "").toLowerCase()}`).join(", ")}`);
         const q = Object.keys(r.queued || {}).map(p => NAME[p]);
-        if (q.length) parts.push(`${q.join(" + ")} queued for the hourly job (${hhmm(r.next_run)})`);
+        if (q.length) parts.push(`${q.join(" + ")} queued for the scheduled job (${hhmm(r.next_run)})`);
         toast(parts.join(" · ") || "Checked."); load(false, true);
       } catch (err) { if (err.message !== "signin") toast(err.message); cb.disabled = false; cb.textContent = "Check store IDs"; }
     };
@@ -678,7 +678,7 @@
     const RES = {applied: "ok", reconciled_applied: "ok", simulated: "sim", failed: "bad", uncertain: "bad", reconciled_not_applied: "bad", already_done: "ok", skipped: "nil"};
     const sec = (id, title, n, body) => `<details class="fold" id="${id}" ${store.get("adbot-log-" + id, id === "lgDec") ? "open" : ""}><summary class="h">${title} <small>${n}</small><i class="chev" aria-hidden="true"></i></summary>${body}</details>`;
     $("view").innerHTML = `
-      ${d.dry_run ? `<div class="banner warn"><b>Dry run.</b> Changes marked <b>Simulated</b> were never sent to an ad platform. Set DRY_RUN=false on the hourly job and choose Approval or Bounded automatic mode to allow live changes.</div>` : ""}
+      ${d.dry_run ? `<div class="banner warn"><b>Dry run.</b> Changes marked <b>Simulated</b> were never sent to an ad platform. Set DRY_RUN=false on the adbot-hourly job and choose Approval or Bounded automatic mode to allow live changes.</div>` : ""}
       ${sec("lgDec", "Decisions", d.decisions.length, `<div class="card list">${d.decisions.length ? d.decisions.map(x => `<div class="item"><div class="main"><div class="name">${esc(ACT[x.action] || x.action)}: ${esc(x.entity_name || "")}</div><div class="meta">${esc(SHORT[x.app] || x.app || "")} · ${esc(x.channel || "")} · ${esc(KIND[x.kind] || x.kind)} · ${esc(x.reason || "")}${x.outcome && !String(x.outcome).startsWith("claim:") ? " · " + esc(x.outcome) : ""}</div></div><div class="right">${pchip(x.status)}<small>${t(x.outcome_at || x.created_at)}</small></div></div>`).join("") : `<div class="empty">No decisions yet.</div>`}</div>`)}
       ${sec("lgEx", "Executions", d.executions.length, `<div class="card list">${d.executions.length ? d.executions.map(x => `<div class="item"><div class="main"><div class="name">${esc(ACT[x.action] || x.action)}: ${esc(x.entity_name || "")}</div><div class="meta">${esc(x.channel)} · ${x.mode === "live" ? "live" : "simulated"}${x.error ? ` · <span style="color:var(--red)">${esc(x.error)}</span>` : ""}</div></div><div class="right"><span class="schip ${RES[x.result] || "nil"}">${esc(String(x.result).replace(/_/g, " "))}</span><small>${t(x.attempted_at)}</small></div></div>`).join("") : `<div class="empty">Nothing executed yet.</div>`}</div>`)}
       ${sec("lgAl", "Alerts", d.alerts.length, `<div class="card list">${d.alerts.length ? d.alerts.map(a => `<div class="item sev-${SEV[a.severity] || "info"}"><div class="main"><div class="name">${esc(a.title)}</div><div class="meta">${esc(a.category)} · via ${esc(a.transport || "—")}${a.error ? ` · <span style="color:var(--red)">${esc(a.error)}</span>` : ""}</div></div><div class="right"><span class="schip ${DS[a.delivery_status] || "nil"}">${esc(a.delivery_status)}</span><small>${t(a.created_at)}</small></div></div>`).join("") : `<div class="empty">No alerts yet.</div>`}</div>`)}

@@ -5,7 +5,7 @@
 Only the **hourly worker** (`adbot-hourly`, `python dlt_pipeline.py`). The web service never sends an
 advertising change: "Run bot now" is a decision preview (forced dry run, no adapters, no execution step),
 and Stop, Resume, emergency pause and approvals are *records* in the shared database that the worker acts
-on at its next run (hourly at :07 UTC). Nothing on the phone is "immediate".
+on at its next run (every 4 hours at :07 UTC: 00:07, 04:07, 08:07 …; `WORKER_EVERY_HOURS`). Nothing on the phone is "immediate".
 
 A live write needs all of: `DRY_RUN=false` on the worker, a mode that allows the action, a valid bound
 approval, no stop, a held job lease, passing pre-write checks, and the platform credentials. Live
@@ -16,7 +16,7 @@ adapters also refuse every write themselves while `DRY_RUN` is not `false` (defe
 The web service and the worker must use the same MotherDuck database (`MOTHERDUCK_TOKEN`, same
 `MOTHERDUCK_DATABASE`). On Render (`RENDER` is set) or with `ADBOT_ENV=production`, both refuse to run on
 a local DuckDB file (`SharedStorageMissing`; the web API answers 503). The worker writes a heartbeat; the
-Ads tab raises "Hourly job not seen in this database" when it's missing or older than 3 hours, which is how
+Ads tab raises "Scheduled job not seen in this database" when it's missing or older than the run interval plus 1 hour, which is how
 a split between the two services shows up.
 
 ## Stop automation
