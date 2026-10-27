@@ -526,18 +526,39 @@
   const dayAdd = (iso, n) => { const t = new Date(iso + "T00:00:00Z"); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10); };
   const dayLabel = iso => new Date(iso + "T00:00:00Z").toLocaleDateString("en-US", {month: "short", day: "numeric", timeZone: "UTC"});
 
-  function raceData(cmp, apps, metric, range) {
+  const RACE_STORES = [["all", "Both stores"], ["apple_app_store", "App Store"], ["google_play", "Google Play"]];
+  const STORE_NAME = {apple_app_store: "App Store", google_play: "Google Play"};
+  const STORE_HUE = {apple_app_store: "#00C2FF", google_play: "#00E5A3"};
+
+  function raceData(cmp, apps, metric, range, storeKey = "all") {
     const m = RACE_METRIC[metric], end = dayAdd(cmp.today, -1), start = dayAdd(end, -(range - 1)), prevStart = dayAdd(start, -range);
     const days = Array.from({length: range}, (_, i) => dayAdd(start, i));
+    const sumOf = rows => rows.length ? rows.reduce((t, r) => t + r[m.col], 0) : null;
     const lines = apps.map(a => {
-      const rows = cmp.series[a.app_id] || [];
-      const byDay = new Map(rows.filter(r => r[0] >= start && r[0] <= end && r[m.col] != null).map(r => [r[0], r[m.col]]));
-      const prevRows = rows.filter(r => r[0] >= prevStart && r[0] < start && r[m.col] != null);
+      const all = (cmp.series[a.app_id] || []).filter(r => r[m.col] != null);
+      const inRange = all.filter(r => r[0] >= start && r[0] <= end), rows = inRange.filter(r => storeKey === "all" || r[4] === storeKey);
+      const byDay = new Map(); rows.forEach(r => byDay.set(r[0], (byDay.get(r[0]) || 0) + r[m.col]));
+      const prevRows = all.filter(r => r[0] >= prevStart && r[0] < start && (storeKey === "all" || r[4] === storeKey));
       let run = 0; const cum = days.map(d => (run += byDay.get(d) || 0));
-      return {...a, cum, total: byDay.size ? run : null, prev: prevRows.length ? prevRows.reduce((s, r) => s + r[m.col], 0) : null,
+      const byStore = Object.fromEntries(Object.keys(STORE_NAME).map(k => [k, sumOf(inRange.filter(r => r[4] === k))]));
+      return {...a, cum, total: byDay.size ? run : null, prev: sumOf(prevRows), byStore,
               hue: RACE_HUE[a.app_id] || ["#00C2FF", "#E024C3"], short: RACE_NAME[a.app_id] || a.name};
     });
-    return {days, start, end, lines};
+    const storeTotals = Object.fromEntries(Object.keys(STORE_NAME).map(k => [k, lines.some(l => l.byStore[k] != null) ? lines.reduce((t, l) => t + (l.byStore[k] || 0), 0) : null]));
+    return {days, start, end, lines, storeTotals};
+  }
+
+  // App Store vs Google Play for the chosen metric and range. A store with no rows says why, never 0.
+  function raceDuel(rd, metric, cmp) {
+    const m = RACE_METRIC[metric], t = rd.storeTotals, keys = Object.keys(STORE_NAME);
+    const imported = k => (cmp.stores || []).includes(k);
+    const sum = keys.reduce((a, k) => a + (t[k] || 0), 0);
+    const side = k => `<div class="dl-side" style="--sh:${STORE_HUE[k]}"><small>${STORE_NAME[k]}</small>
+        <b>${t[k] != null ? esc(m.fmt(t[k])) : `<span class="muted">${imported(k) ? esc(m.none) : "Not imported yet"}</span>`}</b>
+        ${t[k] != null && sum > 0 ? `<em>${pct(t[k] / sum, 0)}</em>` : ""}</div>`;
+    const bar = sum > 0 ? `<div class="dl-bar" role="img" aria-label="${keys.map(k => `${STORE_NAME[k]} ${t[k] != null ? m.fmt(t[k]) : "no data"}`).join(", ")}">
+        ${keys.map(k => `<i style="--sh:${STORE_HUE[k]};flex-grow:${t[k] || 0}"></i>`).join("")}</div>` : `<div class="dl-bar empty"></div>`;
+    return `<div class="duel">${side(keys[0])}<span class="dl-vs">vs</span>${side(keys[1])}${bar}</div>`;
   }
 
   function raceSvg(rd, metric, animate) {
@@ -576,7 +597,7 @@
       <rect class="rc-hit" x="${L}" y="${T}" width="${iw}" height="${ih}" fill="transparent"/></svg>`;
   }
 
-  function raceStandings(rd, metric) {
+  function raceStandings(rd, metric, storeKey = "all") {
     const m = RACE_METRIC[metric];
     const sum = rd.lines.reduce((s, l) => s + (l.total || 0), 0);
     const ranked = rd.lines.filter(l => l.total != null).sort((a, b) => b.total - a.total);
@@ -591,25 +612,43 @@
         <span class="rs-rank">${i + 1}</span>
         <div class="rs-main"><div class="rs-top"><b>${esc(l.short)}</b>${l.extra ? `<small class="rs-tag">tracked, not managed</small>` : ""}<span class="rs-v">${esc(m.fmt(l.total))}</span></div>
           <div class="rs-bar"><i></i></div>
-          <div class="rs-sub">${pct(share, 0)} of the total${delta ? " · " : ""}${delta}</div></div></li>`;
+          <div class="rs-sub">${pct(share, 0)} of the total${delta ? " · " : ""}${delta}</div>
+          ${storeKey === "all" ? `<div class="rs-split">${Object.keys(STORE_NAME).map(k => `<span style="--sh:${STORE_HUE[k]}"><i></i>${STORE_NAME[k]} <b>${l.byStore[k] != null ? esc(m.fmt(l.byStore[k])) : "—"}</b></span>`).join("")}</div>` : ""}</div></li>`;
     }).join("") + idleRow;
+  }
+
+  // the one-glance summary in the App Race header, shown while the section is folded
+  function raceBrief(rd, st, cmp) {
+    const el = $("raceBrief"); if (!el) return;
+    const m = RACE_METRIC[st.metric], lead = rd.lines.filter(l => l.total != null).sort((a, b) => b.total - a.total)[0];
+    const t = rd.storeTotals, imported = k => (cmp.stores || []).includes(k);
+    const val = k => t[k] != null ? `<b>${esc(m.fmt(t[k]))}</b>` : `<b class="nil">${imported(k) ? "NONE" : "NOT IMPORTED"}</b>`;
+    const scope = `${m.label.toLowerCase()} · ${st.range} days${st.store !== "all" ? " · " + STORE_NAME[st.store] : ""}`;
+    el.innerHTML = `<div class="idr"><span>Leader</span>${lead ? `<b style="color:${lead.hue[1]}">${esc(lead.short)} · ${esc(m.fmt(lead.total))}</b>` : `<b class="nil">${esc(m.none.toUpperCase())}</b>`}</div>
+      <div class="idr"><span>App Store</span>${val("apple_app_store")}</div>
+      <div class="idr"><span>Google Play</span>${val("google_play")}</div>
+      <div class="idnote">${esc(scope)}</div>`;
   }
 
   function mountRace(d, animate) {
     const host = $("race"); if (!host || !d.compare) return;
-    const cmp = d.compare, st = {metric: "proceeds", range: 30, ...store.get("adbot-race", {})};
+    const cmp = d.compare, st = {metric: "proceeds", range: 30, store: "all", ...store.get("adbot-race", {})};
     if (![7, 30, 90].includes(+st.range)) st.range = 30;
     if (!RACE_METRIC[st.metric]) st.metric = "proceeds";
+    if (!RACE_STORES.some(([k]) => k === st.store)) st.store = "all";
     const apps = d.apps.map(a => ({app_id: a.app_id, name: a.name})).concat((cmp.extra_apps || []).map(a => ({...a, extra: true})));
-    const rd = raceData(cmp, apps, st.metric, st.range);
-    const hasPlay = d.sources.some(s => s.platform === "google_play" && (s.rows || {}).sales_reports);
+    const rd = raceData(cmp, apps, st.metric, st.range, st.store);
+    const hasPlay = (cmp.stores || []).includes("google_play");
+    raceBrief(rd, st, cmp);
     const seg = (key, opts) => `<div class="rc-seg" role="group">${opts.map(([v, t]) => `<button type="button" data-${key}="${v}" aria-pressed="${String(st[key]) === String(v)}">${t}</button>`).join("")}</div>`;
-    host.innerHTML = `<div class="rc-ctl">${seg("metric", Object.entries(RACE_METRIC).map(([k, v]) => [k, v.label]))}${seg("range", [[7, "7 days"], [30, "30 days"], [90, "90 days"]])}</div>
+    host.innerHTML = `<div class="rc-ctl">${seg("metric", Object.entries(RACE_METRIC).map(([k, v]) => [k, v.label]))}${seg("range", [[7, "7 days"], [30, "30 days"], [90, "90 days"]])}${seg("store", RACE_STORES)}</div>
       <div class="rc-stage"><div class="rc-read" aria-live="polite" hidden></div>${raceSvg(rd, st.metric, animate)}</div>
-      <ol class="rs-list">${raceStandings(rd, st.metric)}</ol>
-      <p class="rc-note">Running totals from App Store${hasPlay ? " and Google Play" : ""} sales reports${cmp.estimated ? ", estimated until Apple's finance reports settle" : ""}. ${!hasPlay ? "Google Play isn't included until its reports import. " : ""}${st.metric === "proceeds" ? "Proceeds in USD only" + (cmp.other_currency_rows ? ` (${num(cmp.other_currency_rows)} rows in other currencies left out)` : "") + ". " : ""}${(cmp.extra_apps || []).length ? "VitalSync is compared here but isn't run by the ad bot." : ""}</p>`;
+      ${st.store === "all" ? raceDuel(rd, st.metric, cmp) : ""}
+      <ol class="rs-list">${raceStandings(rd, st.metric, st.store)}</ol>
+      <p class="rc-note">Running totals from App Store${hasPlay ? " and Google Play" : ""} reports${cmp.estimated ? ", estimated until the stores' finance reports settle" : ""}. ${!hasPlay ? "Google Play figures appear once its reports import. " : ""}${st.metric === "downloads" ? "Downloads are first-time downloads on the App Store and daily user installs on Google Play. " : ""}${st.metric === "proceeds" ? "Proceeds in USD only" + (cmp.other_currency_rows ? ` (${num(cmp.other_currency_rows)} rows in other currencies left out)` : "") + ". " : ""}${(cmp.extra_apps || []).length ? "VitalSync is compared here but isn't run by the ad bot." : ""}</p>`;
     host.querySelectorAll("[data-metric]").forEach(b => b.onclick = () => { store.set("adbot-race", {...st, metric: b.dataset.metric}); mountRace(d, true); });
     host.querySelectorAll("[data-range]").forEach(b => b.onclick = () => { store.set("adbot-race", {...st, range: +b.dataset.range}); mountRace(d, true); });
+    host.querySelectorAll("[data-store]").forEach(b => b.onclick = () => { store.set("adbot-race", {...st, store: b.dataset.store}); mountRace(d, true); });
     // scrub: drag or hover across the chart to read every app's running total on that day
     const svg = host.querySelector(".rc-svg"), hit = svg.querySelector(".rc-hit"), cross = svg.querySelector(".rc-cross"), vline = svg.querySelector(".rc-vline"), read = host.querySelector(".rc-read");
     const m = RACE_METRIC[st.metric], n = rd.days.length;
@@ -703,7 +742,7 @@
       </div>
 
       <details class="fold hx-fold" id="raceFold" ${store.get("adbot-race-open", true) ? "open" : ""}>
-        <summary class="hx-h"><span>APP RACE</span><small>running totals</small><i class="chev" aria-hidden="true"></i></summary>
+        <summary class="hx-h"><span>APP RACE</span><small>running totals</small><i class="chev" aria-hidden="true"></i><div class="rc-brief" id="raceBrief"></div></summary>
         <section class="race" id="race"></section>
       </details>
 

@@ -43,7 +43,8 @@ class Compare(unittest.TestCase):
         self.add(3, "restore", 4, 0, app_id="rnr_pro", parent="rnr")          # restores are not paid units
         self.add(3, "redownload", 9, 0, app_id="rnr_pro", sku="rnr")          # nor are re-downloads new downloads
         out = compare.compare(self.con, today=TODAY)
-        day, downloads, paid, proceeds = out["series"]["rnr_pro"][0]
+        day, downloads, paid, proceeds, store_ = out["series"]["rnr_pro"][0]
+        self.assertEqual(store_, "apple_app_store")
         self.assertEqual((day, downloads, paid), ("2026-10-24", 5, 3))
         self.assertAlmostEqual(proceeds, 98.97, places=2)
         self.assertTrue(out["estimated"])
@@ -54,7 +55,7 @@ class Compare(unittest.TestCase):
         self.add(2, "subscription", 1, 4.24, sku="vitalsync.healthtracker.premium_monthly", parent="vitalsync-health-tracker-00")
         self.add(5, "download", 3, sku="some-other-app")
         out = compare.compare(self.con, today=TODAY)
-        self.assertEqual(out["series"]["vitalsync"], [["2026-10-25", 1, 1, 4.24]])   # app row + its IAP row, one app
+        self.assertEqual(out["series"]["vitalsync"], [["2026-10-25", 1, 1, 4.24, "apple_app_store"]])   # app row + its IAP row, one app
         self.assertIn({"app_id": "vitalsync", "name": "VitalSync Health Tracker", "sku": "vitalsync-health-tracker-00"}, out["extra_apps"])
         self.assertIn("sku:some-other-app", out["series"])
 
@@ -71,6 +72,17 @@ class Compare(unittest.TestCase):
         self.assertEqual(row[1], 2)
         self.assertIsNone(row[2])                                               # no paid rows: unavailable
         self.assertIsNone(row[3])                                               # no proceeds: unavailable, not $0
+
+    def test_stores_kept_apart(self):
+        self.add(1, "download", 4, app_id="rnr_pro")
+        self.con.execute(f"INSERT INTO {S}.sales_reports ({', '.join(COLS)}) VALUES ({', '.join('?' * len(COLS))})",
+                         ["gp1", "google_play", "rnr_pro", "com.alexkorir.rapidnursingreview", "XXX", TODAY - dt.timedelta(days=1),
+                          TODAY - dt.timedelta(days=1), "estimated", "download", 6, None, None, "com.alexkorir.rapidnursingreview", None,
+                          dt.datetime(2026, 10, 27), "Google Play statistics date", "r2"])
+        out = compare.compare(self.con, today=TODAY)
+        self.assertEqual(sorted(r[4] for r in out["series"]["rnr_pro"]), ["apple_app_store", "google_play"])
+        self.assertEqual({r[4]: r[1] for r in out["series"]["rnr_pro"]}, {"apple_app_store": 4, "google_play": 6})
+        self.assertEqual(out["stores"], ["apple_app_store", "google_play"])
 
     def test_window(self):
         self.add(compare.WINDOW_DAYS + 1, "download", 7, app_id="rnr_pro")     # older than the window: left out
