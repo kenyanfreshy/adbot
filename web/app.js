@@ -702,8 +702,10 @@
         ${tile("AD SPEND · MONTH", "#FFB020", "ad accounts not synced")}
       </div>
 
-      <div class="hx-h"><span>APP RACE</span><small>running totals</small></div>
-      <section class="race" id="race"></section>
+      <details class="fold hx-fold" id="raceFold" ${store.get("adbot-race-open", true) ? "open" : ""}>
+        <summary class="hx-h"><span>APP RACE</span><small>running totals</small><i class="chev" aria-hidden="true"></i></summary>
+        <section class="race" id="race"></section>
+      </details>
 
       <div class="hx-h"><span>STORE FEEDS</span><small>read-only</small></div>
       <div class="src-grid">${stores.map(srcCard).join("")}</div>
@@ -748,7 +750,7 @@
       </details>
       <p class="hx-foot">READ-ONLY · NOTHING HERE CHANGES STORE PRODUCTS, PRICES OR PURCHASES</p>
     </div>`;
-    mountRace(d, true);
+    mountRace(d, store.get("adbot-race-open", true));
     document.querySelectorAll("[data-edit]").forEach(b => b.onclick = e => {
       e.preventDefault(); e.stopPropagation();   // the button sits in the card header: don't also fold/unfold the card
       const f = document.querySelector(`.idform[data-app="${b.dataset.edit}"]`); f.hidden = !f.hidden; b.textContent = f.hidden ? "Edit IDs" : "Close";
@@ -771,6 +773,8 @@
       } catch (err) { if (err.message !== "signin") toast(err.message); cb.disabled = false; cb.textContent = "Check store IDs"; }
     };
     const af = $("adsFold"); if (af) af.addEventListener("toggle", () => store.set("adbot-adplat-open", af.open));
+    // App Race folds; opening it replays the draw-in so the lines aren't already settled out of sight
+    const rf = $("raceFold"); if (rf) rf.addEventListener("toggle", () => { store.set("adbot-race-open", rf.open); if (rf.open) mountRace(d, true); });
     document.querySelectorAll("details.appfold").forEach(dd => dd.addEventListener("toggle", () => {
       const m = store.get("adbot-apps-open", {}); m[dd.dataset.app] = dd.open; store.set("adbot-apps-open", m);
     }));
