@@ -781,11 +781,9 @@ def ad_sources() -> dict:
 
 
 def configured_sources(sources: dict | None = None) -> dict:
-    """Which sources have credentials on this process (TikTok has no integration, so it's reported as unsupported)."""
+    """Which ad sources have credentials on this process."""
     sources = sources or ad_sources()
-    out = {name: bool(src.configured) for name, src in sources.items()}
-    out["TikTok Ads"] = bool(os.getenv("TIKTOK_ACCESS_TOKEN"))
-    return out
+    return {name: bool(src.configured) for name, src in sources.items()}
 
 
 def build_jobs(start: dt.date, end: dt.date, rules: Rules, sources: dict | None = None) -> list:

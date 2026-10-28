@@ -30,7 +30,7 @@ These come from official documentation. Exact field mappings are confirmed again
 | Google Play products, base plans, offers, prices | Android Publisher API `monetization.subscriptions.list`, `…basePlans.offers.list`, `monetization.onetimeproducts.list` | This is how Android prices and product types get verified. |
 | Individual purchase verification | `purchases.subscriptionsv2.get`, `purchases.products.get` plus Real-time Developer Notifications (Pub/Sub) | Read-only: the system never acknowledges, cancels or refunds. |
 | Crashes and ANRs | Play Developer **Reporting** API | This API covers vitals only, **not** money. |
-| Ads | Apple Ads Campaign Management API v5, Google Ads API, Meta Marketing API, TikTok Marketing API | Each has its own attribution model. Results are never summed across platforms without deduplication. |
+| Ads | Apple Ads Campaign Management API v5, Google Ads API, Meta Marketing API (TikTok was dropped on 2026-10-28) | Each has its own attribution model. Results are never summed across platforms without deduplication. |
 
 Official references:
 [Download sales and trends reports](https://developer.apple.com/documentation/appstoreconnectapi/get-v1-salesreports) ·
@@ -48,7 +48,7 @@ Official references:
 | D | Google Play connector: monetization API for products, types and regional prices (dated history); bucket reports for estimated sales and earnings | **Built and tested offline; first live run on the next hourly job** |
 | E | Normalization and reconciliation (estimated vs finalized, refunds, FX with documented rates) and the metric definitions | Needs C or D data |
 | F | Dashboard: executive overview, app and store comparison, subscriptions, lifetime purchases, reconciliation | |
-| G | Ad spend into `revenue.advertising_spend` (reusing the existing ad connectors), plus TikTok | |
+| G | Ad spend into `revenue.advertising_spend` (reusing the existing ad connectors) | |
 | H | $1,000/month budget engine and kill switch (global, per platform, per app); pause verification; "Pause unconfirmed" alerts | Live changes only after your explicit approval |
 | I | AI analysis. Recommendations go through the risk engine and human approval; the AI never calculates money or executes anything. | |
 | J | Security audit, full test pass, production-readiness review | |

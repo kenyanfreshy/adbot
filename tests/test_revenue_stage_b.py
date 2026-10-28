@@ -64,6 +64,18 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(revenue.ensure(con)["migrations"], [])
         self.assertEqual(one(con, f"SELECT max(version) FROM {S}.schema_migrations"), schema.LATEST)
 
+    def test_upgrade_removes_tiktok(self):
+        # older databases allowed 'tiktok_ads' and were seeded with a TikTok account; migration 7 removes it
+        con = duckdb.connect(":memory:")
+        con.execute(f"CREATE SCHEMA {S}")
+        con.execute(f"CREATE TABLE {S}.store_accounts (account_id VARCHAR, platform VARCHAR)")
+        con.execute(f"INSERT INTO {S}.store_accounts VALUES ('tiktok_ads_reporting', 'tiktok_ads'), ('meta_ads_reporting', 'meta_ads')")
+        for sql in next(m for m in schema.MIGRATIONS if m[0] == 7)[2]:
+            con.execute(sql)
+        self.assertEqual(con.execute(f"SELECT platform FROM {S}.store_accounts").fetchall(), [("meta_ads",)])
+        self.assertNotIn("tiktok_ads", schema.PLATFORMS)
+        self.assertNotIn("tiktok_ads", {s["platform"] for s in registry.registry(fresh(), environ={})["sources"]})
+
     def test_money_columns_are_decimal_not_double(self):
         con = fresh()
         bad = con.execute("SELECT table_name, column_name, data_type FROM information_schema.columns "

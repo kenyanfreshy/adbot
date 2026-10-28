@@ -27,7 +27,7 @@ import datetime as dt
 
 SCHEMA = "revenue"
 
-PLATFORMS = ("apple_app_store", "google_play", "apple_ads", "google_ads", "meta_ads", "tiktok_ads")
+PLATFORMS = ("apple_app_store", "google_play", "apple_ads", "google_ads", "meta_ads")
 STORES = ("apple_app_store", "google_play")
 DATA_STATUS = ("estimated", "finalized")
 
@@ -267,7 +267,7 @@ MIGRATIONS: list[tuple[int, str, list[str]]] = [
         f"""CREATE TABLE IF NOT EXISTS {SCHEMA}.attribution_records (
             record_key          VARCHAR PRIMARY KEY,
             platform            VARCHAR NOT NULL CHECK (platform IN ({_P})),
-            attribution_system  VARCHAR NOT NULL,     -- 'apple_ads_attribution', 'skadnetwork', 'google_ads', 'meta', 'tiktok'
+            attribution_system  VARCHAR NOT NULL,     -- 'apple_ads_attribution', 'skadnetwork', 'google_ads', 'meta'
             campaign_id         VARCHAR,
             app_id              VARCHAR,
             event_date          DATE NOT NULL,
@@ -361,6 +361,10 @@ MIGRATIONS.append((6, "Google Play: report sync tracked apart from product sync"
     f"ALTER TABLE {SCHEMA}.synchronization_jobs ADD COLUMN IF NOT EXISTS outcome VARCHAR",
     # set by "Retry reports" in the phone app; the next hourly run retries reports only, then clears it
     f"ALTER TABLE {SCHEMA}.store_accounts ADD COLUMN IF NOT EXISTS retry_requested_at TIMESTAMP",
+]))
+
+MIGRATIONS.append((7, "TikTok Ads removed from AdBot", [
+    f"DELETE FROM {SCHEMA}.store_accounts WHERE platform = 'tiktok_ads'",
 ]))
 
 LATEST = max(v for v, _, _ in MIGRATIONS)

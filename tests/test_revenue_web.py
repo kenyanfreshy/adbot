@@ -176,7 +176,7 @@ class ControlWebTests(unittest.TestCase):
         self.assertEqual(status, 200, d)
         self.assertTrue(d["dry_run"])
         states = {s["source"]: s["state"] for s in d["sources"]}
-        self.assertEqual(states["TikTok Ads"], "unsupported")
+        self.assertNotIn("TikTok Ads", states)
         self.assertIn(states["Meta Ads"], ("not_configured", "connected_not_imported", "imported_zero", "imported_activity", "partial", "stale", "failed"))
         self.assertIsNone(d["kpis"]["revenue"])                 # nothing reported: unknown, not $0
         self.assertTrue(any("monthly budget" in e.lower() for e in d["budget_errors"]))

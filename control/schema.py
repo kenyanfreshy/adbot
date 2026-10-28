@@ -28,7 +28,7 @@ MIGRATIONS: list[tuple[int, str, list[str]]] = [
     (1, "control plane: sources, imports, campaign map, proposals, executions, alerts, locks", [
         f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}",
         f"""CREATE TABLE IF NOT EXISTS {SCHEMA}.source_state (
-            source                VARCHAR PRIMARY KEY,   -- 'Apple Search Ads', 'Meta Ads', 'Google Ads', 'TikTok Ads'
+            source                VARCHAR PRIMARY KEY,   -- 'Apple Search Ads', 'Meta Ads', 'Google Ads'
             configured            BOOLEAN NOT NULL DEFAULT FALSE,
             supported             BOOLEAN NOT NULL DEFAULT TRUE,
             accounts              VARCHAR,               -- comma-separated account ids (not secrets)
@@ -244,6 +244,10 @@ MIGRATIONS.append((2, "execution lifecycle: bound approvals, verified status, in
         worker         VARCHAR NOT NULL,
         created_at     TIMESTAMP NOT NULL,
         state          VARCHAR NOT NULL CHECK (state IN ('held', 'consumed', 'released')))""",
+]))
+
+MIGRATIONS.append((3, "TikTok Ads removed from AdBot", [
+    f"DELETE FROM {SCHEMA}.source_state WHERE source = 'TikTok Ads'",
 ]))
 
 LATEST = max(v for v, _, _ in MIGRATIONS)

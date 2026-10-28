@@ -27,7 +27,7 @@ Every scheduled run (every 4 hours at :07 UTC) goes DATA → QUALITY → RECOMME
 
 **Stop automation** is saved to the shared database at once (and read back); the scheduled worker confirms it at its next run and re-checks it before every advertising write, and waiting approvals are withdrawn. **Resume** (password) un-pauses nothing and leaves earlier approvals blocked until approved again. **Emergency pause** (type PAUSE) records one pause per managed campaign in scope; the worker sends them at its next run (every 4 hours at :07 UTC, so up to about 4 hours later) and only when DRY_RUN is off. Each stage (requested, saved, seen by the worker, sent, verified / failed) is shown on the Ads tab. Nothing is ever resumed automatically. Details: `docs/CONTROL_PLANE.md`; revenue bases: `docs/MEASUREMENT.md`.
 
-**Data states** per source: not configured, unsupported, connected/not imported, imported (zero activity), imported (activity), partial, stale, failed. Missing revenue, installs or values are shown as unavailable, never 0. Apple Ads reports no revenue; Google conversions are not installs; TikTok is not integrated.
+**Data states** per source: not configured, unsupported, connected/not imported, imported (zero activity), imported (activity), partial, stale, failed. Missing revenue, installs or values are shown as unavailable, never 0. Apple Ads reports no revenue; Google conversions are not installs.
 
 **Budget policy** (Rules tab): no budget proposals until you set `monthly_budget`, `app_monthly` allocations and `campaign_daily_max`. Daily allowance = (allocation × (1 − reserve) − month-to-date spend) ÷ days left. Rebalancing is blocked without reported revenue, enough spend and conversions.
 

@@ -10,7 +10,7 @@ Facts behind it (official docs; re-check before enabling live writes):
     event is set up; installs only when app install events are tracked.
   * Google Ads API reports metrics.conversions for whatever conversion actions the account counts
     (not necessarily installs) and metrics.conversions_value as configured, in customer.currency_code.
-  * TikTok Ads: no AdBot integration exists yet.
+TikTok Ads is not part of AdBot (removed 2026-10-28 after TikTok declined the developer app).
 """
 from __future__ import annotations
 
@@ -46,12 +46,6 @@ CHANNELS = {
         "rules": {"keyword": ["cpt_ceiling", "no_conversions_after_clicks", "no_conversions_after_spend", "acos_ceiling"],
                   "app_campaign": ["no_conversions_after_spend", "acos_ceiling"]},
         "creds": ["GOOGLE_ADS_CLIENT_ID", "GOOGLE_ADS_CLIENT_SECRET", "GOOGLE_ADS_REFRESH_TOKEN", "GOOGLE_ADS_CUSTOMER_IDS"],
-    },
-    "TikTok Ads": {
-        "platform": "tiktok_ads", "supported": False,
-        "click_label": "clicks", "conversion_label": "conversions", "conversion_is_install": False,
-        "revenue": "none", "maturity_days": 3, "actions": {}, "budget_entity": None, "rules": {},
-        "creds": ["TIKTOK_ACCESS_TOKEN", "TIKTOK_ADVERTISER_IDS"],
     },
 }
 

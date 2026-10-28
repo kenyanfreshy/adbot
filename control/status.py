@@ -4,7 +4,7 @@ One status model for every data source (ad platforms and app stores).
 A source is in exactly one of these states:
 
   not_configured           no credentials / settings on the job that imports it
-  unsupported              no integration exists for it in AdBot (e.g. TikTok Ads today)
+  unsupported              no integration exists for it in AdBot
   connected_not_imported   the platform accepted the credentials, but no import has finished yet
   imported_zero            the last import finished and the platform reported no activity
   imported_activity        the last import finished with impressions, clicks, installs or spend
