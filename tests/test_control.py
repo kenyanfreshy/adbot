@@ -137,7 +137,7 @@ class IngestTests(unittest.TestCase):
         self.assertEqual(st["Apple Search Ads"]["state"], "imported_zero")       # finished, nothing there
         self.assertEqual(st["Meta Ads"]["state"], "partial")                    # one account failed
         self.assertEqual(st["Google Ads"]["state"], "not_configured")
-        self.assertEqual(st["TikTok Ads"]["state"], "unsupported")
+        self.assertNotIn("TikTok Ads", st)                                       # removed from AdBot
         msgs = " ".join(str(x[5]) for x in con.execute("SELECT * FROM control.import_runs").fetchall())
         self.assertNotIn("abcdefghijklmnopqrstuvwxyz0123456789", msgs)          # tokens scrubbed from messages
         self.assertIn("redacted", con.execute("SELECT message FROM control.source_state WHERE source = 'Meta Ads'").fetchone()[0])
@@ -833,15 +833,16 @@ class MigrationTests(unittest.TestCase):
     def test_existing_rows_preserved_and_failed_migration_rolls_back(self):
         from control import schema
         con = duckdb.connect(":memory:")
-        m2 = schema.MIGRATIONS.pop()
+        later = [m for m in schema.MIGRATIONS if m[0] >= 2]            # start from a version-1 database
+        del schema.MIGRATIONS[1:]
         try:
             schema.ensure_schema(con)
         finally:
-            schema.MIGRATIONS.append(m2)
+            schema.MIGRATIONS.extend(later)
         con.execute("INSERT INTO control.proposals (proposal_id, fingerprint, kind, created_at, entity_key, action, status) "
                     "VALUES ('p1', 'f', 'optimization', TIMESTAMP '2026-10-01 00:00:00', 'k', 'pause_keyword', 'applied')")
         con.execute("INSERT INTO control.executions VALUES ('e1', 'p1', TIMESTAMP '2026-10-01 00:00:00', 'live', NULL, 'applied', NULL, NULL)")
-        self.assertEqual(schema.ensure_schema(con), [2])
+        self.assertEqual(schema.ensure_schema(con), [m[0] for m in later])
         self.assertEqual(schema.ensure_schema(con), [])                     # idempotent on restart
         self.assertEqual(con.execute("SELECT status FROM control.proposals").fetchall(), [("verified",)])
         self.assertEqual(con.execute("SELECT result FROM control.executions").fetchall(), [("applied",)])

@@ -504,8 +504,8 @@
   }
 
   /* ---------- Revenue: futurist command deck (Stage B: registry + data sources; numbers arrive once store reports are imported) ---------- */
-  const PLAT = {apple_app_store: "App Store", google_play: "Google Play", apple_ads: "Apple Ads", google_ads: "Google Ads", meta_ads: "Meta Ads", tiktok_ads: "TikTok Ads"};
-  const PLAT_HUE = {apple_app_store: "#00C2FF", google_play: "#00E5A3", apple_ads: "#C7D2FE", google_ads: "#4F8CFF", meta_ads: "#7C6CFF", tiktok_ads: "#FF2E88"};
+  const PLAT = {apple_app_store: "App Store", google_play: "Google Play", apple_ads: "Apple Ads", google_ads: "Google Ads", meta_ads: "Meta Ads"};
+  const PLAT_HUE = {apple_app_store: "#00C2FF", google_play: "#00E5A3", apple_ads: "#C7D2FE", google_ads: "#4F8CFF", meta_ads: "#7C6CFF"};
   const PLAN = {monthly: "Monthly", three_month: "3-month pass", annual: "Annual", lifetime: "Lifetime", other: "Other"};
   const TYPE = {unverified: "type not verified", auto_renewable_subscription: "auto-renewing", non_renewing_subscription: "non-renewing",
                 non_consumable: "one-time", consumable: "consumable", one_time_product: "one-time"};

@@ -65,8 +65,6 @@ ACCOUNTS = [
      ["GOOGLE_ADS_CLIENT_ID", "GOOGLE_ADS_CLIENT_SECRET", "GOOGLE_ADS_REFRESH_TOKEN", "GOOGLE_ADS_CUSTOMER_IDS"]),
     ("meta_ads_reporting", "meta_ads", "Meta Ads (Facebook + Instagram)", "reporting",
      ["META_ACCESS_TOKEN", "META_AD_ACCOUNT_IDS"]),
-    ("tiktok_ads_reporting", "tiktok_ads", "TikTok Ads", "reporting",
-     ["TIKTOK_ACCESS_TOKEN", "TIKTOK_ADVERTISER_IDS"]),
 ]
 
 _APPLE_ID = re.compile(r"^[0-9]{6,12}$")
