@@ -594,11 +594,29 @@
       const prevRows = all.filter(r => r[0] >= prevStart && r[0] < start && (storeKey === "all" || r[4] === storeKey));
       let run = 0; const cum = days.map(d => (run += byDay.get(d) || 0));
       const byStore = Object.fromEntries(Object.keys(STORE_NAME).map(k => [k, sumOf(inRange.filter(r => r[4] === k))]));
-      return {...a, cum, total: byDay.size ? run : null, prev: sumOf(prevRows), byStore,
+      // the same running total, one per store (for the single-app graph)
+      const cumByStore = Object.fromEntries(Object.keys(STORE_NAME).map(k => {
+        const m2 = new Map(); inRange.filter(r => r[4] === k).forEach(r => m2.set(r[0], (m2.get(r[0]) || 0) + r[m.col]));
+        let s2 = 0; return [k, days.map(d => (s2 += m2.get(d) || 0))];
+      }));
+      return {...a, cum, cumByStore, total: byDay.size ? run : null, prev: sumOf(prevRows), byStore,
               hue: RACE_HUE[a.app_id] || ["#00C2FF", "#E024C3"], short: RACE_NAME[a.app_id] || a.name};
     });
     const storeTotals = Object.fromEntries(Object.keys(STORE_NAME).map(k => [k, lines.some(l => l.byStore[k] != null) ? lines.reduce((t, l) => t + (l.byStore[k] || 0), 0) : null]));
     return {days, start, end, lines, storeTotals};
+  }
+
+  // One app's own graph: its running total, plus one line per store when both stores are shown.
+  // Same shape as raceData's result, so the chart, scrub readout and store duel work unchanged.
+  function raceFocus(rd, appId, storeKey) {
+    const l = rd.lines.find(x => x.app_id === appId); if (!l) return rd;
+    const lines = [{...l, short: storeKey === "all" ? "Total" : STORE_NAME[storeKey]}];
+    // per-store lines only when both stores have rows: with one store, its line would just repeat the total
+    const withRows = Object.keys(STORE_NAME).filter(k => l.byStore[k] != null);
+    if (storeKey === "all" && withRows.length > 1) withRows.forEach(k => {
+      lines.push({app_id: `${appId}:${k}`, short: STORE_NAME[k], cum: l.cumByStore[k], total: l.byStore[k], prev: null, byStore: {}, hue: [STORE_HUE[k], STORE_HUE[k]]});
+    });
+    return {...rd, lines, storeTotals: {...l.byStore}, focus: l};
   }
 
   // App Store vs Google Play for the chosen metric and range. A store with no rows says why, never 0.
@@ -643,14 +661,14 @@
     }).join("");
     const empty = !leader ? `<text x="${L + iw / 2}" y="${T + ih / 2 - 4}" text-anchor="middle" class="rc-empty">${esc(m.none)} recorded</text>
       <text x="${L + iw / 2}" y="${T + ih / 2 + 14}" text-anchor="middle" class="rc-empty2">${esc(dayLabel(rd.start))} – ${esc(dayLabel(rd.end))}</text>` : "";
-    return `<svg class="rc-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="Running ${esc(m.label.toLowerCase())} per app, ${esc(dayLabel(rd.start))} to ${esc(dayLabel(rd.end))}">
+    return `<svg class="rc-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="Running ${esc(m.label.toLowerCase())} ${rd.focus ? "for " + esc(rd.focus.short) + (rd.lines.length > 1 ? ", total and per store" : "") : "per app"}, ${esc(dayLabel(rd.start))} to ${esc(dayLabel(rd.end))}">
       <defs>${defs}<filter id="rcglow" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="2.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
       ${grid}${ticks}${paths}${empty}
       <g class="rc-cross" hidden><line class="rc-vline" y1="${T}" y2="${T + ih}"/></g>
       <rect class="rc-hit" x="${L}" y="${T}" width="${iw}" height="${ih}" fill="transparent"/></svg>`;
   }
 
-  function raceStandings(rd, metric, storeKey = "all") {
+  function raceStandings(rd, metric, storeKey = "all", view = "all") {
     const m = RACE_METRIC[metric];
     const sum = rd.lines.reduce((s, l) => s + (l.total || 0), 0);
     const ranked = rd.lines.filter(l => l.total != null).sort((a, b) => b.total - a.total);
@@ -661,7 +679,7 @@
       const share = sum > 0 ? l.total / sum : 0;
       const delta = l.prev == null ? `<em class="new">none in the previous ${rd.days.length} days</em>`
         : l.prev === 0 ? "" : (() => { const ch = (l.total - l.prev) / Math.abs(l.prev); return `<em class="${ch >= 0 ? "up" : "down"}">${ch >= 0 ? "▲" : "▼"} ${pct(Math.abs(ch), 0)} vs previous ${rd.days.length} days</em>`; })();
-      return `<li class="rs" style="--h1:${l.hue[0]};--h2:${l.hue[1]};--w:${(share * 100).toFixed(1)}%">
+      return `<li class="rs${view === l.app_id ? " on" : ""}" data-pick="${esc(l.app_id)}" style="--h1:${l.hue[0]};--h2:${l.hue[1]};--w:${(share * 100).toFixed(1)}%">
         <span class="rs-rank">${i + 1}</span>
         <div class="rs-main"><div class="rs-top"><b>${esc(l.short)}</b>${l.extra ? `<small class="rs-tag">tracked, not managed</small>` : ""}<span class="rs-v">${esc(m.fmt(l.total))}</span></div>
           <div class="rs-bar"><i></i></div>
@@ -691,27 +709,44 @@
     if (!RACE_STORES.some(([k]) => k === st.store)) st.store = "all";
     const apps = d.apps.map(a => ({app_id: a.app_id, name: a.name})).concat((cmp.extra_apps || []).map(a => ({...a, extra: true})));
     const rd = raceData(cmp, apps, st.metric, st.range, st.store);
+    // graph selector: "all" = every app on one chart; an app_id = that app's own graph
+    const views = ["all", ...apps.map(a => a.app_id)];
+    if (!views.includes(st.view)) st.view = "all";
+    const shown = st.view === "all" ? rd : raceFocus(rd, st.view, st.store);
     const hasPlay = (cmp.stores || []).includes("google_play");
     raceBrief(rd, st, cmp);
     const seg = (key, opts) => `<div class="rc-seg" role="group">${opts.map(([v, t]) => `<button type="button" data-${key}="${v}" aria-pressed="${String(st[key]) === String(v)}">${t}</button>`).join("")}</div>`;
+    const nameOf = v => v === "all" ? "All apps" : (rd.lines.find(l => l.app_id === v) || {}).short || v;
+    const next = views[(views.indexOf(st.view) + 1) % views.length];
+    const viewBar = `<div class="rc-viewrow"><div class="rc-views" role="group" aria-label="Graph">${views.map(v => {
+        const l = rd.lines.find(x => x.app_id === v);
+        return `<button type="button" data-view="${esc(v)}" aria-pressed="${st.view === v}"${l ? ` style="--h1:${l.hue[0]};--h2:${l.hue[1]}"` : ""}>${l ? "<i></i>" : ""}${esc(nameOf(v))}</button>`;
+      }).join("")}</div><button type="button" class="rc-more" data-view="${esc(next)}" aria-label="Next graph: ${esc(nameOf(next))}">More ›</button></div>`;
     host.innerHTML = `<div class="rc-ctl">${seg("metric", Object.entries(RACE_METRIC).map(([k, v]) => [k, v.label]))}${seg("range", [[7, "7 days"], [30, "30 days"], [90, "90 days"]])}${seg("store", RACE_STORES)}</div>
-      <div class="rc-stage"><div class="rc-read" aria-live="polite" hidden></div>${raceSvg(rd, st.metric, animate)}</div>
-      ${st.store === "all" ? raceDuel(rd, st.metric, cmp) : ""}
-      <ol class="rs-list">${raceStandings(rd, st.metric, st.store)}</ol>
+      ${viewBar}
+      ${shown.focus ? `<div class="rc-focus" style="--h1:${shown.focus.hue[0]};--h2:${shown.focus.hue[1]}"><b>${esc(shown.focus.short)}</b><span>${shown.focus.total != null ? esc(RACE_METRIC[st.metric].fmt(shown.focus.total)) : esc(RACE_METRIC[st.metric].none)}</span><small>${st.range} days${st.store !== "all" ? " · " + STORE_NAME[st.store] : ""}</small></div>
+        ${shown.lines.length > 1 ? `<div class="rc-key">${shown.lines.map(l => `<span style="--h1:${l.hue[0]};--h2:${l.hue[1]}"><i></i>${esc(l.short)}</span>`).join("")}</div>` : ""}` : ""}
+      <div class="rc-stage"><div class="rc-read" aria-live="polite" hidden></div>${raceSvg(shown, st.metric, animate)}</div>
+      ${st.store === "all" ? raceDuel(shown, st.metric, cmp) : ""}
+      <ol class="rs-list">${raceStandings(rd, st.metric, st.store, st.view)}</ol>
       <p class="rc-note">Running totals from App Store${hasPlay ? " and Google Play" : ""} reports${cmp.estimated ? ", estimated until the stores' finance reports settle" : ""}. ${!hasPlay ? "Google Play figures appear once its reports import. " : ""}${st.metric === "downloads" ? "Downloads are first-time downloads on the App Store and daily user installs on Google Play. " : ""}${st.metric === "proceeds" ? "Proceeds in USD only" + (cmp.other_currency_rows ? ` (${num(cmp.other_currency_rows)} rows in other currencies left out)` : "") + ". " : ""}${(cmp.extra_apps || []).length ? "VitalSync is compared here but isn't run by the ad bot." : ""}</p>`;
     host.querySelectorAll("[data-metric]").forEach(b => b.onclick = () => { store.set("adbot-race", {...st, metric: b.dataset.metric}); mountRace(d, true); });
     host.querySelectorAll("[data-range]").forEach(b => b.onclick = () => { store.set("adbot-race", {...st, range: +b.dataset.range}); mountRace(d, true); });
     host.querySelectorAll("[data-store]").forEach(b => b.onclick = () => { store.set("adbot-race", {...st, store: b.dataset.store}); mountRace(d, true); });
+    // pick a graph from the selector, "More ›" (next graph), or by tapping an app in the standings
+    const pick = v => { store.set("adbot-race", {...st, view: v}); mountRace(d, true); };
+    host.querySelectorAll("[data-view]").forEach(b => b.onclick = () => pick(b.dataset.view));
+    host.querySelectorAll("[data-pick]").forEach(li => li.onclick = () => pick(st.view === li.dataset.pick ? "all" : li.dataset.pick));
     // scrub: drag or hover across the chart to read every app's running total on that day
     const svg = host.querySelector(".rc-svg"), hit = svg.querySelector(".rc-hit"), cross = svg.querySelector(".rc-cross"), vline = svg.querySelector(".rc-vline"), read = host.querySelector(".rc-read");
-    const m = RACE_METRIC[st.metric], n = rd.days.length;
-    if (!rd.lines.some(l => l.total != null)) return;
+    const m = RACE_METRIC[st.metric], n = shown.days.length;
+    if (!shown.lines.some(l => l.total != null)) return;
     const show = ev => {
       const box = hit.getBoundingClientRect(); if (!box.width) return;
       const f = Math.min(1, Math.max(0, (ev.clientX - box.left) / box.width)), k = Math.round(f * (n - 1));
       const vx = +hit.getAttribute("x") + (+hit.getAttribute("width")) * (n === 1 ? 1 : k / (n - 1));
       vline.setAttribute("x1", vx); vline.setAttribute("x2", vx); cross.hidden = false; read.hidden = false;
-      read.innerHTML = `<b>${esc(dayLabel(rd.days[k]))}</b>${[...rd.lines].filter(l => l.total != null).sort((a, b) => b.cum[k] - a.cum[k]).map(l => `<span style="--h:${l.hue[1]}"><i></i>${esc(l.short)} <em>${esc(m.fmt(l.cum[k]))}</em></span>`).join("")}`;
+      read.innerHTML = `<b>${esc(dayLabel(shown.days[k]))}</b>${[...shown.lines].filter(l => l.total != null).sort((a, b) => b.cum[k] - a.cum[k]).map(l => `<span style="--h:${l.hue[1]}"><i></i>${esc(l.short)} <em>${esc(m.fmt(l.cum[k]))}</em></span>`).join("")}`;
     };
     const hide = () => { cross.hidden = true; read.hidden = true; };
     hit.addEventListener("pointermove", show); hit.addEventListener("pointerdown", show);
