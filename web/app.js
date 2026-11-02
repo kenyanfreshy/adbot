@@ -79,7 +79,7 @@
     document.querySelectorAll(".tabs button").forEach(b => { if (b.dataset.tab === S.tab) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current"); });
     $("title").textContent = TITLES[S.tab];
     $("filters").hidden = !(S.tab === "ads" || S.tab === "keywords");
-    window.scrollTo({top: 0});
+    ($("app") || window).scrollTo({top: 0});   // the app frame is the scroller (keeps the edge scroll bar hidden)
     clearInterval(tradingTimer);
     if (S.tab === "trading") tradingTimer = setInterval(() => { if (document.visibilityState === "visible") load(false, true); }, 60000);
     load();
