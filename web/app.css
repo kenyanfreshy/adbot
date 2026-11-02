@@ -709,3 +709,10 @@ details.fold > summary.h,details.group > summary{min-height:44px}
 .src code{white-space:normal;overflow-wrap:anywhere;display:inline-block;margin:2px 4px 2px 0}
 .ptable td,.ptable th{overflow-wrap:anywhere}
 .rev details.hx-fold>summary.hx-h{min-height:44px}
+
+/* No scroll bar line on the right edge (or under scrolling tables/chips): the page frame itself scrolls,
+   because iPhone Safari won't hide the main page's scroll indicator. Scrolling still works everywhere. */
+html,body{height:100%;overflow:hidden}
+.app,.login{height:100vh;height:100dvh;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior-y:contain}
+*{scrollbar-width:none}
+*::-webkit-scrollbar{display:none;width:0;height:0;background:transparent}
