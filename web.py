@@ -598,7 +598,7 @@ async def trading(request: Request):
 @guarded
 async def telegram_test(request: Request):
     ok = bot.telegram("✅ <b>AdBot test</b> from the phone app.", bot.load_rules(con()))
-    return J({"ok": ok, "error": None if ok else "Not sent. Check TELEGRAM_BOT_TOKEN on Render and the chat ID in Rules."})
+    return J({"ok": ok, "error": None if ok else (bot.TELEGRAM_LAST_ERROR or "Not sent. Check TELEGRAM_BOT_TOKEN on Render and the chat ID in Rules.")})
 
 
 @guarded(bucket="run")
