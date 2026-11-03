@@ -134,8 +134,11 @@ class Alerter:
         if not self.enabled(category):
             status, err = "disabled", None
         else:
+            # only a message that actually reached the reader counts: an alert that was merely logged (a service
+            # without Telegram set up) must not hold back the real Telegram message for hours
+            reached = ("delivered", "logged") if getattr(self.t, "name", "") == "log" else ("delivered",)
             last = self.con.execute(f"SELECT max(created_at) FROM {SCHEMA}.alerts WHERE dedup_key = ? "
-                                    "AND delivery_status IN ('delivered', 'logged')", [dedup_key]).fetchone()[0]
+                                    f"AND delivery_status IN ({', '.join('?' * len(reached))})", [dedup_key, *reached]).fetchone()[0]
             if isinstance(last, str):
                 last = dt.datetime.fromisoformat(last.replace(" ", "T"))
             if last and now - last < COOLDOWN.get(severity, COOLDOWN["warning"]):

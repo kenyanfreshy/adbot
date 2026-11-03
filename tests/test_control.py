@@ -543,6 +543,21 @@ class AlertTests(unittest.TestCase):
         self.assertEqual(off.send("emergency", "critical", "e", "x"), "delivered")   # can't be switched off
         self.assertEqual(len(t.sent), 4)
 
+    def test_logged_alert_does_not_hold_back_telegram(self):
+        # 2026-11-02: a run on the web service (no Telegram token) logged the daily summary; the next run with
+        # Telegram set up suppressed it for 24 h. A logged-only alert must not count as sent for a real transport.
+        con = fresh()
+        clock = [NOW]
+        logged = alerts.Alerter(con, alerts.LogTransport(), rules(), clock=lambda: clock[0])
+        self.assertEqual(logged.send("daily_summary", "info", "d", "Summary"), "logged")
+        self.assertEqual(logged.send("daily_summary", "info", "d", "Summary"), "suppressed")   # log still de-duplicates itself
+        clock[0] = NOW + dt.timedelta(minutes=8)
+        t = alerts.FakeTransport()
+        real = alerts.Alerter(con, t, rules(), clock=lambda: clock[0])
+        self.assertEqual(real.send("daily_summary", "info", "d", "Summary"), "delivered")
+        self.assertEqual(real.send("daily_summary", "info", "d", "Summary"), "suppressed")
+        self.assertEqual(len(t.sent), 1)
+
     def test_no_real_transport_in_dev(self):
         self.assertIsInstance(alerts.transport_from_env(None, {"ALERT_TRANSPORT": "fake", "TELEGRAM_BOT_TOKEN": "x", "TELEGRAM_CHAT_ID": "1"}),
                               alerts.FakeTransport)
