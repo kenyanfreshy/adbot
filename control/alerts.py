@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import json
+import re
 import os
 import uuid
 from typing import Optional
@@ -54,11 +56,45 @@ class LogTransport:
         log.info("ALERT: %s", text)
 
 
+def clean_telegram(token: str, chat) -> tuple[str, str]:
+    """Undo common paste slips: spaces or line breaks, quotes, a leading 'bot' copied from the API URL."""
+    token = str(token or "").strip().strip('"\'').strip()
+    if re.match(r"(?i)^bot\d+:", token):
+        token = token[3:]
+    chat = str(chat or "").strip().strip('"\'').strip()
+    return token, chat
+
+
+# Telegram's own reasons, explained (Telegram names the problem; this says what to change)
+_TELEGRAM_HINTS = (
+    ("bots can't send messages to bots", "the chat ID is a bot's ID (often the digits before ':' in the token); use your own chat ID"),
+    ("can't initiate conversation", "open your bot in Telegram and press Start (or send it any message), then try again"),
+    ("bot was blocked by the user", "unblock the bot in Telegram, press Start, then try again"),
+    ("not a member", "add the bot to that group or channel first"),
+    ("kicked", "add the bot back to that group or channel"),
+    ("chat not found", "the chat ID is wrong, or that person hasn't started the bot"),
+    ("unauthorized", "the bot token is wrong or was revoked; copy it again from @BotFather"),
+    ("not found", "the bot token is malformed; copy it again from @BotFather"),
+)
+
+
+def telegram_error(status: int, body: str) -> str:
+    """One readable sentence for a failed sendMessage. Never includes the token."""
+    try:
+        desc = str((json.loads(body or "{}") or {}).get("description") or "").strip()
+    except ValueError:
+        desc = ""
+    hint = next((h for k, h in _TELEGRAM_HINTS if k in desc.lower()), "")
+    if not hint and status == 404:
+        hint = _TELEGRAM_HINTS[-1][1]
+    return f"Telegram answered HTTP {status}" + (f": {desc}" if desc else "") + (f". Fix: {hint}" if hint else "")
+
+
 class TelegramTransport:
     name = "telegram"
 
     def __init__(self, token: str, chat: str):
-        self.token, self.chat = token, chat
+        self.token, self.chat = clean_telegram(token, chat)
 
     def send(self, text: str) -> None:
         import requests
@@ -66,14 +102,14 @@ class TelegramTransport:
                           json={"chat_id": self.chat, "text": text[:4000], "parse_mode": "HTML", "disable_web_page_preview": True},
                           timeout=20)
         if r.status_code != 200:
-            raise RuntimeError(f"Telegram answered HTTP {r.status_code}")
+            raise RuntimeError(telegram_error(r.status_code, r.text[:1000]))
 
 
 def transport_from_env(rules=None, environ=None):
     env = os.environ if environ is None else environ
     kind = str(env.get("ALERT_TRANSPORT", "") or "").lower()
-    token = env.get("TELEGRAM_BOT_TOKEN", "")
-    chat = env.get("TELEGRAM_CHAT_ID") or (getattr(rules, "telegram_chat_id", "") if rules else "")
+    token, chat = clean_telegram(env.get("TELEGRAM_BOT_TOKEN", ""),
+                                 env.get("TELEGRAM_CHAT_ID") or (getattr(rules, "telegram_chat_id", "") if rules else ""))
     if kind == "fake":
         return FakeTransport()
     if kind == "log" or not (token and chat):

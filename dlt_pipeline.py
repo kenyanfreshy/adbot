@@ -323,8 +323,9 @@ def rebalance(per_app: dict[str, dict], rules: Rules, current: dict[str, float] 
 # Telegram
 # --------------------------------------------------------------------------- #
 def telegram(text: str, rules: Rules | None = None) -> bool:
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    chat = os.getenv("TELEGRAM_CHAT_ID") or (rules.telegram_chat_id if rules else "")
+    from control.alerts import clean_telegram, telegram_error
+    token, chat = clean_telegram(os.getenv("TELEGRAM_BOT_TOKEN", ""),
+                                 os.getenv("TELEGRAM_CHAT_ID") or (rules.telegram_chat_id if rules else ""))
     if not token or not chat:
         log.info("Telegram not configured; message was:\n%s", text)
         return False
@@ -332,7 +333,8 @@ def telegram(text: str, rules: Rules | None = None) -> bool:
         r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
                           json={"chat_id": chat, "text": text[:4000], "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=20)
         if r.status_code != 200:
-            log.error("Telegram error %s: %s", r.status_code, r.text[:300])
+            log.error("%s", telegram_error(r.status_code, r.text[:1000]))
+            print(telegram_error(r.status_code, r.text[:1000]))
         return r.status_code == 200
     except requests.RequestException as e:
         log.error("Telegram request failed: %s", e)
