@@ -60,5 +60,23 @@ class TelegramErrors(unittest.TestCase):
         self.assertIsInstance(alerts.transport_from_env(environ={"TELEGRAM_BOT_TOKEN": "  ", "TELEGRAM_CHAT_ID": "1"}), alerts.LogTransport)
 
 
+class SendTestButton(unittest.TestCase):
+    """dlt_pipeline.telegram() keeps the reason so the phone app's Send test button can show it."""
+    def test_reasons(self):
+        import dlt_pipeline as bot
+        with mock.patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": "", "TELEGRAM_CHAT_ID": "1"}):
+            self.assertFalse(bot.telegram("x"))
+            self.assertIn("TELEGRAM_BOT_TOKEN isn't set on this Render service", bot.TELEGRAM_LAST_ERROR)
+        with mock.patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": TOKEN, "TELEGRAM_CHAT_ID": "1"}), \
+                mock.patch("requests.post", lambda *a, **k: R(403, "Forbidden: bot can't initiate conversation with a user")):
+            self.assertFalse(bot.telegram("x"))
+            self.assertIn("press Start", bot.TELEGRAM_LAST_ERROR)
+            self.assertNotIn("secret", bot.TELEGRAM_LAST_ERROR)
+        with mock.patch.dict(os.environ, {"TELEGRAM_BOT_TOKEN": TOKEN, "TELEGRAM_CHAT_ID": "1"}), \
+                mock.patch("requests.post", lambda *a, **k: R(200)):
+            self.assertTrue(bot.telegram("x"))
+            self.assertIsNone(bot.TELEGRAM_LAST_ERROR)
+
+
 if __name__ == "__main__":
     unittest.main()

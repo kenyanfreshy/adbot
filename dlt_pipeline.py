@@ -322,22 +322,30 @@ def rebalance(per_app: dict[str, dict], rules: Rules, current: dict[str, float] 
 # --------------------------------------------------------------------------- #
 # Telegram
 # --------------------------------------------------------------------------- #
+TELEGRAM_LAST_ERROR: str | None = None   # the reason the last telegram() call failed, for the phone app's test button
+
+
 def telegram(text: str, rules: Rules | None = None) -> bool:
+    global TELEGRAM_LAST_ERROR
     from control.alerts import clean_telegram, telegram_error
     token, chat = clean_telegram(os.getenv("TELEGRAM_BOT_TOKEN", ""),
                                  os.getenv("TELEGRAM_CHAT_ID") or (rules.telegram_chat_id if rules else ""))
     if not token or not chat:
+        TELEGRAM_LAST_ERROR = ("Not sent: TELEGRAM_BOT_TOKEN isn't set on this Render service" if not token else
+                               "Not sent: no chat ID (set it in Bot rules or as TELEGRAM_CHAT_ID on Render)")
         log.info("Telegram not configured; message was:\n%s", text)
         return False
     try:
         r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
                           json={"chat_id": chat, "text": text[:4000], "parse_mode": "HTML", "disable_web_page_preview": True}, timeout=20)
-        if r.status_code != 200:
-            log.error("%s", telegram_error(r.status_code, r.text[:1000]))
-            print(telegram_error(r.status_code, r.text[:1000]))
+        TELEGRAM_LAST_ERROR = None if r.status_code == 200 else telegram_error(r.status_code, r.text[:1000])
+        if TELEGRAM_LAST_ERROR:
+            log.error("%s", TELEGRAM_LAST_ERROR)
+            print(TELEGRAM_LAST_ERROR)
         return r.status_code == 200
     except requests.RequestException as e:
-        log.error("Telegram request failed: %s", e)
+        TELEGRAM_LAST_ERROR = f"Couldn't reach Telegram: {type(e).__name__}"
+        log.error("Telegram request failed: %s", type(e).__name__)
         return False
 
 
