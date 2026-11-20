@@ -84,6 +84,7 @@ select option{background:#1a1422;color:var(--ink)}
 .card{background:linear-gradient(180deg,var(--card) 0%,#130f19 100%);border:1px solid var(--line);border-radius:20px;padding:16px}
 .card + .card{margin-top:10px}
 .sub{color:var(--ink-3);font-size:12.5px}
+.kw-camp{margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .banner{border-radius:16px;padding:13px 14px;font-size:13.5px;color:var(--ink-2);background:rgba(107,44,245,.10);border:1px solid rgba(139,92,246,.28);margin-bottom:12px}
 .banner b{color:var(--ink)}
 .banner.warn{background:rgba(251,191,36,.08);border-color:rgba(251,191,36,.3)}

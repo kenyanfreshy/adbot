@@ -15,6 +15,7 @@ What lives here:
   executions       every attempt to carry out a proposal (simulated or live), with pre/post state
   alerts           every alert considered: delivered, suppressed as a duplicate, or failed
   locks            leases that stop two jobs doing the same work at once
+  ad_entities      every campaign / ad group / keyword listed by a platform, with or without metrics
 
 Each change is a numbered migration recorded in control.schema_migrations.
 """
@@ -248,6 +249,28 @@ MIGRATIONS.append((2, "execution lifecycle: bound approvals, verified status, in
 
 MIGRATIONS.append((3, "TikTok Ads removed from AdBot", [
     f"DELETE FROM {SCHEMA}.source_state WHERE source = 'TikTok Ads'",
+]))
+
+MIGRATIONS.append((4, "ad_entities: campaigns, ad groups and keywords listed by the platform, even with no metrics", [
+    # Report endpoints only return rows with activity, so a campaign or keyword that hasn't served yet never shows up
+    # in ads.ad_performance. The importer lists them from the platform's management API and keeps them here, so the
+    # phone app can show them with zero metrics. Never read by the decision engine.
+    f"""CREATE TABLE IF NOT EXISTS {SCHEMA}.ad_entities (
+        channel        VARCHAR NOT NULL,
+        entity_type    VARCHAR NOT NULL,     -- campaign | adgroup | keyword
+        entity_id      VARCHAR NOT NULL,     -- same id as ads.ad_performance.entity_id where reports use one
+        account_id     VARCHAR,
+        campaign_id    VARCHAR,
+        campaign_name  VARCHAR,
+        adgroup_id     VARCHAR,
+        name           VARCHAR,              -- keyword text, ad group or campaign name
+        status         VARCHAR,
+        match_type     VARCHAR,
+        countries      VARCHAR,              -- comma-separated country / region codes the campaign targets
+        rule_app       VARCHAR,              -- what the name rules say for the campaign (may be NULL)
+        first_seen     TIMESTAMP NOT NULL,
+        last_seen      TIMESTAMP NOT NULL,
+        PRIMARY KEY (channel, entity_type, entity_id))""",
 ]))
 
 LATEST = max(v for v, _, _ in MIGRATIONS)

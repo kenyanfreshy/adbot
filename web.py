@@ -396,6 +396,17 @@ async def keywords(request: Request):
     cut = (dt.date.today() - dt.timedelta(days=days - 1)).isoformat()
     cur = [r for r in perf(days, rules) if keep(r) and r["date"] >= cut]
     agg = bot.aggregate(cur, rules)
+    with _db_lock:
+        listed = cingest.listed_entities(con())
+        cmap = cingest.mapping(con())
+        connected = cingest.connected_channels(con())
+        mapped = cingest.mapped_campaigns(con(), APPS)
+    # campaigns / keywords the platforms list but that had no activity in the window: shown with zeros, never hidden
+    seen_campaigns = {(a["channel"], str(a.get("campaign_id"))) for a in agg.values()}
+    for z in cingest.zero_metric_items(listed, set(agg), cmap, lambda n: bot.app_for(n, rules), APPS, seen_campaigns):
+        if keep(z):
+            agg[f"{z['channel']}|{z['entity_id']}"] = z
+    ccountries = cingest.campaign_countries(listed)
     open_p = {r["entity_key"]: r for r in rows(f"SELECT entity_key, status, reason, blockers, kind, action FROM control.proposals "
                                                 "WHERE status IN ('proposed', 'blocked', 'approved', 'executing', 'uncertain') ORDER BY created_at")}
     q = (request.query_params.get("q") or "").lower().strip()
@@ -406,15 +417,32 @@ async def keywords(request: Request):
         info = CH_INFO.get(a["channel"], {})
         acts = info.get("actions", {}).get(a.get("entity_type") or "", [])
         p = open_p.get(k)
-        out.append({**{f: a.get(f) for f in ("channel", "entity_type", "keyword", "campaign", "app", "status", "taps", "installs", "spend", "revenue", "cpt", "acos", "country")},
-                    "key": k, "override": rules.overrides.get(k, "auto"), "revenue_known": a.get("revenue_known", False),
+        countries = (bot.countries_for(a.get("campaign") or "", a.get("app"), rules, ccountries.get((a["channel"], str(a.get("campaign_id")))))
+                     if rules.geo_targets.get(a.get("app") or "") else [])
+        out.append({**{f: a.get(f) for f in ("channel", "entity_type", "keyword", "campaign", "app", "status", "taps", "installs", "spend", "revenue", "cpt", "acos")},
+                    "country": a.get("country") or (countries[0] if len(countries) == 1 else None), "countries": countries,
+                    "no_metrics": bool(a.get("no_metrics")), "key": k, "override": rules.overrides.get(k, "auto"), "revenue_known": a.get("revenue_known", False),
                     "revenue_estimate": a.get("revenue_estimate"), "click_label": info.get("click_label", "clicks"),
                     "conversion_label": info.get("conversion_label", "conversions"),
                     "can_pause": any(x.startswith("pause_") for x in acts), "monitor_only": not acts,
                     "proposal": None if not p else {"status": p["status"], "reason": p["reason"], "kind": p["kind"],
                                                     "blockers": json.loads(p["blockers"] or "[]")}})
-    out.sort(key=lambda x: -(x["spend"] or 0))
-    return J({"items": out[:500], "max_cpt": rules.max_cpt, "target_acos": rules.target_acos, "max_acos": rules.max_acos})
+    out.sort(key=lambda x: (-(x["spend"] or 0), -(x["taps"] or 0), x["app"] or "", x["campaign"] or "", x["keyword"] or ""))
+    in_scope = [m for m in mapped if (app == "all" or m["app"] == app) and (ch == "all" or m["channel"] == ch)]
+    return J({"items": out[:500], "max_cpt": rules.max_cpt, "target_acos": rules.target_acos, "max_acos": rules.max_acos,
+              "channels_connected": connected, "campaigns_mapped": len(in_scope),
+              "empty": keywords_empty_state(connected, len(in_scope), bool(out))})
+
+
+def keywords_empty_state(connected: list, campaigns_mapped: int, has_items: bool) -> str | None:
+    """What the Keywords tab says when it has nothing to list (None when it has items)."""
+    if has_items:
+        return None
+    if not connected:
+        return "No keywords or campaigns yet. They appear once an ad channel is connected."
+    if not campaigns_mapped:
+        return "Channels connected — no campaigns found for your apps yet."
+    return "Campaigns found for your apps — their keywords appear after the next import."
 
 
 @guarded(bucket="control")
