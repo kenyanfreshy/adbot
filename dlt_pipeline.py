@@ -30,6 +30,7 @@ import os
 import re
 import sys
 import time
+import unicodedata
 from dataclasses import dataclass, field, asdict
 from typing import Any, Iterable, Iterator
 
@@ -168,9 +169,21 @@ def load_rules(con=None) -> Rules:
     return rules
 
 
+# Dash-like characters people (and Apple Ads' UI) put in names: hyphen, non-breaking hyphen, figure dash, en dash,
+# em dash, horizontal bar, minus sign, plus full-width forms. All of them separate words, like "-", "|" and "_".
+_DASHES = dict.fromkeys(map(ord, "\u2010\u2011\u2012\u2013\u2014\u2015\u2212\ufe58\ufe63\uff0d"), "-")
+
+
+def norm_name(name: str) -> str:
+    """A campaign / ad set name with Unicode look-alikes folded (NFKC: full-width letters, non-breaking spaces) and
+    every dash variant turned into "-", so "RNR – US", "RNR - US", "RNR|US" and "RNR_US" all split the same way."""
+    return unicodedata.normalize("NFKC", name or "").translate(_DASHES)
+
+
 def app_for(name: str, rules: Rules) -> str | None:
-    """Map a campaign / ad set name to one of the three apps using rules.app_match."""
-    low = (name or "").lower()
+    """Map a campaign / ad set name to one of the three apps using rules.app_match.
+    A needle matches as a whole word: separated by spaces, hyphens, en / em dashes, pipes, underscores, etc."""
+    low = norm_name(name).lower()
     for app, needles in rules.app_match.items():
         for n in needles:
             if re.search(r"(^|[^a-z0-9])" + re.escape(n.lower()) + r"($|[^a-z0-9])", low):
@@ -181,13 +194,31 @@ def app_for(name: str, rules: Rules) -> str | None:
 # --------------------------------------------------------------------------- #
 # Decision engine (pure functions, no network) — mirrored in the dashboard
 # --------------------------------------------------------------------------- #
-def country_for(name: str, app: str | None, rules: Rules) -> str | None:
-    """Find a targeted country code (e.g. PH) written as its own token in a campaign / ad set name."""
+def country_for(name: str, app: str | None, rules: Rules, campaign_countries: Iterable[str] | None = None) -> str | None:
+    """Find a targeted country code (e.g. PH) written as its own token in a campaign / ad set name.
+    Without one, a campaign that targets exactly one of the app's countries (campaign_countries, e.g. Apple's
+    countriesOrRegions) counts as that country. A multi-country ("Intl") campaign has no single country: see countries_for."""
     codes = [g["code"] for g in rules.geo_targets.get(app or "", [])]
-    for tok in re.split(r"[^A-Za-z]+", name or ""):
+    for tok in re.split(r"[^A-Za-z]+", norm_name(name)):
         if len(tok) == 2 and tok.upper() == tok and tok in codes:
             return tok
+    cc = [c for c in (str(x).strip().upper() for x in (campaign_countries or [])) if c]
+    if len(cc) == 1 and cc[0] in codes:
+        return cc[0]
     return None
+
+
+def countries_for(name: str, app: str | None, rules: Rules, campaign_countries: Iterable[str] | None = None) -> list[str]:
+    """The country list for a campaign / ad set: the code in its name if there is one; otherwise the countries the
+    campaign itself targets (how "NurseBound – Intl – …" campaigns are set up in Apple Ads). Display only."""
+    one = country_for(name, app, rules)
+    if one:
+        return [one]
+    out: list[str] = []
+    for c in (str(x).strip().upper() for x in (campaign_countries or [])):
+        if c and c not in out:
+            out.append(c)
+    return out
 
 
 def geo_split(app: str, daily: float, per_country: dict[str, dict], rules: Rules) -> dict[str, float]:
@@ -414,20 +445,67 @@ class AppleSearchAds:
             self._token, self._exp = j["access_token"], time.time() + int(j.get("expires_in", 3600))
         return {"Authorization": f"Bearer {self._token}", "X-AP-Context": f"orgId={self.org_id}", "Content-Type": "application/json"}
 
-    def campaigns(self) -> list[dict]:
+    PAGE = 1000
+
+    def _paged(self, path: str) -> list[dict]:
+        """GET a Campaign Management list endpoint page by page (limit / offset, pagination.totalResults)."""
         out, offset = [], 0
         while True:
-            j = http("GET", f"{self.BASE}/campaigns", params={"limit": 1000, "offset": offset}, headers=self.headers()).json()
-            out += j.get("data") or []
-            total = (j.get("pagination") or {}).get("totalResults", len(out))
-            offset += 1000
-            if offset >= total:
+            j = http("GET", f"{self.BASE}{path}", params={"limit": self.PAGE, "offset": offset}, headers=self.headers()).json()
+            page = j.get("data") or []
+            out += page
+            total = (j.get("pagination") or {}).get("totalResults")
+            offset += self.PAGE
+            if not page or (total is not None and offset >= int(total)) or (total is None and len(page) < self.PAGE):
                 return out
+
+    def campaigns(self) -> list[dict]:
+        """Every campaign in the org (GET /campaigns): listed whether or not it has served."""
+        return self._paged("/campaigns")
+
+    def adgroups(self, campaign_id) -> list[dict]:
+        return self._paged(f"/campaigns/{campaign_id}/adgroups")
+
+    def targeting_keywords(self, campaign_id, adgroup_id) -> list[dict]:
+        return self._paged(f"/campaigns/{campaign_id}/adgroups/{adgroup_id}/targetingkeywords")
 
     @staticmethod
     def supports_keywords(campaign: dict) -> bool:
         # Missing or unknown placement metadata must not trigger keyword requests.
         return "APPSTORE_SEARCH_RESULTS" in (campaign.get("supplySources") or [])
+
+    @staticmethod
+    def _status(x: dict) -> str | None:
+        # displayStatus is what the Apple Ads UI shows (RUNNING, ON_HOLD, PAUSED); status is the switch (ENABLED / PAUSED)
+        return x.get("displayStatus") or x.get("servingStatus") or x.get("status")
+
+    @staticmethod
+    def _report_rows(j: dict) -> list:
+        return (((j.get("data") or {}).get("reportingDataResponse") or {}).get("row")) or []
+
+    @staticmethod
+    def _record_has_metrics(row: dict) -> bool:
+        """With returnRecordsWithNoMetrics=true Apple also returns records that had no activity in the window. Their
+        all-zero days are not loaded as performance (they were never loaded before either; the listing in
+        control.ad_entities is what makes them visible), so the decision engine sees exactly the same rows as before."""
+        for g in row.get("granularity") or []:
+            for k, v in g.items():
+                if k == "date":
+                    continue
+                if isinstance(v, dict):
+                    v = v.get("amount")
+                try:
+                    if float(v or 0):
+                        return True
+                except (TypeError, ValueError):
+                    continue
+        return False
+
+    def _report_body(self, start: dt.date, end: dt.date, offset: int) -> dict:
+        return {"startTime": start.isoformat(), "endTime": end.isoformat(), "granularity": "DAILY", "timeZone": "ORTZ",
+                "returnRecordsWithNoMetrics": True, "returnRowTotals": False,
+                "selector": {"orderBy": [{"field": "localSpend", "sortOrder": "DESCENDING"}],
+                             "pagination": {"offset": offset, "limit": 1000}}}
 
     def campaign_rows(self, campaigns: list[dict], start: dt.date, end: dt.date,
                       rules: Rules) -> Iterator[dict]:
@@ -441,19 +519,14 @@ class AppleSearchAds:
             return
         offset = 0
         while True:
-            body = {"startTime": start.isoformat(), "endTime": end.isoformat(),
-                    "granularity": "DAILY", "timeZone": "ORTZ",
-                    "returnRecordsWithNoMetrics": False, "returnRowTotals": False,
-                    "selector": {"orderBy": [{"field": "localSpend", "sortOrder": "DESCENDING"}],
-                                 "pagination": {"offset": offset, "limit": 1000}}}
-            j = http("POST", f"{self.BASE}/reports/campaigns", json=body, headers=self.headers()).json()
-            rows = (((j.get("data") or {}).get("reportingDataResponse") or {}).get("row")) or []
+            j = http("POST", f"{self.BASE}/reports/campaigns", json=self._report_body(start, end, offset), headers=self.headers()).json()
+            rows = self._report_rows(j)
             for row in rows:
                 m = row.get("metadata") or {}
                 cid = str(m.get("campaignId"))
                 c = selected.get(cid)
-                if c is None:
-                    continue  # Search Results are already represented by keyword rows.
+                if c is None or not self._record_has_metrics(row):
+                    continue  # Search Results are already represented by keyword rows; idle campaigns are listed, not loaded
                 name = c.get("name") or m.get("campaignName") or ""
                 for g in row.get("granularity") or []:
                     installs = g.get("totalInstalls", g.get("tapInstalls", g.get("installs", 0))) or 0
@@ -475,32 +548,73 @@ class AppleSearchAds:
         from control.ingest import Job
         return [Job("Apple Search Ads", self.org_id, lambda: self.keyword_rows(start, end, rules), "ORTZ (organization time zone)")]
 
+    def listing_rows(self, campaign: dict, rule_app: str | None, managed: bool) -> Iterator[dict]:
+        """Marker rows (see control.ingest) for a campaign and, when it belongs to a managed app, its ad groups and
+        targeting keywords, straight from the Campaign Management API: listed even when they have no metrics.
+        A listing error for one campaign is reported as a warning; reporting carries on."""
+        cid, name = str(campaign["id"]), campaign.get("name") or ""
+        countries = ",".join(str(x).upper() for x in (campaign.get("countriesOrRegions") or [])) or None
+        yield {"_campaign_only": True, "campaign_id": cid, "campaign": name, "app": rule_app}
+        yield {"_entity": True, "entity_type": "campaign", "entity_id": f"campaign:{cid}", "campaign_id": cid,
+               "campaign_name": name, "name": name, "status": self._status(campaign), "countries": countries, "rule_app": rule_app}
+        if not managed:
+            return
+        try:
+            groups = [g for g in self.adgroups(cid) if not g.get("deleted")]
+        except Exception as e:  # noqa: BLE001
+            yield {"_warning": f"ad groups of campaign {cid} not listed: {str(e)[:120]}"}
+            return
+        for g in groups:
+            gid = str(g["id"])
+            yield {"_entity": True, "entity_type": "adgroup", "entity_id": gid, "campaign_id": cid, "campaign_name": name,
+                   "adgroup_id": gid, "name": g.get("name"), "status": self._status(g), "countries": countries, "rule_app": rule_app}
+            if not self.supports_keywords(campaign):
+                continue
+            try:
+                kws = self.targeting_keywords(cid, gid)
+            except Exception as e:  # noqa: BLE001
+                yield {"_warning": f"keywords of ad group {gid} not listed: {str(e)[:120]}"}
+                continue
+            for k in kws:
+                if k.get("deleted"):
+                    continue
+                yield {"_entity": True, "entity_type": "keyword", "entity_id": str(k["id"]), "campaign_id": cid,
+                       "campaign_name": name, "adgroup_id": gid, "name": k.get("text"), "status": k.get("status"),
+                       "match_type": k.get("matchType"), "countries": countries, "rule_app": rule_app}
+
     def keyword_rows(self, start: dt.date, end: dt.date, rules: Rules) -> Iterator[dict]:
-        """Compatibility entry point: one reporting level per campaign."""
+        """Compatibility entry point: one reporting level per campaign.
+
+        Campaigns, ad groups and keywords are discovered from the management API (GET /campaigns, .../adgroups,
+        .../targetingkeywords), not from report rows: a campaign that hasn't served yet has no report rows at all."""
         campaigns = []
         for campaign in self.campaigns():
-            app = rules.manual_app("Apple Search Ads", campaign.get("id")) or app_for(campaign.get("name", ""), rules)
+            rule_app = app_for(campaign.get("name", ""), rules)
+            app = rules.manual_app("Apple Search Ads", campaign.get("id")) or rule_app
+            if campaign.get("deleted"):
+                if app not in APPS:
+                    yield {"_campaign_only": True, "campaign_id": str(campaign["id"]), "campaign": campaign.get("name"), "app": None}
+                continue
+            yield from self.listing_rows(campaign, rule_app, managed=app in APPS)
             if app not in APPS:
                 # not reported (it may belong to another product in the same Apple Ads organization), but listed
                 # so it can be reviewed and mapped on the phone app instead of disappearing silently
                 log.info("Apple Search Ads: campaign %s is not mapped to a managed app; listed for review", campaign["id"])
-                yield {"_campaign_only": True, "campaign_id": str(campaign["id"]), "campaign": campaign.get("name"), "app": None}
                 continue
-            campaigns.append(campaign)
+            campaigns.append((campaign, app))
         yield from self.campaign_rows(
-            [c for c in campaigns if not self.supports_keywords(c)], start, end, rules)
-        for c in campaigns:
+            [c for c, _ in campaigns if not self.supports_keywords(c)], start, end, rules)
+        for c, app in campaigns:
             if not self.supports_keywords(c):
                 continue
-            app = rules.manual_app("Apple Search Ads", c.get("id")) or app_for(c.get("name", ""), rules)
             offset = 0
             while True:
-                body = {"startTime": start.isoformat(), "endTime": end.isoformat(), "granularity": "DAILY", "timeZone": "ORTZ",
-                        "returnRecordsWithNoMetrics": False, "returnRowTotals": False,
-                        "selector": {"orderBy": [{"field": "localSpend", "sortOrder": "DESCENDING"}], "pagination": {"offset": offset, "limit": 1000}}}
-                j = http("POST", f"{self.BASE}/reports/campaigns/{c['id']}/keywords", json=body, headers=self.headers()).json()
-                rows = (((j.get("data") or {}).get("reportingDataResponse") or {}).get("row")) or []
+                j = http("POST", f"{self.BASE}/reports/campaigns/{c['id']}/keywords", json=self._report_body(start, end, offset),
+                         headers=self.headers()).json()
+                rows = self._report_rows(j)
                 for row in rows:
+                    if not self._record_has_metrics(row):
+                        continue
                     m = row.get("metadata") or {}
                     for g in row.get("granularity") or []:
                         spend = float(((g.get("localSpend") or {}).get("amount")) or 0)
@@ -809,6 +923,7 @@ def run_sync(days: int, rules: Rules, sources: dict | None = None) -> dict:
     jobs = build_jobs(start, end, rules, sources)
     records: list[dict] = []
     campaigns: dict = {}
+    entities: dict = {}
 
     from control.ingest import existing_revisions, keep_newest_revisions
     try:
@@ -821,7 +936,7 @@ def run_sync(days: int, rules: Rules, sources: dict | None = None) -> dict:
 
     @dlt.resource(name=TABLE, write_disposition="merge", primary_key=["channel", "entity_id", "date"])
     def performance():
-        rows_ = list(collect(jobs, start, end, records, campaigns))
+        rows_ = list(collect(jobs, start, end, records, campaigns, entities=entities))
         for row in keep_newest_revisions(rows_, stored, dropped):
             row["app"] = row.get("app") or "Unassigned"
             yield row
@@ -841,7 +956,7 @@ def run_sync(days: int, rules: Rules, sources: dict | None = None) -> dict:
         log.exception("dlt load failed")
     if dropped:
         log.info("Dropped %d duplicate / out-of-order report revisions", len(dropped))
-    return {"records": records, "campaigns": campaigns, "configured": configured_sources(sources), "load_error": load_error,
+    return {"records": records, "campaigns": campaigns, "entities": entities, "configured": configured_sources(sources), "load_error": load_error,
             "window": (start, end), "dropped_revisions": len(dropped)}
 
 
@@ -853,7 +968,8 @@ def report_ad_status(con, result: dict) -> None:
     An account is 'verified' only when an import finished; a finished import with no rows says so."""
     try:
         from control import ingest
-        ingest.record(con, result["records"], result["campaigns"], result["configured"], result.get("load_error"))
+        ingest.record(con, result["records"], result["campaigns"], result["configured"], result.get("load_error"),
+                      entities=result.get("entities"))
     except Exception:  # noqa: BLE001
         log.exception("could not record import runs")
     try:

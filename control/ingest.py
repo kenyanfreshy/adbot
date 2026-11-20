@@ -8,8 +8,15 @@ report replaces the earlier numbers instead of adding to them). Around that load
     unmapped rows, and an explicit failure message,
   * keeps control.source_state up to date (the shared status model's inputs),
   * records every campaign seen in control.campaign_map, mapped or not, so unmapped campaigns
-    can be reviewed instead of silently skipped.
+    can be reviewed instead of silently skipped,
+  * records every campaign / ad group / keyword the platform lists in control.ad_entities, so ones that
+    haven't served yet (no report rows) are still visible, with zero metrics.
 A successful import with zero rows is recorded as exactly that, never as "synced".
+
+Besides performance rows, a job's fn() may yield three kinds of marker rows (never loaded as performance):
+  {"_campaign_only": True, campaign_id, campaign, app}   a campaign listed by the platform
+  {"_entity": True, entity_type, entity_id, ...}         a campaign / ad group / keyword listed by the platform
+  {"_warning": "text"}                                   something that didn't stop the import but should be seen
 """
 from __future__ import annotations
 
@@ -46,21 +53,36 @@ class Job:
         self.source, self.account_id, self.fn, self.timezone = source, account_id, fn, timezone
 
 
+ENTITY_FIELDS = ("account_id", "campaign_id", "campaign_name", "adgroup_id", "name", "status", "match_type", "countries", "rule_app")
+
+
 def collect(jobs: list[Job], start: dt.date, end: dt.date, records: list[dict], campaigns: dict,
-            clock: Callable[[], dt.datetime] = now) -> Iterator[dict]:
+            clock: Callable[[], dt.datetime] = now, entities: Optional[dict] = None) -> Iterator[dict]:
     """Yield rows from every job, annotated with import_id and account_id, and fill `records`.
 
     `campaigns` collects (channel, campaign_id) -> {name, account_id, rule_app} for every campaign seen.
+    `entities` (optional) collects (channel, entity_type, entity_id) -> listing fields for every entity listed.
     A job that raises is recorded as failed with its (scrubbed) message; the others carry on."""
+    entities = {} if entities is None else entities
     for job in jobs:
         rec = {"import_id": uuid.uuid4().hex, "source": job.source, "account_id": job.account_id, "started_at": clock(),
                "finished_at": None, "status": "running", "rows": 0, "activity_rows": 0, "window_start": start,
                "window_end": end, "min_date": None, "max_date": None, "currencies": set(), "timezone": job.timezone,
-               "unmapped_rows": 0, "message": None}
+               "unmapped_rows": 0, "message": None, "listed": {}, "warnings": []}
         records.append(rec)
         try:
             for row in job.fn():
-                if row.get("_campaign_only"):          # a campaign listed but not reported (e.g. unmapped Apple campaign)
+                if row.get("_warning"):
+                    rec["warnings"].append(_scrub(str(row["_warning"]))[:200])
+                    continue
+                if row.get("_entity"):                 # listed by the platform's management API, metrics or not
+                    et = str(row["entity_type"])
+                    entities[(job.source, et, str(row["entity_id"]))] = {
+                        **{f: (str(row[f]) if row.get(f) is not None else None) for f in ENTITY_FIELDS},
+                        "account_id": str(row.get("account_id") or job.account_id)}
+                    rec["listed"][et] = rec["listed"].get(et, 0) + 1
+                    continue
+                if row.get("_campaign_only"):          # a campaign listed by the platform (mapped or not, metrics or not)
                     campaigns[(job.source, str(row["campaign_id"]))] = {"name": row.get("campaign"), "account_id": job.account_id,
                                                                        "rule_app": row.get("app")}
                     continue
@@ -83,10 +105,25 @@ def collect(jobs: list[Job], start: dt.date, end: dt.date, records: list[dict], 
                                                                        "rule_app": row.get("app") if row.get("app") != "Unassigned" else None}
                 yield row
             rec["status"] = "succeeded"
+            rec["message"] = summary(rec)
         except Exception as e:  # noqa: BLE001 - recorded, never hidden
             rec["status"] = "failed"
             rec["message"] = _scrub(f"{type(e).__name__}: {e}")[:500]
         rec["finished_at"] = clock()
+
+
+def summary(rec: dict) -> Optional[str]:
+    """A short note for a successful run: what the platform listed and anything worth a look."""
+    parts = []
+    listed = rec.get("listed") or {}
+    if listed:
+        names = (("campaign", "campaigns"), ("adgroup", "ad groups"), ("keyword", "keywords"))
+        parts.append("listed " + ", ".join(f"{listed[k]} {label}" for k, label in names if listed.get(k)))
+        if not rec.get("activity_rows"):
+            parts.append("no activity in the window")
+    if rec.get("warnings"):
+        parts.append("; ".join(rec["warnings"][:5]) + (f" (+{len(rec['warnings']) - 5} more)" if len(rec["warnings"]) > 5 else ""))
+    return ("; ".join(parts))[:500] or None
 
 
 def existing_revisions(con, start: dt.date, end: dt.date, dataset: str = "ads", table: str = "ad_performance") -> dict:
@@ -150,7 +187,8 @@ def quality(rec: dict) -> str:
     if rec["status"] == "failed":
         return "error"
     if rec["rows"] == 0:
-        return "empty"
+        # the platform listed campaigns / keywords but none had metrics in the window: not the same as "nothing there"
+        return "no_activity" if any((rec.get("listed") or {}).values()) else "empty"
     if len(rec["currencies"]) > 1:
         return "mixed_currency"
     if rec["unmapped_rows"]:
@@ -159,7 +197,7 @@ def quality(rec: dict) -> str:
 
 
 def record(con, records: list[dict], campaigns: dict, configured: dict, load_error: Optional[str] = None,
-           clock: Callable[[], dt.datetime] = now) -> None:
+           clock: Callable[[], dt.datetime] = now, entities: Optional[dict] = None) -> None:
     """Persist import runs, source states and the campaign list. `configured` maps every known source to
     whether its credentials are present. A failed dlt load (load_error) fails every run of this sync."""
     t = clock()
@@ -218,6 +256,27 @@ def record(con, records: list[dict], campaigns: dict, configured: dict, load_err
                     "ON CONFLICT (channel, campaign_id) DO UPDATE SET campaign_name = excluded.campaign_name, "
                     "account_id = COALESCE(excluded.account_id, campaign_map.account_id), rule_app = excluded.rule_app, "
                     "last_seen = excluded.last_seen", [channel, cid, c.get("account_id"), c.get("name"), c.get("rule_app"), t, t])
+    for (channel, etype, eid), e in (entities or {}).items():
+        con.execute(f"INSERT INTO {SCHEMA}.ad_entities VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT (channel, entity_type, entity_id) DO UPDATE SET account_id = COALESCE(excluded.account_id, ad_entities.account_id), "
+                    "campaign_id = excluded.campaign_id, campaign_name = excluded.campaign_name, adgroup_id = excluded.adgroup_id, "
+                    "name = excluded.name, status = excluded.status, match_type = excluded.match_type, countries = excluded.countries, "
+                    "rule_app = excluded.rule_app, last_seen = excluded.last_seen",
+                    [channel, etype, eid, e.get("account_id"), e.get("campaign_id"), e.get("campaign_name"), e.get("adgroup_id"),
+                     e.get("name"), e.get("status"), e.get("match_type"), e.get("countries"), e.get("rule_app"), t, t])
+
+
+def listed_entities(con, max_age_days: int = 14, clock: Callable[[], dt.datetime] = now) -> list[dict]:
+    """Campaigns / ad groups / keywords the platforms listed recently (last_seen within max_age_days).
+    An entity the platform stopped listing (deleted) drops out once it hasn't been seen for that long."""
+    try:
+        cur = con.execute(f"SELECT channel, entity_type, entity_id, account_id, campaign_id, campaign_name, adgroup_id, name, status, "
+                          f"match_type, countries, rule_app, last_seen FROM {SCHEMA}.ad_entities WHERE last_seen >= ?",
+                          [clock() - dt.timedelta(days=max_age_days)])
+    except Exception:  # noqa: BLE001 - table not created yet (web started before the migration ran)
+        return []
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, r)) for r in cur.fetchall()]
 
 
 # --------------------------------------------------------------------------- #
@@ -259,3 +318,63 @@ def set_mapping(con, channel: str, campaign_id: str, app: Optional[str], apps: l
     con.execute(f"UPDATE {SCHEMA}.campaign_map SET manual_app = ?, ignored = ?, updated_by = ? WHERE channel = ? AND campaign_id = ?",
                 [app, bool(ignored), by, channel, campaign_id])
     return {"channel": channel, "campaign_id": campaign_id, "app": app, "ignored": bool(ignored)}
+
+
+def mapped_campaigns(con, apps: list[str]) -> list[dict]:
+    """Campaigns in campaign_map that belong to one of `apps` (manual choice first, then the name rule), not ignored."""
+    try:
+        cur = con.execute(f"SELECT channel, campaign_id, campaign_name, COALESCE(manual_app, rule_app) AS app FROM {SCHEMA}.campaign_map "
+                          "WHERE NOT ignored AND COALESCE(manual_app, rule_app) IS NOT NULL")
+    except Exception:  # noqa: BLE001 - control tables not created yet
+        return []
+    cols = [d[0] for d in cur.description]
+    return [r for r in (dict(zip(cols, x)) for x in cur.fetchall()) if r["app"] in apps]
+
+
+def connected_channels(con) -> list[str]:
+    """Ad channels whose credentials the hourly job reported as set (control.source_state.configured)."""
+    try:
+        return [r[0] for r in con.execute(f"SELECT source FROM {SCHEMA}.source_state WHERE configured AND supported ORDER BY source").fetchall()]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def campaign_countries(entities: list[dict]) -> dict:
+    """(channel, campaign_id) -> [country codes] from listed campaigns."""
+    out = {}
+    for e in entities:
+        if e.get("entity_type") == "campaign" and e.get("countries"):
+            out[(e["channel"], str(e.get("campaign_id")))] = [c for c in str(e["countries"]).split(",") if c]
+    return out
+
+
+def zero_metric_items(entities: list[dict], seen_keys: set, cmap: dict, rule_app_fn: Callable[[str], Optional[str]],
+                      apps: list[str], seen_campaigns: Optional[set] = None) -> list[dict]:
+    """Listed keywords (and campaigns with no keywords) that have no performance rows in the window, shaped like
+    aggregated rows with zero metrics, so the Keywords tab shows them instead of an empty list. Ad groups are not
+    shown on their own. Unmapped and ignored campaigns are left out (unmapped ones are reviewed on the Ads tab).
+    `seen_keys` are the 'channel|entity_id' keys that already have performance rows; `seen_campaigns` the
+    (channel, campaign_id) pairs that do."""
+    seen_campaigns = seen_campaigns or set()
+    with_keywords = {(e["channel"], str(e.get("campaign_id"))) for e in entities if e.get("entity_type") == "keyword"}
+    out = []
+    for e in entities:
+        et = e.get("entity_type")
+        if et not in ("keyword", "campaign"):
+            continue
+        key = f"{e['channel']}|{e['entity_id']}"
+        camp = (e["channel"], str(e.get("campaign_id")))
+        if key in seen_keys:
+            continue
+        if et == "campaign" and (camp in with_keywords or camp in seen_campaigns):
+            continue
+        app = resolve_app({"channel": e["channel"], "campaign_id": e.get("campaign_id"), "campaign": e.get("campaign_name")},
+                          cmap, rule_app_fn)
+        if app == IGNORED or app not in apps:
+            continue
+        out.append({"channel": e["channel"], "entity_id": str(e["entity_id"]), "entity_type": et,
+                    "keyword": e.get("name"), "campaign_id": e.get("campaign_id"), "campaign": e.get("campaign_name"),
+                    "adgroup_id": e.get("adgroup_id"), "app": app, "status": e.get("status"), "match_type": e.get("match_type"),
+                    "taps": 0.0, "impressions": 0.0, "installs": 0.0, "spend": 0.0, "revenue": None, "revenue_known": False,
+                    "revenue_estimate": None, "cpt": None, "acos": None, "no_metrics": True})
+    return out

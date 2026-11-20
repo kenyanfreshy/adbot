@@ -86,7 +86,9 @@ day; the reports bucket has its own status (Not configured, Never checked, Bucke
 Access denied, Bucket not found, Failed) and its own "last success", which a failed attempt never moves. A 403/404 is
 retried once a day, other failures back off 1 h → 2 h → 4 h → 8 h → 24 h. To retry now without re-syncing products:
 press **Retry reports** on the Google Play card (runs at the next scheduled run), or run `python -m revenue.google_play retry-reports`
-where the key is available. To test bucket access alone (lists at most one object, writes nothing, prints only the
+where the key is available. A report file that was downloaded but couldn't be parsed is kept (`revenue.report_blobs`) and parsed again from that
+copy on the next reports pass (or `retry-reports`), without downloading it again. Sales report headers are matched by
+name, with the variants Google has used ("Package ID" / "Product ID", "Base Plan or Purchase Option ID" / "Base Plan ID"). To test bucket access alone (lists at most one object, writes nothing, prints only the
 service account email, bucket, result and a sanitized error): `python -m revenue.google_play diagnose-reports`.
 
 Tests (synthetic data, no network): `python -m unittest discover -s tests -v`

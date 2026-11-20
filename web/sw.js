@@ -1,6 +1,6 @@
 // AdBot service worker: caches the app shell so it opens instantly; data (/api) is always live.
-const CACHE = "adbot-shell-v31";
-const SHELL = ["/", "/web/app.css?v=30", "/web/app.js?v=30", "/manifest.webmanifest", "/static/icon-192.png", "/static/apple-touch-icon.png", "/static/profile.png"];
+const CACHE = "adbot-shell-v32";
+const SHELL = ["/", "/web/app.css?v=31", "/web/app.js?v=31", "/manifest.webmanifest", "/static/icon-192.png", "/static/apple-touch-icon.png", "/static/profile.png"];
 self.addEventListener("install", e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener("activate", e => {
   e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim()));

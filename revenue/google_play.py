@@ -356,12 +356,70 @@ def unzip_csv(data: bytes) -> str:
     return raw.decode("latin-1")
 
 
+def _hkey(h: str) -> str:
+    """A header cell as a lookup key: BOM / quotes / extra spaces removed, lower case ("Package ID " -> "package id")."""
+    return " ".join(h.replace("\ufeff", "").strip().strip('"').split()).lower()
+
+
 def _rows(text: str) -> tuple[dict, list[list[str]]]:
     rows = list(csv.reader(io.StringIO(text)))
     rows = [r for r in rows if any(c.strip() for c in r)]
     if not rows:
         return {}, []
-    return {h.strip().lower(): i for i, h in enumerate(rows[0])}, rows[1:]
+    idx: dict = {}
+    for i, h in enumerate(rows[0]):
+        idx.setdefault(_hkey(h), i)
+    return idx, rows[1:]
+
+
+def header_of(text: str) -> list[str]:
+    """The header row of a report, as written in the file (for diagnostics; no data rows)."""
+    for r in csv.reader(io.StringIO(text)):
+        if any(c.strip() for c in r):
+            return [c.strip() for c in r]
+    return []
+
+
+# Header names Google has used for each field of the estimated sales report (sales/salesreport_YYYYMM.zip), newest
+# first. Checked against the header of a real file (salesreport_202611.csv, Nov 2026), which names the package
+# column "Package ID" and the plan column "Base Plan or Purchase Option ID"; older files used "Product ID" for the
+# package. "SKU ID" is the in-app product / subscription ID in both.
+SALES_COLUMNS = {
+    "order": ("order number",),
+    "date": ("order charged date",),
+    "status": ("financial status",),
+    "pkg": ("package id", "product id", "package name"),
+    "ptype": ("product type",),
+    "sku": ("sku id",),
+    "ccy": ("currency of sale",),
+    "price": ("item price",),
+    "charged": ("charged amount",),
+    "country": ("country of buyer",),
+    "plan": ("base plan or purchase option id", "base plan id", "purchase option id"),
+}
+SALES_REQUIRED = ("order", "date", "status", "pkg", "ccy", "charged")
+
+# Earnings report (earnings/earnings_YYYYMM.zip). Same package-column rename as the sales report.
+EARNINGS_COLUMNS = {
+    "desc": ("description",),
+    "date": ("transaction date",),
+    "type": ("transaction type",),
+    "pkg": ("package id", "product id", "package name"),
+    "sku": ("sku id",),
+    "country": ("buyer country",),
+    "mccy": ("merchant currency",),
+    "mamt": ("amount (merchant currency)",),
+}
+EARNINGS_REQUIRED = ("date", "type", "pkg", "mccy", "mamt")
+
+
+def _columns(idx: dict, spec: dict, need: tuple, what: str) -> dict:
+    c = {k: _col(idx, *v) for k, v in spec.items()}
+    missing = [k for k in need if c[k] is None]
+    if missing:
+        wanted = "; ".join(f"{k} ({' / '.join(repr(n) for n in spec[k])})" for k in missing)
+        raise PlayFormatError(f"{what} file is missing columns: {wanted}")
+    return c
 
 
 def _col(idx: dict, *names: str) -> Optional[int]:
@@ -392,14 +450,7 @@ class PackageMatcher:
 
 def parse_sales(text: str, report_id: str, matcher: PackageMatcher, now: dt.datetime) -> list[dict]:
     idx, rows = _rows(text)
-    c = {k: _col(idx, *v) for k, v in {
-        "order": ("order number",), "date": ("order charged date",), "status": ("financial status",),
-        "pkg": ("product id",), "ptype": ("product type",), "sku": ("sku id",), "ccy": ("currency of sale",),
-        "price": ("item price",), "charged": ("charged amount",), "country": ("country of buyer",), "plan": ("base plan id",)}.items()}
-    need = ("order", "date", "status", "pkg", "ccy", "charged")
-    missing = [k for k in need if c[k] is None]
-    if missing:
-        raise PlayFormatError(f"estimated sales file is missing columns: {', '.join(missing)}")
+    c = _columns(idx, SALES_COLUMNS, SALES_REQUIRED, "estimated sales")
     out = []
     for r in rows:
         g = lambda k: r[c[k]].strip() if c[k] is not None and c[k] < len(r) else ""  # noqa: E731
@@ -429,14 +480,7 @@ def parse_sales(text: str, report_id: str, matcher: PackageMatcher, now: dt.date
 
 def parse_earnings(text: str, report_id: str, month: str, matcher: PackageMatcher, now: dt.datetime) -> list[dict]:
     idx, rows = _rows(text)
-    c = {k: _col(idx, *v) for k, v in {
-        "desc": ("description",), "date": ("transaction date",), "type": ("transaction type",), "pkg": ("product id",),
-        "sku": ("sku id",), "country": ("buyer country",), "mccy": ("merchant currency",),
-        "mamt": ("amount (merchant currency)",)}.items()}
-    need = ("date", "type", "pkg", "mccy", "mamt")
-    missing = [k for k in need if c[k] is None]
-    if missing:
-        raise PlayFormatError(f"earnings file is missing columns: {', '.join(missing)}")
+    c = _columns(idx, EARNINGS_COLUMNS, EARNINGS_REQUIRED, "earnings")
     y, m = map(int, month.split("-"))
     out = []
     for n, r in enumerate(rows):
@@ -562,12 +606,53 @@ def _record(con, report_id, rtype, month, tz, status, data, rows, now):
                 [report_id, base64.b64encode(data).decode(), now])
 
 
+def _rid_parts(report_id: str) -> tuple[str, int]:
+    """'google:<object name>:<generation>' -> (object name, generation)."""
+    body = report_id[len("google:"):] if report_id.startswith("google:") else report_id
+    name, _, gen = body.rpartition(":")
+    return name, int(gen) if gen.isdigit() else 0
+
+
+def reparse_kept(con, matcher: "PackageMatcher", now: dt.datetime, stats: dict) -> None:
+    """Parse money reports that were downloaded earlier but kept unparsed (row_count 0), from the archived copy in
+    revenue.report_blobs, with the current parser. Only the newest kept generation of each object is parsed (each
+    generation of salesreport_YYYYMM is the whole month so far); older kept generations are marked superseded by it.
+    Nothing is downloaded again."""
+    kept = con.execute(
+        f"SELECT f.report_id, f.report_type, CAST(f.period_start AS VARCHAR), b.content_b64 FROM {SCHEMA}.report_files f "
+        f"JOIN {SCHEMA}.report_blobs b ON b.report_id = f.report_id WHERE f.source_platform = 'google_play' AND f.row_count = 0 "
+        "AND f.superseded_by IS NULL AND f.report_type IN ('ESTIMATED_SALES', 'EARNINGS')").fetchall()
+    newest: dict = {}
+    for rid, rtype, start, b64 in kept:
+        name, gen = _rid_parts(rid)
+        if name not in newest or gen > newest[name][1]:
+            newest[name] = (rid, gen, rtype, str(start)[:7], b64)
+    for name, (rid, _gen, rtype, month, b64) in sorted(newest.items()):
+        older = [r for r, *_ in kept if _rid_parts(r)[0] == name and r != rid]
+        for r in older:
+            con.execute(f"UPDATE {SCHEMA}.report_files SET superseded_by = ? WHERE report_id = ?", [rid, r])
+        try:
+            text = unzip_csv(base64.b64decode(b64))
+            lines = parse_sales(text, rid, matcher, now) if rtype == "ESTIMATED_SALES" else parse_earnings(text, rid, month, matcher, now)
+        except (PlayFormatError, ValueError, zipfile.BadZipFile) as e:
+            log.warning("Play report %s kept but not parsed: %s", name, e)
+            stats["unparsed"] += 1
+            continue
+        stats["reparsed"] = stats.get("reparsed", 0) + 1
+        stats["lines"] += len(lines)
+        stats["unmatched"] += sum(1 for l in lines if l["app_id"] is None)
+        stats["inserted"] += _insert(con, "sales_reports" if rtype == "ESTIMATED_SALES" else "financial_reports", lines)
+        con.execute(f"UPDATE {SCHEMA}.report_files SET row_count = ? WHERE report_id = ?", [len(lines), rid])
+        log.info("Play report %s (kept earlier) parsed: %d line(s)", name, len(lines))
+
+
 def sync_reports(con, client: Client, bucket: str) -> dict:
-    stats = {"listed": 0, "files": 0, "lines": 0, "inserted": 0, "unparsed": 0, "unmatched": 0}
+    stats = {"listed": 0, "files": 0, "lines": 0, "inserted": 0, "unparsed": 0, "unmatched": 0, "reparsed": 0}
     matcher, now = PackageMatcher(con), registry.now()
     if client.get(f"{GCS}/b/{bucket}/o", {"maxResults": 1}) is None:
         raise BucketNotFound(f"reports bucket {bucket} not found (HTTP 404); copy it again with Play Console > "
                              "Download reports > Copy Cloud Storage URI")
+    reparse_kept(con, matcher, now, stats)
     for prefix, rtype in (("sales/salesreport_", "ESTIMATED_SALES"), ("earnings/earnings_", "EARNINGS")):
         for obj in client.pages(f"{GCS}/b/{bucket}/o", "items", {"prefix": prefix}):
             name = obj.get("name", "")
@@ -864,7 +949,8 @@ def _main(argv=None) -> int:
     revenue.ensure(con)
     res = run(con, retry_reports=True, reports_only=True)
     rep = res.get("reports") or {}
-    print(json.dumps({"reports": {k: rep.get(k) for k in ("outcome", "status", "message", "listed", "files", "inserted")}}
+    print(json.dumps({"reports": {k: rep.get(k) for k in ("outcome", "status", "message", "listed", "files", "reparsed", "lines",
+                                                         "inserted", "unparsed", "unmatched")}}
                      if rep else res, default=str))
     return 0 if rep.get("outcome") in OK_OUTCOMES else 1
 

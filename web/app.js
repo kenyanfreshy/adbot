@@ -341,12 +341,14 @@
       <div class="chips static">${[["all", "All"], ["pause", "Has a proposal"], ["paused", "Paused"], ["protected", "Protected"]].map(([v, l]) => `<button class="chip" data-f="${v}" aria-pressed="${S.kwFilter === v}">${l} · ${counts[v]}</button>`).join("")}</div>
       ${items.length ? items.map(i => `<div class="card" data-key="${esc(i.key)}">
         <div style="display:flex;gap:10px;align-items:flex-start"><div style="flex:1;min-width:0"><div class="name" style="font-weight:700">${esc(i.keyword || "—")}</div>
-          <div class="sub"><span class="dot" style="display:inline-block;background:${COLOR[i.app] || "#666"};width:7px;height:7px;margin-right:4px"></span>${esc(SHORT[i.app] || i.app || "Other")} · ${esc(i.channel)}${i.country ? " · " + flag(i.country) : ""}</div></div>${status(i)}</div>
+          <div class="sub"><span class="dot" style="display:inline-block;background:${COLOR[i.app] || "#666"};width:7px;height:7px;margin-right:4px"></span>${esc(SHORT[i.app] || i.app || "Other")} · ${esc(i.channel)}${i.country ? " · " + flag(i.country) : (i.countries || []).length > 1 ? ` · <span title="${esc(i.countries.join(", "))}">${i.countries.length} countries</span>` : ""}</div>
+          ${i.campaign && i.entity_type !== "campaign" ? `<div class="sub kw-camp">${esc(i.campaign)}</div>` : ""}</div>${status(i)}</div>
         ${hasProp(i) ? `<div class="sub" style="margin-top:6px;color:var(--amber)">${esc(i.proposal.reason)}${i.proposal.blockers.length ? ` · blocked: ${esc(i.proposal.blockers[0])}` : ""}</div>` : ""}
         <div class="stats"><div><small>${esc(i.click_label)}</small><b>${num(i.taps)}</b></div><div><small>${esc(i.channel === "Google Ads" ? "Conversions" : "Installs")}</small><b>${num(i.installs)}</b></div><div><small>Cost / click</small><b style="${i.cpt != null && i.cpt > d.max_cpt ? "color:var(--red)" : ""}">${money(i.cpt)}</b></div><div><small>ACoS</small><b title="${i.revenue_known ? "" : "Revenue not reported for this item"}">${acos(i)}</b></div></div>
+        ${i.no_metrics ? `<div class="sub" style="margin-top:8px">No activity in this period yet.</div>` : ""}
         ${i.monitor_only ? `<div class="sub">AdBot can't change this item on ${esc(i.channel)}; reporting only.</div>` : ""}
         <div class="seg" role="group" aria-label="Override" ${i.can_pause ? "" : "hidden"}>${[["auto", "Auto", ""], ["paused", "Pause", "p"], ["protected", "Protect", "s"]].map(([v, l, c]) => `<button class="${c}" data-o="${v}" aria-pressed="${i.override === v}">${l}</button>`).join("")}</div></div>`).join("")
-      : `<div class="empty">${d.items.length ? "Nothing matches." : "No keywords or campaigns yet. They appear once an ad channel is connected."}</div>`}`;
+      : `<div class="empty">${d.items.length || S.q ? "Nothing matches." : esc(d.empty || "No keywords or campaigns yet. They appear once an ad channel is connected.")}</div>`}`;
     let t; $("kwq").oninput = e => { clearTimeout(t); t = setTimeout(() => { S.q = e.target.value; load(false, true); }, 350); };
     $("view").querySelectorAll("[data-f]").forEach(b => b.onclick = () => { S.kwFilter = b.dataset.f; save(); load(false, true); });
     $("view").querySelectorAll("[data-o]").forEach(b => b.onclick = async () => {

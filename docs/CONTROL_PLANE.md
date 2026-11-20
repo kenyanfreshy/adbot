@@ -87,6 +87,29 @@ Budget increases reserve their delta (`control.budget_reservations`) against the
 minus current budgets; a second change (or a second job) can't spend the same headroom. Holds from a
 crashed run are released after the lease time.
 
+## Campaign discovery
+
+Report endpoints only return rows with activity, so a campaign or keyword that hasn't served yet never appears in
+`ads.ad_performance`. Apple Ads campaigns, ad groups and targeting keywords are therefore listed from the Campaign
+Management API (`GET /api/v5/campaigns`, `.../adgroups`, `.../targetingkeywords`, paginated, `X-AP-Context: orgId=…`)
+on every import, whatever their metrics:
+
+* every campaign goes into `control.campaign_map` (unmapped ones stay listed for review on the Ads tab);
+* every campaign / ad group / keyword of a managed app goes into `control.ad_entities` (campaign entity ids are
+  `campaign:<id>`, keyword ids are Apple's keyword ids, so they line up with report rows);
+* report requests set `returnRecordsWithNoMetrics=true`, but records with no metrics in the window are not loaded
+  as performance rows, so the decision engine sees exactly what it saw before;
+* the Keywords tab shows listed keywords (and campaigns with no keywords) with zero metrics. `control.ad_entities`
+  is display-only: the decision engine never reads it.
+
+An import that listed entities but found no activity is recorded with quality `no_activity` (not `empty`) and a
+message such as "listed 4 campaigns, 3 ad groups, 12 keywords; no activity in the window" (example). A listing error for one
+campaign is a warning in that message, not a failed import.
+
+Names are matched to apps after folding Unicode look-alikes, so en / em dashes, hyphens, pipes and underscores all
+separate words ("RNR – US – Search Results"). A NurseBound campaign without a country code in its name ("Intl")
+takes its country list from the campaign's own countries (display only; budget splits still need a code in the name).
+
 ## Report revisions
 
 Each imported row carries `_fetched_at`. Within an import and against what is stored, the newest revision
