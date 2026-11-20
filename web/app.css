@@ -716,3 +716,22 @@ html,body{height:100%;overflow:hidden}
 .app,.login{height:100vh;height:100dvh;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch;overscroll-behavior-y:contain}
 *{scrollbar-width:none}
 *::-webkit-scrollbar{display:none;width:0;height:0;background:transparent}
+
+/* Trading charts */
+.tc .tc-syms{margin-bottom:6px}
+.tc-ctl{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.tc-ctl .seg{margin-top:0}
+.tc-facts{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0 6px}
+.tc-read{font:600 11.5px var(--body);color:var(--ink-2);min-height:30px;margin:4px 2px 6px;font-variant-numeric:tabular-nums}
+.tc-svg svg{width:100%;height:auto;display:block;touch-action:pan-y}
+.tc-grid{stroke:rgba(0,194,255,.09);stroke-dasharray:2 4}
+.tc-opanel{fill:rgba(2,6,23,.35)}
+.tc-band{fill:rgba(124,108,255,.07)}
+.tc-x{stroke:rgba(226,232,240,.45);stroke-width:1;stroke-dasharray:3 3}
+.tc-lv{font:700 9px var(--body);fill:#0B1120}
+.tc-legend{display:flex;flex-wrap:wrap;gap:6px 12px;margin-top:8px;font-size:11.5px;color:var(--ink-3)}
+.tc-legend span{display:inline-flex;align-items:center;gap:5px}
+.tc-legend i{width:12px;height:3px;border-radius:2px;display:inline-block}
+.tc-legend i.dash{height:0;border-top:2px dashed;background:none}
+.tc-src{margin-top:8px;font-size:11px}
+@media (max-width:420px){.tc-ctl{grid-template-columns:1fr}}

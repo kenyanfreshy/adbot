@@ -57,6 +57,12 @@ The phone app's **Trading** tab shows what the trading bot reports: equity and P
 3. In the Audit/Monitoring service, create `StatusReporter(bot_id="...", mode="paper" or "live")` and call `heartbeat()`, `account()`, `positions()`, `trade()`, `signal()` and `risk()` (examples at the top of the file). Calls return instantly and never raise, so trading can't be slowed or stopped by reporting.
 4. Each scheduled run (every 4 hours) sends a Telegram alert if the bot has gone quiet for 20+ minutes while the FX market is open, or if its kill switch was turned on since the previous run. A problem can therefore wait up to 4 hours for an alert; the trading bot should keep its own immediate alerts.
 
+### Trading charts (moving averages and oscillators)
+
+Under **Charts** on the Trading tab, pick a symbol (open positions first, then signals the bot took, recent trades and other signals), a timeframe (15m / 1H / 4H / 1D) and an oscillator (RSI 14, MACD 12/26/9 or Stochastic 14/3/3). The price panel shows candles with EMA 20, EMA 50 and SMA 200, the open position's entry / stop-loss / take-profit lines, and buy/sell and exit markers. Drag across the chart to read any bar.
+
+Candles come from `trading.bars` when the bot reports them (`status.bars(symbol, "1h", [...])` in `trading_status.py`, re-sent each loop), so the chart matches the broker's prices exactly. Until then the panel uses Yahoo Finance's public chart feed (FX pairs, gold/silver, oil, major indices, crypto), which can differ slightly from the broker's quotes. Indicators are worked out on the server in `trading_charts.py`.
+
 ### Trading bridge for fx_trading_system (no changes to the trading code)
 
 `trading_sidecar.py` runs next to the trading system, reads its Postgres in a read-only session plus `.runtime/runtime_status.json`, and feeds the Trading tab. On the trading PC: copy the `sidecar/` folder anywhere, double-click `setup-sidecar.bat` (makes its own Python environment, asks for the MotherDuck token, runs one test pass), then `start-sidecar.bat` to keep it running. Use Task Scheduler (At log on → start-sidecar.bat) to start it automatically. Optional: create a read-only Postgres role and set `TRADING_PG_DSN` to use it instead of the trading system's own login.

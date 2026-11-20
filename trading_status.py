@@ -32,6 +32,9 @@ Usage (inside the trading bot):
                  reason="target hit")
     status.risk(daily_loss_limit=200.0, daily_loss_used=60.0, max_exposure=50000.0,
                 exposure=10000.0, kill_switch=False, notes="")
+    status.bars("EURUSD", "1h", [                                   # optional: broker candles for the charts
+        {"ts": "2026-10-22T13:00:00Z", "open": 1.0810, "high": 1.0834, "low": 1.0806, "close": 1.0829, "volume": 812},
+    ])                                                              # timeframe: 15m, 1h, 4h or 1d; resend the latest bars each loop
 
 Environment: MOTHERDUCK_TOKEN (same database as AdBot; a separate read/write
 token for the trading machine is best) and optionally MOTHERDUCK_DATABASE (default "adbot").
@@ -66,7 +69,10 @@ DDL = [
         confidence double, decision varchar, reason varchar, source varchar)""",
     f"""create table if not exists {SCHEMA}.risk (ts timestamp, bot_id varchar, mode varchar, daily_loss_limit double, daily_loss_used double,
         max_exposure double, exposure double, kill_switch boolean, notes varchar)""",
+    f"""create table if not exists {SCHEMA}.bars (bot_id varchar, symbol varchar, timeframe varchar, ts timestamp, open double, high double,
+        low double, close double, volume double, primary key (bot_id, symbol, timeframe, ts))""",
 ]
+TIMEFRAMES = {"15m", "1h", "4h", "1d"}
 DECISIONS = {"taken", "skipped", "blocked"}
 
 
@@ -135,6 +141,21 @@ class StatusReporter:
     def risk(self, daily_loss_limit=None, daily_loss_used=None, max_exposure=None, exposure=None, kill_switch=False, notes="") -> None:
         self._put("risk", [self._now(), self.bot_id, self.mode, _f(daily_loss_limit), _f(daily_loss_used), _f(max_exposure), _f(exposure), bool(kill_switch), str(notes)[:500]])
 
+    def bars(self, symbol, timeframe, candles: Iterable[dict]) -> None:
+        """OHLC candles for the Trading tab charts (moving averages, RSI, MACD, Stochastic).
+        Re-sending a bar overwrites it, so send the last few hundred each time; without these the panel uses a public feed."""
+        if timeframe not in TIMEFRAMES:
+            return
+        rows = []
+        for c in candles or []:
+            t = self._safe_ts(c.get("ts"))
+            o, h, l, cl = _f(c.get("open")), _f(c.get("high")), _f(c.get("low")), _f(c.get("close"))
+            if t is None or None in (o, h, l, cl):
+                continue
+            rows.append([self.bot_id, str(symbol)[:20], timeframe, t, o, h, l, cl, _f(c.get("volume"))])
+        if rows:
+            self._put("bars", rows[-1000:])
+
     def flush(self, timeout: float = 5.0) -> None:
         """Wait (briefly) for queued rows to be written; for shutdown and tests."""
         if not self._enabled:
@@ -184,9 +205,9 @@ class StatusReporter:
         rows = rows if rows and isinstance(rows[0], list) else [rows]
         n = len(rows[0])
         ph = ",".join("?" * n)
-        if table == "trades":
-            # the same trade is usually reported at open and again at close: keep the latest
-            self._con.executemany(f"insert or replace into {SCHEMA}.trades values ({ph})", rows)
+        if table in ("trades", "bars"):
+            # the same trade (or still-forming bar) is reported more than once: keep the latest
+            self._con.executemany(f"insert or replace into {SCHEMA}.{table} values ({ph})", rows)
         else:
             self._con.executemany(f"insert into {SCHEMA}.{table} values ({ph})", rows)
 

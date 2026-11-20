@@ -16,7 +16,7 @@
   const store = {get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
                  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }};
   const S = Object.assign({tab: "ads", app: "all", channel: "all", days: 14, kwFilter: "all", q: ""}, store.get("adbot-ui", {}));
-  const save = () => store.set("adbot-ui", {tab: S.tab, app: S.app, channel: S.channel, days: S.days, kwFilter: S.kwFilter});
+  const save = () => store.set("adbot-ui", {tab: S.tab, app: S.app, channel: S.channel, days: S.days, kwFilter: S.kwFilter, tTf: S.tTf, tOsc: S.tOsc});
 
   function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("on"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("on"), 3000); }
 
@@ -494,6 +494,7 @@
       </div>
       ${r ? `<div class="card" style="margin-top:10px">${limitUsed != null ? `<div class="lrow" style="padding-top:0">Daily loss limit<b>${money(r.daily_loss_used)} of ${money(r.daily_loss_limit)}</b></div><div class="bar"><i style="width:${limitUsed * 100}%;background:${limitUsed > .8 ? "var(--red)" : limitUsed > .5 ? "var(--amber)" : "var(--green)"}"></i></div>` : ""}<div class="sub" style="margin-top:8px">${esc(r.notes || "")}</div></div>` : ""}
       ${d.equity.length > 1 ? `<div class="h">Equity <small>30 days</small></div><div class="card"><div class="chart">${lineChart(d.equity.map(e => ({date: e.ts, equity: e.equity})), ["equity"], ["#00E5A3"], null, {fit: true, money: true})}</div></div>` : ""}
+      <div class="h">Charts <small>moving averages &amp; oscillators</small></div><div class="card tc" id="tchart"></div>
       <div class="h">Open positions <small>${d.positions.length}</small></div>
       <div class="card list">${d.positions.length ? d.positions.map(p => `<div class="item"><div class="main"><div class="name">${esc(p.symbol)} <span class="badge ${p.side === "buy" || p.side === "long" ? "good" : "bad"}">${esc(String(p.side || "").toUpperCase())}</span> ${p.strategy ? `<span class="badge warn">${esc(p.strategy)}</span>` : ""}</div><div class="meta">${p.qty} lots · in ${p.entry} · now ${p.price ?? "—"} · SL ${p.stop ?? "—"} · TP ${p.target ?? "—"}</div></div><div class="right" style="color:${(p.unrealized_pnl || 0) < 0 ? "var(--red)" : "var(--green)"}">${smoney(p.unrealized_pnl)}</div></div>`).join("") : `<div class="empty" style="padding:12px">Flat: no open positions.</div>`}</div>
       <div class="h">Closed trades <small>7 days</small></div>
@@ -501,6 +502,131 @@
       <div class="h">Signals <small>24 hours</small></div>
       <div class="card list">${d.signals.length ? d.signals.map(s => `<div class="item"><div class="main"><div class="name">${esc(s.symbol)} ${s.direction ? esc(String(s.direction).toUpperCase()) : ""} <span class="badge ${s.decision === "taken" ? "good" : s.decision === "blocked" ? "bad" : "mute"}">${esc(s.decision)}</span></div><div class="meta">${esc(s.reason || "")}</div></div><div class="right">${s.confidence != null ? pct(s.confidence, 0) : ""}<small>${new Date(s.ts + "Z").toLocaleTimeString("en-US", {hour: "numeric", minute: "2-digit"})}</small></div></div>`).join("") : `<div class="empty" style="padding:12px">No signals in the last 24 hours.</div>`}</div>
       <p class="sub" style="text-align:center;margin-top:14px">Read-only. AdBot never places, changes or closes trades.</p>`;
+    tradeChart(d, my);
+  }
+
+  /* ---------- Trading charts: candles + EMA 20/50 + SMA 200, with RSI / MACD / Stochastic underneath ---------- */
+  const TC_TF = [["15m", "15m"], ["1h", "1H"], ["4h", "4H"], ["1d", "1D"]];
+  const TC_OSC = [["rsi", "RSI 14"], ["macd", "MACD"], ["stoch", "Stoch"]];
+  const TC_MA = [["ema20", "EMA 20", "#00C2FF"], ["ema50", "EMA 50", "#FFB020"], ["sma200", "SMA 200", "#E024C3"]];
+  const tcCache = {};
+  const tcTime = t => new Date(String(t).replace(" ", "T") + (String(t).endsWith("Z") ? "" : "Z"));
+  const fmtP = v => v == null || !isFinite(v) ? "—" : (+v).toFixed(Math.abs(v) < 10 ? 5 : Math.abs(v) < 1000 ? 3 : 2);
+
+  function tradeSymbols(d) {
+    // the trades we're working on first: open positions, then signals the bot took, then recent closes and other signals
+    const out = [];
+    const add = s => { if (s && !out.includes(s)) out.push(s); };
+    d.positions.forEach(p => add(p.symbol));
+    d.signals.filter(s => s.decision === "taken").forEach(s => add(s.symbol));
+    d.trades.forEach(t => add(t.symbol));
+    d.signals.forEach(s => add(s.symbol));
+    return out.slice(0, 10);
+  }
+
+  async function tradeChart(d, my) {
+    const host = $("tchart"); if (!host) return;
+    const syms = tradeSymbols(d);
+    if (!syms.length) { host.innerHTML = `<div class="empty" style="padding:12px">Charts appear once the bot has an open position, a trade or a signal.</div>`; return; }
+    if (!syms.includes(S.tSym)) S.tSym = syms[0];
+    S.tTf = TC_TF.some(([v]) => v === S.tTf) ? S.tTf : "1h";
+    S.tOsc = TC_OSC.some(([v]) => v === S.tOsc) ? S.tOsc : "rsi";
+    const open = new Set(d.positions.map(p => p.symbol));
+    const seg = (attr, key, opts) => `<div class="seg tc-seg" role="group" style="grid-template-columns:repeat(${opts.length},1fr)">${opts.map(([v, l]) => `<button type="button" data-${attr}="${v}" aria-pressed="${S[key] === v}">${l}</button>`).join("")}</div>`;
+    host.innerHTML = `<div class="chips static tc-syms">${syms.map(s => `<button class="chip" data-sym="${esc(s)}" aria-pressed="${s === S.tSym}">${open.has(s) ? `<i style="background:var(--green)"></i>` : ""}${esc(s)}</button>`).join("")}</div>
+      <div class="tc-ctl">${seg("tf", "tTf", TC_TF)}${seg("osc", "tOsc", TC_OSC)}</div>
+      <div id="tcBody"><div class="empty" style="padding:24px 0">Loading ${esc(S.tSym)}…</div></div>`;
+    host.querySelectorAll("[data-sym]").forEach(b => b.onclick = () => { S.tSym = b.dataset.sym; tradeChart(d, my); });
+    host.querySelectorAll("[data-tf]").forEach(b => b.onclick = () => { S.tTf = b.dataset.tf; save(); tradeChart(d, my); });
+    host.querySelectorAll("[data-osc]").forEach(b => b.onclick = () => { S.tOsc = b.dataset.osc; save(); tradeChart(d, my); });
+    const key = `${d.bot_id}|${S.tSym}|${S.tTf}`, want = key;
+    if (tcCache[key]) drawTradeChart(tcCache[key]);
+    try {
+      const c = await api(`/api/trading/chart?symbol=${encodeURIComponent(S.tSym)}&tf=${S.tTf}&bot=${encodeURIComponent(d.bot_id)}`);
+      if (my !== seq || `${d.bot_id}|${S.tSym}|${S.tTf}` !== want) return;
+      tcCache[key] = c; drawTradeChart(c);
+    } catch (e) {
+      if (e.message !== "signin" && !tcCache[key] && $("tcBody")) $("tcBody").innerHTML = `<div class="empty" style="padding:16px 0">Couldn't load the chart: ${esc(e.message)}</div>`;
+    }
+  }
+
+  function drawTradeChart(c) {
+    const body = $("tcBody"); if (!body) return;
+    if (!c.bars || !c.bars.length) { body.innerHTML = `<div class="empty" style="padding:16px 0">${esc(c.error || "No price data for this symbol.")}</div>`; return; }
+    const wide = window.innerWidth >= 1024, keep = wide ? 120 : 72, cut = Math.max(0, c.bars.length - keep);
+    const B = c.bars.slice(cut), sl = k => (c[k] || []).slice(cut), n = B.length;
+    const ma = Object.fromEntries(TC_MA.map(([k]) => [k, sl(k)]));
+    const W = wide ? 900 : 340, H1 = wide ? 270 : 190, H2 = wide ? 110 : 84, GAP = 16, pl = 4, pr = wide ? 62 : 52, pt = 8, XB = 18, H = pt + H1 + GAP + H2 + XB;
+    const step = (W - pl - pr) / n, x = i => pl + step * (i + .5);
+    // levels from the open position(s) on this symbol
+    const lv = [];
+    (c.positions || []).forEach(p => { if (p.entry != null) lv.push([p.entry, "In", "#E2E8F0"]); if (p.stop != null) lv.push([p.stop, "SL", "#FF5C7A"]); if (p.target != null) lv.push([p.target, "TP", "#00E5A3"]); });
+    // scale to candles, EMAs and the position levels; a distant SMA 200 is clipped rather than squashing the candles
+    const vals = B.flatMap(b => [b.h, b.l]).concat(...TC_MA.filter(([k]) => k !== "sma200").map(([k]) => ma[k].filter(v => v != null)), lv.map(l => l[0]));
+    let lo = Math.min(...vals), hi = Math.max(...vals); const pad = (hi - lo) * .06 || Math.abs(hi) * .001 || 1; lo -= pad; hi += pad;
+    const y = v => pt + H1 * (1 - (v - lo) / (hi - lo));
+    let g = "";
+    for (let k = 0; k <= 4; k++) { const v = hi - (hi - lo) * k / 4, yy = y(v); g += `<line x1="${pl}" x2="${W - pr}" y1="${yy.toFixed(1)}" y2="${yy.toFixed(1)}" class="tc-grid"/><text class="axis" x="${W - pr + 5}" y="${(yy + 3.5).toFixed(1)}">${fmtP(v)}</text>`; }
+    const bw = Math.max(1, Math.min(9, step * .62));
+    const candles = B.map((b, i) => { const up = b.c >= b.o, col = up ? "#00E5A3" : "#FF5C7A", top = y(Math.max(b.o, b.c)), bot = y(Math.min(b.o, b.c));
+      return `<line x1="${x(i).toFixed(1)}" x2="${x(i).toFixed(1)}" y1="${y(b.h).toFixed(1)}" y2="${y(b.l).toFixed(1)}" stroke="${col}" stroke-width="1"/><rect x="${(x(i) - bw / 2).toFixed(1)}" y="${top.toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(.8, bot - top).toFixed(1)}" fill="${col}" fill-opacity="${up ? .85 : .9}"/>`; }).join("");
+    const line = (xs, yf, col, w = 1.6, dash = "") => { let dd = "", pen = false; xs.forEach((v, i) => { if (v == null) { pen = false; return; } dd += `${pen ? "L" : "M"}${x(i).toFixed(1)},${yf(v).toFixed(1)}`; pen = true; });
+      return dd ? `<path d="${dd}" fill="none" stroke="${col}" stroke-width="${w}" stroke-linejoin="round" ${dash ? `stroke-dasharray="${dash}"` : ""} vector-effect="non-scaling-stroke"/>` : ""; };
+    const clip = "tcc" + (++chartSeq), maLines = `<clipPath id="${clip}"><rect x="${pl}" y="${pt}" width="${W - pl - pr}" height="${H1}"/></clipPath><g clip-path="url(#${clip})">${TC_MA.map(([k, , col]) => line(ma[k], y, col)).join("")}</g>`;
+    const levels = lv.map(([v, l, col]) => `<line x1="${pl}" x2="${W - pr}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}" stroke="${col}" stroke-width="1" stroke-dasharray="4 4" opacity=".8"/><rect x="${W - pr + 1}" y="${(y(v) - 7).toFixed(1)}" width="${pr - 2}" height="14" rx="3" fill="${col}" opacity=".9"/><text class="tc-lv" x="${W - pr + 5}" y="${(y(v) + 3.5).toFixed(1)}">${l} ${fmtP(v)}</text>`).join("");
+    // trade markers: ▲/▼ at the entry bar, ● at the exit bar
+    const idx = t => { const ms = tcTime(t).getTime(); let k = -1; for (let i = 0; i < n; i++) if (tcTime(B[i].t).getTime() <= ms) k = i; return k; };
+    const marks = (c.trades || []).concat((c.positions || []).map(p => ({...p, exit: null, closed_at: null}))).map(t => {
+      let m = ""; const long = /buy|long/i.test(t.side || "");
+      const i0 = t.opened_at ? idx(t.opened_at) : -1;
+      if (i0 >= 0 && t.entry != null) { const yy = y(t.entry), s = 5; m += `<path d="M${x(i0)},${long ? yy + 2 : yy - 2}l${-s},${long ? s * 1.6 : -s * 1.6}h${2 * s}z" fill="${long ? "#00E5A3" : "#FF5C7A"}" stroke="#0B1120" stroke-width="1"><title>${long ? "Buy" : "Sell"} ${fmtP(t.entry)}</title></path>`; }
+      const i1 = t.closed_at ? idx(t.closed_at) : -1;
+      if (i1 >= 0 && t.exit != null) m += `<circle cx="${x(i1)}" cy="${y(t.exit)}" r="4" fill="${(t.pnl || 0) >= 0 ? "#00E5A3" : "#FF5C7A"}" stroke="#E2E8F0" stroke-width="1.2"><title>Closed ${fmtP(t.exit)} (${smoney(t.pnl)})</title></circle>`;
+      return m; }).join("");
+    // oscillator panel
+    const o0 = pt + H1 + GAP, oy = (v, a, b) => o0 + H2 * (1 - (v - a) / (b - a));
+    let osc = `<rect x="${pl}" y="${o0}" width="${W - pl - pr}" height="${H2}" class="tc-opanel"/>`, oLabel = "";
+    if (S.tOsc === "macd") {
+      const m = sl("macd"), sg = sl("macd_signal"), hs = sl("macd_hist"), all = m.concat(sg, hs).filter(v => v != null);
+      const a = Math.max(1e-9, ...all.map(Math.abs)) * 1.1, f = v => oy(v, -a, a);
+      osc += `<line x1="${pl}" x2="${W - pr}" y1="${f(0)}" y2="${f(0)}" class="tc-grid"/>` + hs.map((v, i) => v == null ? "" : `<rect x="${(x(i) - bw / 2).toFixed(1)}" y="${Math.min(f(v), f(0)).toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.abs(f(v) - f(0)).toFixed(1)}" fill="${v >= 0 ? "#00E5A3" : "#FF5C7A"}" fill-opacity=".55"/>`).join("")
+        + line(m, f, "#00C2FF", 1.5) + line(sg, f, "#FFB020", 1.5);
+      oLabel = `<text class="axis" x="${W - pr + 5}" y="${f(0) + 3.5}">0</text>`;
+    } else {
+      const [k1, k2, hiB, loB] = S.tOsc === "rsi" ? ["rsi", null, 70, 30] : ["stoch_k", "stoch_d", 80, 20];
+      const f = v => oy(v, 0, 100);
+      osc += `<rect x="${pl}" y="${f(hiB)}" width="${W - pl - pr}" height="${f(loB) - f(hiB)}" class="tc-band"/>`
+        + [hiB, loB].map(v => `<line x1="${pl}" x2="${W - pr}" y1="${f(v)}" y2="${f(v)}" stroke="${v === hiB ? "#FF5C7A" : "#00E5A3"}" stroke-opacity=".5" stroke-dasharray="3 4"/><text class="axis" x="${W - pr + 5}" y="${f(v) + 3.5}">${v}</text>`).join("")
+        + line(sl(k1), f, "#7C6CFF", 1.7) + (k2 ? line(sl(k2), f, "#FFB020", 1.4) : "");
+    }
+    // time axis
+    const intraday = c.tf !== "1d"; let xl = ""; const every = Math.ceil(n / (wide ? 8 : 4));
+    for (let i = Math.floor(every / 2); i < n; i += every) { const t = tcTime(B[i].t);
+      xl += `<text class="axis" x="${x(i).toFixed(1)}" y="${H - 5}" text-anchor="middle">${intraday ? t.toLocaleString("en-US", {month: "numeric", day: "numeric"}) + " " + t.toLocaleTimeString("en-US", {hour: "numeric", minute: "2-digit"}).replace(":00", "") : t.toLocaleDateString("en-US", {month: "short", day: "numeric"})}</text>`; }
+    const sm = c.summary || {}, chip = (cls, txt) => `<span class="badge ${cls}">${txt}</span>`;
+    const facts = [
+      sm.trend ? chip(sm.trend === "up" ? "good" : sm.trend === "down" ? "bad" : "mute", `Trend ${sm.trend}`) : "",
+      sm.above_sma200 != null ? chip(sm.above_sma200 ? "good" : "bad", `${sm.above_sma200 ? "Above" : "Below"} SMA 200`) : "",
+      sm.rsi != null ? chip(sm.rsi_zone === "overbought" ? "bad" : sm.rsi_zone === "oversold" ? "good" : "info", `RSI ${sm.rsi.toFixed(0)} ${sm.rsi_zone}`) : "",
+      sm.macd_bias ? chip(sm.macd_bias === "bullish" ? "good" : sm.macd_bias === "bearish" ? "bad" : "mute", `MACD ${sm.macd_bias}`) : "",
+      sm.stoch_k != null ? chip(sm.stoch_zone === "overbought" ? "bad" : sm.stoch_zone === "oversold" ? "good" : "info", `Stoch ${sm.stoch_k.toFixed(0)} ${sm.stoch_zone}`) : "",
+    ].join("");
+    const oscLegend = S.tOsc === "rsi" ? [["RSI 14", "#7C6CFF"]] : S.tOsc === "stoch" ? [["%K", "#7C6CFF"], ["%D", "#FFB020"]] : [["MACD", "#00C2FF"], ["Signal", "#FFB020"], ["Histogram", "#00E5A3"]];
+    body.innerHTML = `<div class="tc-facts">${facts}</div>
+      <div class="tc-read" aria-live="polite">${esc(c.symbol)} ${fmtP(sm.price)}</div>
+      <div class="tc-svg"><svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(c.symbol)} ${esc(c.tf)} candles with moving averages and ${esc(S.tOsc)}">${g}${levels}${candles}${maLines}${marks}${osc}${oLabel}${xl}
+        <line class="tc-x" x1="0" x2="0" y1="${pt}" y2="${o0 + H2}" visibility="hidden"/><rect class="tc-hit" x="${pl}" y="${pt}" width="${W - pl - pr}" height="${o0 + H2 - pt}" fill="transparent"/></svg></div>
+      <div class="tc-legend">${TC_MA.map(([, l, col]) => `<span><i style="background:${col}"></i>${l}</span>`).join("")}${lv.length ? `<span><i class="dash" style="border-color:#E2E8F0"></i>Entry (In) / <b style="color:#FF5C7A">SL</b> / <b style="color:#00E5A3">TP</b></span>` : ""}${oscLegend.map(([l, col]) => `<span><i style="background:${col}"></i>${l}</span>`).join("")}</div>
+      <div class="sub tc-src">Prices: ${esc(c.source || "")}${String(c.source || "").startsWith("Yahoo") ? " · may differ slightly from your broker's" : ""}. Indicators describe the chart; they aren't trade advice.</div>`;
+    // scrub: drag or hover to read a bar's values
+    const svg = body.querySelector("svg"), hit = svg.querySelector(".tc-hit"), vx = svg.querySelector(".tc-x"), read = body.querySelector(".tc-read");
+    const ser = {rsi: sl("rsi"), mh: sl("macd_hist"), m: sl("macd"), k: sl("stoch_k"), d: sl("stoch_d")};
+    const show = ev => { const r = svg.getBoundingClientRect(), px = (ev.clientX - r.left) / r.width * W, i = Math.max(0, Math.min(n - 1, Math.floor((px - pl) / step)));
+      const b = B[i], t = tcTime(b.t); vx.setAttribute("x1", x(i)); vx.setAttribute("x2", x(i)); vx.setAttribute("visibility", "visible");
+      const o = S.tOsc === "rsi" ? `RSI ${ser.rsi[i] != null ? ser.rsi[i].toFixed(1) : "—"}` : S.tOsc === "stoch" ? `%K ${ser.k[i] != null ? ser.k[i].toFixed(0) : "—"} %D ${ser.d[i] != null ? ser.d[i].toFixed(0) : "—"}` : `MACD ${ser.m[i] != null ? ser.m[i].toPrecision(3) : "—"} hist ${ser.mh[i] != null ? ser.mh[i].toPrecision(3) : "—"}`;
+      read.textContent = `${t.toLocaleString("en-US", {weekday: "short", month: "short", day: "numeric", ...(intraday ? {hour: "numeric", minute: "2-digit"} : {})})} · O ${fmtP(b.o)} H ${fmtP(b.h)} L ${fmtP(b.l)} C ${fmtP(b.c)} · EMA20 ${fmtP(ma.ema20[i])} · ${o}`; };
+    const hide = () => { vx.setAttribute("visibility", "hidden"); read.textContent = `${c.symbol} ${fmtP(sm.price)}`; };
+    hit.addEventListener("pointermove", show); hit.addEventListener("pointerdown", show); hit.addEventListener("pointerleave", hide);
   }
 
   /* ---------- Revenue: futurist command deck (Stage B: registry + data sources; numbers arrive once store reports are imported) ---------- */

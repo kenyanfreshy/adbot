@@ -41,6 +41,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 import dlt_pipeline as bot
+import trading_charts
 from control import alerts as calerts
 from control import budget as cbudget
 from control import engine as ceng
@@ -596,6 +597,29 @@ async def trading(request: Request):
 
 
 @guarded
+async def trading_chart(request: Request):
+    """Candles + moving averages + oscillators for one symbol, with the bot's own levels and fills on it."""
+    symbol = (request.query_params.get("symbol") or "").strip()
+    if not symbol or len(symbol) > 24 or not re.fullmatch(r"[A-Za-z0-9/._=^-]+", symbol):
+        return J({"error": "Pick a symbol"}, 400)
+    tf = request.query_params.get("tf") or trading_charts.DEFAULT_TF
+    bots = trading_bots()
+    bot_id = request.query_params.get("bot") or (bots[0]["bot_id"] if bots else "")
+    try:
+        d = await run_in_threadpool(trading_charts.chart, symbol, tf, bot_id, rows)
+    except Exception as e:  # noqa: BLE001 — a feed hiccup shouldn't break the tab
+        return J({"symbol": symbol, "tf": tf, "bars": [], "error": f"Couldn't load prices: {e}"})
+    if d.get("bars"):
+        t0 = d["bars"][0]["t"]
+        snap = rows("select max(snapshot_at) as s from trading.positions where bot_id = ?", [bot_id])
+        d["positions"] = rows("select side, qty, entry, stop, target, opened_at from trading.positions where bot_id = ? and snapshot_at = ? "
+                              "and symbol = ?", [bot_id, snap[0]["s"], symbol]) if snap and snap[0]["s"] else []
+        d["trades"] = rows("select side, entry, exit, pnl, opened_at, closed_at from trading.trades where bot_id = ? and symbol = ? "
+                           "and coalesce(closed_at, opened_at) >= ? order by opened_at limit 50", [bot_id, symbol, t0])
+    return J(d)
+
+
+@guarded
 async def telegram_test(request: Request):
     ok = bot.telegram("✅ <b>AdBot test</b> from the phone app.", bot.load_rules(con()))
     return J({"ok": ok, "error": None if ok else "Not sent. Check TELEGRAM_BOT_TOKEN on Render and the chat ID in Rules."})
@@ -980,6 +1004,7 @@ routes = [
     Route("/api/rules", rules_post, methods=["POST"]),
     Route("/api/log", log),
     Route("/api/trading", trading),
+    Route("/api/trading/chart", trading_chart),
     Route("/api/telegram-test", telegram_test, methods=["POST"]),
     Route("/api/run-bot", run_bot_now, methods=["POST"]),
     Route("/api/control", control_get),
