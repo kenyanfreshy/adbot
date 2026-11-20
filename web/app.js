@@ -16,7 +16,7 @@
   const store = {get(k, d) { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
                  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }};
   const S = Object.assign({tab: "ads", app: "all", channel: "all", days: 14, kwFilter: "all", q: ""}, store.get("adbot-ui", {}));
-  const save = () => store.set("adbot-ui", {tab: S.tab, app: S.app, channel: S.channel, days: S.days, kwFilter: S.kwFilter, tTf: S.tTf, tOsc: S.tOsc});
+  const save = () => store.set("adbot-ui", {tab: S.tab, app: S.app, channel: S.channel, days: S.days, kwFilter: S.kwFilter, tTf: S.tTf, tOsc: S.tOsc, tCustom: S.tCustom || []});
 
   function toast(msg) { const t = $("toast"); t.textContent = msg; t.classList.add("on"); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("on"), 3000); }
 
@@ -509,6 +509,7 @@
   const TC_TF = [["15m", "15m"], ["1h", "1H"], ["4h", "4H"], ["1d", "1D"]];
   const TC_OSC = [["rsi", "RSI 14"], ["macd", "MACD"], ["stoch", "Stoch"]];
   const TC_MA = [["ema20", "EMA 20", "#00C2FF"], ["ema50", "EMA 50", "#FFB020"], ["sma200", "SMA 200", "#E024C3"]];
+  const TC_DEFAULT = ["EURUSD", "GBPUSD", "USDJPY", "XAUUSD"];
   const tcCache = {};
   const tcTime = t => new Date(String(t).replace(" ", "T") + (String(t).endsWith("Z") ? "" : "Z"));
   const fmtP = v => v == null || !isFinite(v) ? "—" : (+v).toFixed(Math.abs(v) < 10 ? 5 : Math.abs(v) < 1000 ? 3 : 2);
@@ -521,22 +522,32 @@
     d.signals.filter(s => s.decision === "taken").forEach(s => add(s.symbol));
     d.trades.forEach(t => add(t.symbol));
     d.signals.forEach(s => add(s.symbol));
-    return out.slice(0, 10);
+    // symbols you added yourself, then a few common ones so there's always something to chart
+    (S.tCustom || []).forEach(add);
+    if (out.length < 4) TC_DEFAULT.forEach(add);
+    return out.slice(0, 14);
   }
 
   async function tradeChart(d, my) {
     const host = $("tchart"); if (!host) return;
     const syms = tradeSymbols(d);
-    if (!syms.length) { host.innerHTML = `<div class="empty" style="padding:12px">Charts appear once the bot has an open position, a trade or a signal.</div>`; return; }
     if (!syms.includes(S.tSym)) S.tSym = syms[0];
     S.tTf = TC_TF.some(([v]) => v === S.tTf) ? S.tTf : "1h";
     S.tOsc = TC_OSC.some(([v]) => v === S.tOsc) ? S.tOsc : "rsi";
     const open = new Set(d.positions.map(p => p.symbol));
     const seg = (attr, key, opts) => `<div class="seg tc-seg" role="group" style="grid-template-columns:repeat(${opts.length},1fr)">${opts.map(([v, l]) => `<button type="button" data-${attr}="${v}" aria-pressed="${S[key] === v}">${l}</button>`).join("")}</div>`;
-    host.innerHTML = `<div class="chips static tc-syms">${syms.map(s => `<button class="chip" data-sym="${esc(s)}" aria-pressed="${s === S.tSym}">${open.has(s) ? `<i style="background:var(--green)"></i>` : ""}${esc(s)}</button>`).join("")}</div>
+    host.innerHTML = `<div class="chips static tc-syms">${syms.map(s => `<button class="chip" data-sym="${esc(s)}" aria-pressed="${s === S.tSym}">${open.has(s) ? `<i style="background:var(--green)"></i>` : ""}${esc(s)}${(S.tCustom || []).includes(s) ? `<span class="tc-rm" data-rm="${esc(s)}" role="button" aria-label="Remove ${esc(s)}">×</span>` : ""}</button>`).join("")}</div>
+      <form class="tc-add" id="tcAdd"><input id="tcSym" placeholder="Add a symbol, e.g. AUDUSD" maxlength="20" autocapitalize="characters" autocomplete="off" spellcheck="false" aria-label="Symbol to chart"><button type="submit">Chart</button></form>
       <div class="tc-ctl">${seg("tf", "tTf", TC_TF)}${seg("osc", "tOsc", TC_OSC)}</div>
       <div id="tcBody"><div class="empty" style="padding:24px 0">Loading ${esc(S.tSym)}…</div></div>`;
-    host.querySelectorAll("[data-sym]").forEach(b => b.onclick = () => { S.tSym = b.dataset.sym; tradeChart(d, my); });
+    host.querySelectorAll("[data-sym]").forEach(b => b.onclick = ev => {
+      const rm = ev.target.closest("[data-rm]");
+      if (rm) { S.tCustom = (S.tCustom || []).filter(x => x !== rm.dataset.rm); if (S.tSym === rm.dataset.rm) S.tSym = null; save(); tradeChart(d, my); return; }
+      S.tSym = b.dataset.sym; tradeChart(d, my); });
+    $("tcAdd").onsubmit = ev => { ev.preventDefault();
+      const v = $("tcSym").value.trim().toUpperCase().replace(/\s+/g, "");
+      if (!/^[A-Z0-9/._=^-]{2,20}$/.test(v)) { toast("Type a symbol like EURUSD, XAUUSD or AAPL"); return; }
+      S.tCustom = [v, ...(S.tCustom || []).filter(x => x !== v)].slice(0, 8); S.tSym = v; save(); tradeChart(d, my); };
     host.querySelectorAll("[data-tf]").forEach(b => b.onclick = () => { S.tTf = b.dataset.tf; save(); tradeChart(d, my); });
     host.querySelectorAll("[data-osc]").forEach(b => b.onclick = () => { S.tOsc = b.dataset.osc; save(); tradeChart(d, my); });
     const key = `${d.bot_id}|${S.tSym}|${S.tTf}`, want = key;

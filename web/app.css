@@ -735,3 +735,8 @@ html,body{height:100%;overflow:hidden}
 .tc-legend i.dash{height:0;border-top:2px dashed;background:none}
 .tc-src{margin-top:8px;font-size:11px}
 @media (max-width:420px){.tc-ctl{grid-template-columns:1fr}}
+.tc-add{display:flex;gap:8px;margin:2px 0 10px}
+.tc-add input{flex:1;min-width:0;height:36px;border-radius:10px;border:1px solid var(--line-2);background:rgba(2,6,23,.5);color:var(--ink);padding:0 12px;font:600 13px var(--body);text-transform:uppercase}
+.tc-add input::placeholder{text-transform:none;color:var(--ink-4)}
+.tc-add button{height:36px;border:0;border-radius:10px;padding:0 14px;font:700 12.5px var(--body);color:#fff;background:var(--grad,var(--purple));cursor:pointer}
+.tc-rm{margin-left:2px;padding:0 2px;font-size:15px;line-height:1;opacity:.7}

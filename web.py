@@ -989,6 +989,15 @@ async def health(request: Request):
     return Response("ok")
 
 
+class RevalidatedFiles(StaticFiles):
+    """App files: the browser must check for a newer copy each time (a cheap 304 when unchanged), so a deploy shows up at once."""
+
+    def file_response(self, *args, **kwargs):
+        r = super().file_response(*args, **kwargs)
+        r.headers["Cache-Control"] = "no-cache"
+        return r
+
+
 routes = [
     Route("/", index),
     Route("/healthz", health),
@@ -1019,8 +1028,8 @@ routes = [
     Route("/api/revenue/listing", revenue_listing, methods=["POST"]),
     Route("/api/revenue/check-ids", revenue_check_ids, methods=["POST"]),
     Route("/api/revenue/retry-play-reports", revenue_retry_play_reports, methods=["POST"]),
-    Mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static"),
-    Mount("/web", StaticFiles(directory=str(WEB)), name="web"),
+    Mount("/static", RevalidatedFiles(directory=str(ROOT / "static")), name="static"),
+    Mount("/web", RevalidatedFiles(directory=str(WEB)), name="web"),
 ]
 
 app = Starlette(routes=routes, middleware=[Middleware(GZipMiddleware, minimum_size=800)])
