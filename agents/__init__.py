@@ -6,13 +6,16 @@ reads), works out one thing, and hands its result to the agents after it. The Br
 order once per scheduled job, records every result in control.agent_outputs, and never lets one agent's failure
 stop the others or the ad bot.
 
-Phase 1 (this package):
+The team (see docs/AGENTS.md for every agent):
   Department Check   checks every data source: ad accounts, App Store, Google Play, unmapped campaigns, trading
   Spend Watch        what you spent: yesterday and month to date, per channel and app, against the monthly budget
   Real Return        what sold vs what you spent, per app (blended: all store proceeds, organic included)
   Winner Spotter     keywords / ad sets with the cheapest installs, and the ones spending with nothing to show
   Change Review      changes AdBot has proposed and that need your OK (from the existing decision engine)
   Morning Page       one page every morning on Telegram, written from the agents' facts
+  Research           Review Miner, Search Ad Watch, Competitor Ad Spy, Customer Voice, Angle Writer (research.py, writing.py)
+  Studio             Ad Copy, Listing Writer, Test Budget, Launch Drafter, Resizer, Creative Briefs: drafts for your
+                     approval on the Studio tab, never sent anywhere (writing.py, launch.py, creative.py, studio.py)
 
 Hard limits, enforced by construction:
   * no agent writes to an ad platform, and none changes spend, bids, budgets or campaigns: they read, and write only

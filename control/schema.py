@@ -310,6 +310,54 @@ MIGRATIONS.append((5, "agents: runs, per-agent outputs, Claude API usage and mor
         facts            VARCHAR)""",        # JSON the page was written from
 ]))
 
+MIGRATIONS.append((6, "studio: reviews, search terms, competitor ads and the studio's angles, copy, drafts and briefs", [
+    # Research inputs (read from the stores and ad platforms; nothing is written back to them)
+    f"""CREATE TABLE IF NOT EXISTS {SCHEMA}.reviews (
+        review_id   VARCHAR PRIMARY KEY,       -- '<store>:<id>'
+        app         VARCHAR NOT NULL,
+        store       VARCHAR NOT NULL,          -- apple_app_store | google_play
+        rating      INTEGER,
+        title       VARCHAR,
+        body        VARCHAR,
+        territory   VARCHAR,
+        created_at  TIMESTAMP,
+        fetched_at  TIMESTAMP NOT NULL)""",
+    f"""CREATE TABLE IF NOT EXISTS {SCHEMA}.search_terms (
+        snapshot_date DATE NOT NULL,
+        channel       VARCHAR NOT NULL,
+        campaign_id   VARCHAR NOT NULL,
+        adgroup_id    VARCHAR NOT NULL,
+        term          VARCHAR NOT NULL,
+        app           VARCHAR,
+        source        VARCHAR,                 -- how the platform matched it (e.g. AUTO, TARGETED)
+        keyword       VARCHAR,                 -- the keyword it matched, if any
+        impressions   DOUBLE, taps DOUBLE, installs DOUBLE, spend DOUBLE,
+        window_start  DATE, window_end DATE,
+        PRIMARY KEY (snapshot_date, channel, campaign_id, adgroup_id, term))""",
+    f"""CREATE TABLE IF NOT EXISTS {SCHEMA}.competitor_ads (
+        ad_id        VARCHAR PRIMARY KEY,
+        page_name    VARCHAR,
+        body         VARCHAR,
+        title        VARCHAR,
+        started      DATE,
+        search_term  VARCHAR,
+        fetched_at   TIMESTAMP NOT NULL)""",
+    # The studio: everything the agents write for you to review. Nothing here is ever sent to an ad platform.
+    f"""CREATE TABLE IF NOT EXISTS {SCHEMA}.studio_items (
+        item_id     VARCHAR PRIMARY KEY,
+        kind        VARCHAR NOT NULL,          -- voice | angle | copy | listing | draft | brief
+        app         VARCHAR,
+        parent_id   VARCHAR,                   -- the angle a copy belongs to, the copy a draft belongs to, ...
+        agent       VARCHAR NOT NULL,
+        created_at  TIMESTAMP NOT NULL,
+        status      VARCHAR NOT NULL,          -- draft | approved | rejected | superseded
+        title       VARCHAR,
+        content     VARCHAR NOT NULL,          -- JSON
+        flags       VARCHAR,                   -- JSON list: things a person must check (claims, limits)
+        decided_by  VARCHAR,
+        decided_at  TIMESTAMP)""",
+]))
+
 LATEST = max(v for v, _, _ in MIGRATIONS)
 
 

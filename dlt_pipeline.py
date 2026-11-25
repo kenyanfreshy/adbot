@@ -630,6 +630,37 @@ class AppleSearchAds:
                     break
                 offset += 1000
 
+    def search_terms(self, campaign_id, start: dt.date, end: dt.date) -> Iterator[dict]:
+        """Search terms people typed that showed a campaign's ads (read-only; Search Results campaigns only).
+        Totals over the window; Apple leaves low-volume terms out of this report."""
+        offset = 0
+        while True:
+            body = {"startTime": start.isoformat(), "endTime": end.isoformat(), "timeZone": "ORTZ",
+                    "returnRecordsWithNoMetrics": False, "returnRowTotals": True, "returnGrandTotals": False,
+                    "selector": {"orderBy": [{"field": "localSpend", "sortOrder": "DESCENDING"}],
+                                 "pagination": {"offset": offset, "limit": 1000}}}
+            j = http("POST", f"{self.BASE}/reports/campaigns/{campaign_id}/searchterms", json=body, headers=self.headers()).json()
+            rows = self._report_rows(j)
+            for row in rows:
+                m, t = row.get("metadata") or {}, row.get("total") or {}
+                if not t and row.get("granularity"):
+                    t = {"impressions": 0, "taps": 0, "totalInstalls": 0, "localSpend": {"amount": 0}}
+                    for g in row["granularity"]:
+                        for f in ("impressions", "taps", "totalInstalls"):
+                            t[f] += float(g.get(f) or 0)
+                        t["localSpend"]["amount"] += float((g.get("localSpend") or {}).get("amount") or 0)
+                term = m.get("searchTermText")
+                if not term:
+                    continue      # Apple groups low-volume terms without text
+                yield {"term": term, "source": m.get("searchTermSource"), "keyword": m.get("keyword"),
+                       "adgroup_id": str(m.get("adGroupId") or ""), "impressions": float(t.get("impressions") or 0),
+                       "taps": float(t.get("taps") or 0),
+                       "installs": float(t.get("totalInstalls", t.get("tapInstalls", t.get("installs", 0))) or 0),
+                       "spend": float(((t.get("localSpend") or {}).get("amount")) or 0)}
+            if len(rows) < 1000:
+                return
+            offset += 1000
+
     def pause_keyword(self, a: dict) -> None:
         if a.get("entity_type") != "keyword":
             raise ValueError("Apple keyword pause requires a keyword entity")

@@ -55,6 +55,10 @@ services:
         value: America/Los_Angeles
       - key: AGENTS_MORNING_HOUR
         value: "8"
+      - key: AGENTS_COMPETITOR_TERMS   # optional, comma-separated: competitor ads to watch in the Meta Ad Library
+        sync: false
+      - key: CREATIVE_PROVIDER         # reserved for an image/video/voice tool; "none" = briefs only
+        value: none
       # Apple Search Ads (Settings > API in Apple Search Ads)
       - key: ASA_CLIENT_ID
         sync: false

@@ -23,12 +23,17 @@ ENV = {"DRY_RUN": "true", "AGENTS_TZ": "America/Los_Angeles", "AGENTS_MORNING_HO
 
 
 class FakeClaude:
-    def __init__(self, text="Spend is under the limit and RNR leads on proceeds."):
-        self.text, self.calls = text, []
+    def __init__(self, text="Spend is under the limit and RNR leads on proceeds.", answers=None):
+        self.text, self.calls, self.answers = text, [], answers or {}
 
     def complete(self, agent, system, prompt, max_tokens=500):
         self.calls.append((agent, prompt))
         return self.text
+
+    def complete_json(self, agent, system, prompt, max_tokens=1500):
+        self.calls.append((agent, prompt))
+        a = self.answers.get(agent)
+        return a(prompt) if callable(a) else a
 
 
 class Resp:
@@ -69,8 +74,8 @@ class BrainTests(unittest.TestCase):
     def test_team_is_read_only_by_construction(self):
         # every agent module: no adapter, no execution, no platform client imported
         import inspect
-        from agents import changes, departments, money, winners
-        for m in (brain, changes, departments, money, morning, winners, llm):
+        from agents import changes, creative, departments, launch, money, research, studio, winners, writing
+        for m in (brain, changes, creative, departments, launch, money, morning, research, studio, winners, writing, llm):
             src = inspect.getsource(m)
             for bad in ("adapters", "execute_", "pause_keyword", "set_campaign_budget", "set_adset_budget", "run_bot("):
                 self.assertNotIn(bad, src, f"{m.__name__} mentions {bad}")
@@ -145,7 +150,9 @@ def db():
     return test_control
 
 
-class TeamOnDataTests(unittest.TestCase):
+class _OnData(unittest.TestCase):
+    """Shared setup: an in-memory database with 10 days of ad rows and some App Store sales."""
+
     def setUp(self):
         tc = db()
         self.tc = tc
@@ -170,9 +177,14 @@ class TeamOnDataTests(unittest.TestCase):
 
     def run_team(self, env=None, llm_=None, transport=None, now=NOW):
         t = transport or alerts.FakeTransport()
-        return brain.run(self.con, self.rules, environ={**ENV, **(env or {})}, llm=llm_ if llm_ is not None else False,
-                         transport=t, clock=lambda: now), t
+        from unittest import mock
+        with mock.patch.object(brain, "_build_client", lambda name, env: None):      # no platform keys in tests
+            return brain.run(self.con, self.rules, environ={**ENV, **(env or {})}, llm=llm_ if llm_ is not None else False,
+                             transport=t, clock=lambda: now), t
 
+
+
+class TeamOnDataTests(_OnData):
     def test_one_run_end_to_end(self):
         claude = FakeClaude("Spend is under the limit with 6 days left.")
         res, t = self.run_team(llm_=claude)
@@ -206,7 +218,7 @@ class TeamOnDataTests(unittest.TestCase):
         self.assertIn("dry run", t.sent[0])
         self.assertEqual(self.con.execute("SELECT count(*) FROM control.morning_pages").fetchone()[0], 1)
         self.assertEqual(self.con.execute("SELECT status FROM control.agent_runs").fetchone()[0], "succeeded")
-        self.assertEqual(self.con.execute("SELECT count(*) FROM control.agent_outputs").fetchone()[0], 6)
+        self.assertEqual(self.con.execute("SELECT count(*) FROM control.agent_outputs").fetchone()[0], len(brain.team()))
 
     def test_once_a_day_and_not_before_the_hour(self):
         res, t = self.run_team(now=dt.datetime(2026, 11, 25, 12, 7))      # 04:07 local
@@ -235,3 +247,152 @@ class TeamOnDataTests(unittest.TestCase):
         self.assertEqual(res["agents"]["morning_page"]["status"], "skipped")
         self.assertEqual(res["agents"]["spend_watch"]["status"], "ok")
         self.assertEqual(res["status"], "partial")
+
+
+# --------------------------------------------------------------------------- #
+# Phases 2-4: research, writing, launch drafts, creative briefs
+# --------------------------------------------------------------------------- #
+class StudioPureTests(unittest.TestCase):
+    def test_claim_flags(self):
+        from agents.studio import claim_flags
+        self.assertEqual(claim_flags("Study smarter on your commute"), [])
+        f = claim_flags("Pass the NCLEX on your first try", "Best CCRN app", "2,000 practice questions", "Free trial")
+        self.assertEqual(len(f), 4)
+
+    def test_copy_limits(self):
+        from agents.writing import check_copy
+        clean, dropped, flags = check_copy({
+            "meta": {"primary_text": ["Short and fine", "x" * 126], "headline": ["Ok headline"]},
+            "google_app": {"headline": ["Thirty chars is the max here..", "This headline is far too long for Google"], "description": ["Fine"]},
+            "apple_ads": {"keywords": ["nclex", "nclex practice"]}})
+        self.assertEqual(clean["meta"]["primary_text"], ["Short and fine"])
+        self.assertEqual(clean["google_app"]["headline"], ["Thirty chars is the max here.."])
+        self.assertEqual(len(dropped), 2)
+        self.assertEqual(clean["apple_ads"]["keywords"], ["nclex", "nclex practice"])
+
+    def test_parse_json(self):
+        self.assertEqual(llm.parse_json('```json\n{"a": 1}\n```'), {"a": 1})
+        self.assertEqual(llm.parse_json('Here: {"a": [1, 2]} done'), {"a": [1, 2]})
+        self.assertIsNone(llm.parse_json("no json"))
+
+
+class FakeAppleStore:
+    def pages(self, path, params):
+        assert path == "/v1/apps/6822172335/customerReviews", path
+        yield {"data": [{"id": "r1", "attributes": {"rating": 5, "title": "Great for NCLEX", "body": "The rationales helped me study on breaks.",
+                                                     "territory": "USA", "createdDate": "2026-11-20T10:00:00-08:00"}},
+                        {"id": "r2", "attributes": {"rating": 2, "title": "Crashes", "body": "Crashes when I open a quiz.",
+                                                     "territory": "USA", "createdDate": "2026-11-21T10:00:00-08:00"}}]}
+
+
+class FakePlay:
+    def pages(self, url, key, params=None):
+        if "rapidnursingreview" not in url:
+            return iter([])
+        return iter([{"reviewId": "g1", "comments": [{"userComment": {"text": "Love the timed exams", "starRating": 4,
+                                                                      "lastModified": {"seconds": "1795000000"}, "reviewerLanguage": "en"}}]}])
+
+
+class FakeAppleAds:
+    def search_terms(self, cid, start, end):
+        if cid != "2145125761":
+            return iter([])
+        return iter([{"term": "nclex prep", "source": "AUTO", "keyword": None, "adgroup_id": "11", "impressions": 300, "taps": 20, "installs": 4, "spend": 15.0},
+                     {"term": "nursing jobs", "source": "AUTO", "keyword": None, "adgroup_id": "11", "impressions": 200, "taps": 18, "installs": 0, "spend": 14.0},
+                     {"term": "nclex rn", "source": "TARGETED", "keyword": "nclex rn", "adgroup_id": "11", "impressions": 90, "taps": 5, "installs": 1, "spend": 4.0}])
+
+
+class StudioChainTests(_OnData):
+    """Reviews + search terms -> customer voice -> angles -> (approve) copy + listing -> (approve) launch draft + brief."""
+
+    def setUp(self):
+        super().setUp()
+        self.con.execute("UPDATE revenue.store_listings SET apple_app_id = '6822172335' WHERE app_id = 'rnr_pro' AND platform = 'apple_app_store'")
+        self.con.execute("UPDATE revenue.store_listings SET package_name = 'com.alexkorir.rapidnursingreview' WHERE app_id = 'rnr_pro' AND platform = 'google_play'")
+        self.con.execute("INSERT INTO control.ad_entities VALUES ('Apple Search Ads', 'campaign', 'campaign:2145125761', 'org', '2145125761', "
+                         "'RNR – US – Search Results', NULL, 'RNR – US – Search Results', 'RUNNING', NULL, 'US', 'Rapid Nursing Review', ?, ?)", [NOW, NOW])
+        self.rules.app_monthly = {"Rapid Nursing Review": 300.0, "CCRN Adult": 100.0, "NurseBound": 100.0}
+        rnr_ids = lambda p: [x["id"] for x in json.loads(p)["reviews"]][:1] or [x["id"] for x in json.loads(p)["search_terms"]][:1]  # noqa: E731
+        self.claude = FakeClaude(answers={
+            "customer_voice": lambda p: {"likes": [{"point": "Rationales help", "evidence": rnr_ids(p)}],
+                                         "complaints": [{"point": "Made up", "evidence": ["apple_app_store:nope"]}]},
+            "angle_writer": lambda p: {"angles": [{"title": "Study on your breaks", "promise": "Short quizzes with rationales.",
+                                                   "audience": "Working nursing students", "evidence": rnr_ids(p)},
+                                                  {"title": "Invented", "promise": "x", "audience": "y", "evidence": ["term:not real"]}]},
+            "ad_copy": {"meta": {"primary_text": ["Quiz yourself on your break with clear rationales."], "headline": ["NCLEX prep on breaks"],
+                                 "description": ["Short quizzes"]},
+                        "google_app": {"headline": ["NCLEX prep on breaks", "Quiz with rationales"], "description": ["Short quizzes that explain every answer."]},
+                        "apple_ads": {"keywords": ["nclex quiz", "nclex rn"]}},
+            "listing_writer": {"app_store_promotional_text": "Short NCLEX quizzes with clear rationales.", "play_short_description": "NCLEX quizzes with rationales"},
+            "creative_briefs": {"images": [{"scene": "Nurse in scrubs on a break with a phone", "overlay": "Study on your break"}],
+                                "video": {"scenes": [{"seconds": "0-3", "shows": "Break room", "on_screen_text": "5 minutes free?"}]},
+                                "voiceover": "Got a break? Take a quick quiz."},
+        })
+        self.clients = {"apple_store": FakeAppleStore(), "google_play": FakePlay(), "apple_ads": FakeAppleAds(), "meta_get": None}
+
+    def run_team(self, env=None, llm_=None, transport=None, now=NOW):
+        t = transport or alerts.FakeTransport()
+        from unittest import mock
+        with mock.patch.object(brain, "_build_client", lambda name, env: self.clients.get(name)):
+            return brain.run(self.con, self.rules, environ={**ENV, **(env or {})}, llm=llm_ or self.claude, transport=t,
+                             clock=lambda: now), t
+
+    def test_full_chain_with_sign_off_between_steps(self):
+        from agents import studio
+        res, t = self.run_team()
+        out = {k: v.get("output") for k, v in res["agents"].items()}
+        self.assertEqual({k for k, v in res["agents"].items() if v["status"] != "ok"}, set(), res)
+        self.assertEqual(self.con.execute("SELECT count(*) FROM control.reviews").fetchone()[0], 3)
+        self.assertEqual(out["review_miner"]["fetch"]["new"], 3)
+        self.assertEqual([x["term"] for x in out["search_ad_watch"]["add_as_keyword"]], ["nclex prep"])
+        self.assertEqual([x["term"] for x in out["search_ad_watch"]["negative_candidates"]], ["nursing jobs"])
+        self.assertEqual(out["competitor_ad_spy"]["status"], "off")
+        voice = studio.items(self.con, kind="voice")
+        self.assertEqual(len(voice), 1)
+        self.assertEqual(voice[0]["content"]["complaints"], [])                    # invented evidence dropped
+        angles = studio.items(self.con, kind="angle")
+        self.assertEqual([a["title"] for a in angles], ["Study on your breaks"])  # one per app had evidence: RNR only
+        self.assertEqual(out["ad_copy"]["written"], 0)                             # nothing approved yet
+        self.assertIn("Studio", t.sent[0])
+
+        studio.decide(self.con, angles[0]["item_id"], True)
+        later = NOW + dt.timedelta(hours=4)
+        res, _ = self.run_team(now=later)
+        copy = studio.items(self.con, kind="copy")
+        self.assertEqual(len(copy), 1)
+        self.assertEqual(copy[0]["parent_id"], angles[0]["item_id"])
+        self.assertEqual(len(studio.items(self.con, kind="listing")), 1)
+        self.assertEqual(studio.items(self.con, kind="draft"), [])                 # copy not approved yet
+        self.assertEqual(self.con.execute("SELECT count(*) FROM control.studio_items WHERE kind = 'angle'").fetchone()[0], 1)  # weekly: not rewritten
+
+        studio.decide(self.con, copy[0]["item_id"], True)
+        res, _ = self.run_team(now=later + dt.timedelta(hours=4))
+        draft = studio.items(self.con, kind="draft")[0]["content"]
+        self.assertIn("nothing is created", draft["launch"])
+        self.assertEqual(draft["errors"], [])
+        self.assertGreater(draft["test_budget_daily"], 0)
+        added = [k["text"] for k in draft["apple_ads"]["add_keywords"]]
+        self.assertIn("nclex quiz", added)
+        self.assertIn("nclex prep", added)                                         # from Search Ad Watch
+        self.assertEqual(draft["apple_ads"]["add_negative_keywords"], ["nursing jobs"])
+        self.assertEqual(draft["apple_ads"]["campaign"]["campaign_id"], "2145125761")
+        brief = studio.items(self.con, kind="brief")[0]
+        self.assertTrue(any("number" in f for f in brief["flags"]))               # "5 minutes free?" is flagged
+        self.assertIn("Not generated", brief["content"]["generation"])
+        self.assertEqual(len(brief["content"]["sizes"]), 8)
+
+    def test_unconfigured_sources_are_reported_not_hidden(self):
+        self.clients = {}
+        res, _ = self.run_team(llm_=FakeClaude())
+        rm = res["agents"]["review_miner"]["output"]["fetch"]
+        self.assertEqual((rm["apple_app_store"], rm["google_play"]), ("not configured", "not configured"))
+        self.assertEqual(res["agents"]["search_ad_watch"]["output"]["fetch"], "Apple Ads not configured")
+
+    def test_decide_rules(self):
+        from agents import studio
+        iid = studio.add(self.con, "angle", "NurseBound", "test", "t", {"promise": "p"})
+        self.assertEqual(studio.decide(self.con, iid, False)["status"], "rejected")
+        self.assertEqual(studio.decide(self.con, iid, True)["status"], "approved")
+        self.con.execute("UPDATE control.studio_items SET status = 'superseded' WHERE item_id = ?", [iid])
+        with self.assertRaises(ValueError):
+            studio.decide(self.con, iid, True)

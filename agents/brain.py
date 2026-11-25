@@ -60,7 +60,14 @@ class Context:
     transport: object = None               # control.alerts transport for the morning page
     send: bool = True                      # False: build the morning page but don't send or save it
     out: dict = field(default_factory=dict)
+    clients: dict = field(default_factory=dict)  # read-only platform clients; tests put fakes here
     _rows: Optional[list] = None
+
+    def client(self, name: str):
+        """A read-only client: apple_store (App Store Connect), google_play, apple_ads, meta_get. None if not configured."""
+        if name not in self.clients:
+            self.clients[name] = _build_client(name, self.environ)
+        return self.clients[name]
 
     @property
     def today(self) -> dt.date:
@@ -88,8 +95,40 @@ class Context:
         return self._rows
 
 
+def _build_client(name: str, env: dict):
+    try:
+        if name == "apple_store":
+            from revenue import apple
+            creds = apple.Creds.from_env(env)
+            return apple.Client(creds) if creds else None
+        if name == "google_play":
+            from revenue import google_play
+            sa = google_play.load_service_account(env)
+            return google_play.Client(sa) if sa else None
+        if name == "apple_ads":
+            import dlt_pipeline as bot
+            a = bot.AppleSearchAds()
+            return a if a.configured else None
+        if name == "meta_get":
+            token = (env.get("META_ACCESS_TOKEN") or "").strip()
+            if not token:
+                return None
+            import requests
+            version = env.get("META_API_VERSION") or "v21.0"
+
+            def get(path, params):
+                r = requests.get(f"https://graph.facebook.com/{version}/{path}", params={**params, "access_token": token}, timeout=60)
+                if r.status_code != 200:
+                    raise RuntimeError(f"Meta HTTP {r.status_code}: {r.text[:200]}")
+                return r.json()
+            return get
+    except Exception:  # noqa: BLE001 - a missing or broken key just means that source is skipped
+        log.exception("could not build client %s", name)
+    return None
+
+
 def team() -> list[Agent]:
-    from . import departments, money, winners, changes, morning
+    from . import changes, creative, departments, launch, money, morning, research, winners, writing
     return [
         Agent("department_check", "Department Check", "Brain", "Checks every data source and what needs attention",
               departments.department_check),
@@ -101,6 +140,24 @@ def team() -> list[Agent]:
               winners.winner_spotter),
         Agent("change_review", "Change Review", "Launch & Optimize", "Changes AdBot proposed that need your OK",
               changes.change_review),
+        # Research (phase 2)
+        Agent("review_miner", "Review Miner", "Research", "Your App Store and Google Play reviews", research.review_miner),
+        Agent("search_ad_watch", "Search Ad Watch", "Research", "Search terms behind your Apple Ads: add or exclude",
+              research.search_ad_watch),
+        Agent("competitor_ad_spy", "Competitor Ad Spy", "Research", "Competitors' active ads (Meta Ad Library)",
+              research.competitor_ad_spy),
+        Agent("customer_voice", "Customer Voice", "Research", "What customers like, dislike and the words they use",
+              research.customer_voice),
+        Agent("angle_writer", "Angle Writer", "Research", "Three reasons to download, backed by evidence", writing.angle_writer),
+        # Creative and launch (phases 2-4); everything is a draft for your review
+        Agent("ad_copy", "Ad Copy", "Creative Studio", "Copy for each approved angle, within platform limits", writing.ad_copy),
+        Agent("listing_writer", "Listing Writer", "Landing", "Store listing text for each approved angle", writing.listing_writer),
+        Agent("test_budget", "Test Budget", "Launch & Optimize", "What a new test could spend per day", launch.test_budget),
+        Agent("launch_drafter", "Launch Drafter", "Launch & Optimize", "Campaign drafts from approved copy (never launched)",
+              launch.launch_drafter, needs=("test_budget",)),
+        Agent("resizer", "Resizer", "Creative Studio", "Sizes each placement needs", creative.resizer),
+        Agent("creative_briefs", "Creative Briefs", "Creative Studio", "Image, video and voiceover briefs for approved copy",
+              creative.creative_briefs),
         Agent("morning_page", "Morning Page", "Brain", "One page every morning on Telegram",
               morning.morning_page, needs=("department_check", "spend_watch", "real_return", "winner_spotter", "change_review")),
     ]

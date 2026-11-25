@@ -55,7 +55,9 @@ spent, what sold, which keywords and ad sets are winning and what needs your OK,
 8:00 Los Angeles time) sends one **morning page** on Telegram. The agents never change campaigns, bids or budgets.
 With `ANTHROPIC_API_KEY` set on `adbot-hourly`, Claude writes a short summary at the top (capped by
 `AGENTS_DAILY_USD_CAP`, default $1/day; every number on the page still comes from code). Preview it with
-`python -m agents.brain --preview`. Details and the roadmap: [docs/AGENTS.md](docs/AGENTS.md).
+`python -m agents.brain --preview`. Research agents read your store reviews and Apple Ads search terms, and the
+**Studio** tab collects what the writing agents draft (angles, ad copy, store listing text, launch drafts, creative
+briefs) for you to approve or reject. Nothing there is ever sent to an ad platform or store. Details: [docs/AGENTS.md](docs/AGENTS.md).
 
 ## Trading bot monitoring (read-only)
 

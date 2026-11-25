@@ -97,6 +97,29 @@ class Claude:
                 pass
             return None
 
+    def complete_json(self, agent: str, system: str, prompt: str, max_tokens: int = 1500):
+        """complete() asked for JSON only; the parsed object, or None."""
+        return parse_json(self.complete(agent, system + " Answer with JSON only, no other text.", prompt, max_tokens))
+
+
+def parse_json(text: Optional[str]):
+    """The first JSON object or array in a model answer (tolerates ```json fences and text around it)."""
+    import json
+    if not text:
+        return None
+    t = text.strip()
+    if t.startswith("```"):
+        t = t.strip("`")
+        t = t[4:] if t.lower().startswith("json") else t
+    for opener, closer in (("{", "}"), ("[", "]")):
+        i, j = t.find(opener), t.rfind(closer)
+        if i != -1 and j > i:
+            try:
+                return json.loads(t[i:j + 1])
+            except ValueError:
+                continue
+    return None
+
 
 def from_env(con, environ=None, clock: Callable[[], dt.datetime] = _now) -> Optional[Claude]:
     env = os.environ if environ is None else environ

@@ -54,12 +54,19 @@ def _m(v, cur="USD") -> str:
 
 
 SHORT = {"Rapid Nursing Review": "RNR", "CCRN Adult": "CCRN", "NurseBound": "NurseBound"}
+STORE = {"apple_app_store": "App Store", "google_play": "Google Play"}
+
+
+FACT_KEYS = ("department_check", "spend_watch", "real_return", "winner_spotter", "change_review",
+             "review_miner", "search_ad_watch", "competitor_ad_spy", "test_budget")
 
 
 def facts(ctx) -> dict:
-    o = ctx.out
-    return {k: {kk: vv for kk, vv in v.items() if not kk.startswith("_")} for k, v in o.items()
-            if k in ("department_check", "spend_watch", "real_return", "winner_spotter", "change_review")}
+    from . import studio
+    f = {k: {kk: vv for kk, vv in v.items() if not kk.startswith("_")} for k, v in ctx.out.items()
+         if k in FACT_KEYS and isinstance(v, dict)}
+    f["studio_waiting"] = studio.waiting(ctx.con)
+    return f
 
 
 def render(f: dict, local: dt.datetime, dry_run: bool, summary: str | None) -> str:
@@ -126,6 +133,28 @@ def render(f: dict, local: dt.datetime, dry_run: bool, summary: str | None) -> s
         L.append("🛑 Emergency pause is active")
     elif cr.get("stopped"):
         L.append("⏸ Automation is stopped")
+
+    rm, sa, ca = (f.get(k) or {} for k in ("review_miner", "search_ad_watch", "competitor_ad_spy"))
+    research = []
+    for app, stores in (rm.get("last_30_days") or {}).items():
+        parts = [f"{STORE.get(s, s)} {v['avg_rating']:.1f}★ ({v['reviews_30d']})" for s, v in stores.items() if v.get("avg_rating") is not None]
+        if parts:
+            research.append(f"{e(SHORT.get(app, app))} reviews, last 30 days: " + ", ".join(parts))
+    if (rm.get("fetch") or {}).get("new"):
+        research.append(f"{rm['fetch']['new']} new review(s) since yesterday")
+    if sa.get("add_as_keyword"):
+        research.append(f"{len(sa['add_as_keyword'])} search term(s) bringing installs that aren't keywords yet")
+    if sa.get("negative_candidates"):
+        research.append(f"{len(sa['negative_candidates'])} search term(s) costing money with no installs")
+    if ca.get("status") == "ok" and ca.get("ads_seen"):
+        research.append(f"{ca['ads_seen']} competitor ad(s) seen in the last 14 days")
+    if research:
+        L += ["", "<b>Research</b>"] + [f"• {x}" for x in research]
+    waiting = f.get("studio_waiting") or {}
+    if any(waiting.values()):
+        names = {"angle": "angle", "copy": "ad copy", "listing": "listing text", "draft": "launch draft", "brief": "creative brief", "voice": "customer voice"}
+        L += ["", "<b>Studio</b> · waiting for your review"]
+        L.append(" · ".join(f"{n} {names.get(k, k)}{'s' if n > 1 and not k.endswith('y') else ''}" for k, n in sorted(waiting.items())))
 
     srcs = dc.get("sources") or []
     L += ["", f"<b>Departments</b> · {dc.get('healthy', 0)} of {len(srcs)} sources up to date"]
