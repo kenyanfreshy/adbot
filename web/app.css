@@ -858,3 +858,77 @@ html,body{height:100%;overflow:hidden}
 .tabs button[aria-current="page"]::before{background:var(--tc);box-shadow:0 0 12px var(--tc)}
 .tabs button[aria-current="page"]::after{content:"";position:absolute;inset:2px 6px;border-radius:12px;z-index:-1;
   background:radial-gradient(60% 70% at 50% 35%,color-mix(in srgb,var(--tc) 22%,transparent),transparent 75%)}
+
+/* ===== HUD everywhere: the Studio look on every tab ===== */
+body{--tc:#00C2FF}
+body[data-tab="ads"]{--tc:#00C2FF}body[data-tab="revenue"]{--tc:#00E5A3}body[data-tab="keywords"]{--tc:#FFB020}body[data-tab="studio"]{--tc:#E024C3}
+body[data-tab="rules"]{--tc:#7C6CFF}body[data-tab="trading"]{--tc:#FF8A3D}body[data-tab="log"]{--tc:#4BD5F0}
+/* faint HUD grid behind every view, tinted by the tab */
+.view{position:relative;isolation:isolate}
+.view::before{content:"";position:absolute;inset:0 0 auto;height:640px;z-index:-1;pointer-events:none;opacity:.6;
+  background:linear-gradient(color-mix(in srgb,var(--tc) 9%,transparent) 1px,transparent 1px) 0 0/22px 22px,
+             linear-gradient(90deg,color-mix(in srgb,var(--tc) 9%,transparent) 1px,transparent 1px) 0 0/22px 22px;
+  -webkit-mask-image:linear-gradient(180deg,#000,transparent);mask-image:linear-gradient(180deg,#000,transparent)}
+.sx::before{content:none}
+/* section headings take the tab colour */
+.h::before{background:linear-gradient(90deg,var(--tc),var(--mag));box-shadow:0 0 8px var(--tc)}
+/* every section a colour of its own (folds, rule groups) */
+details.fold,details.fold-group,.group{--sc:#00C2FF}
+details.fold:nth-of-type(8n+2),details.fold-group:nth-of-type(8n+2){--sc:#7C6CFF}
+details.fold:nth-of-type(8n+3),details.fold-group:nth-of-type(8n+3){--sc:#E024C3}
+details.fold:nth-of-type(8n+4),details.fold-group:nth-of-type(8n+4){--sc:#FF8A3D}
+details.fold:nth-of-type(8n+5),details.fold-group:nth-of-type(8n+5){--sc:#00E5A3}
+details.fold:nth-of-type(8n+6),details.fold-group:nth-of-type(8n+6){--sc:#FFB020}
+details.fold:nth-of-type(8n+7),details.fold-group:nth-of-type(8n+7){--sc:#F04B87}
+details.fold:nth-of-type(8n+8),details.fold-group:nth-of-type(8n+8){--sc:#AEF04B}
+details.fold>summary.h::before,.rev .hx-fold .hx-h span::before{background:var(--sc);box-shadow:0 0 10px var(--sc)}
+details.fold>summary.h,.rev .hx-fold .hx-h span{color:color-mix(in srgb,var(--sc) 30%,#fff);text-shadow:0 0 12px color-mix(in srgb,var(--sc) 45%,transparent)}
+details.fold>summary .chev,.rev .hx-fold .chev{color:var(--sc)}
+.group{border-color:color-mix(in srgb,var(--sc) 35%,transparent);overflow:hidden;
+  background:linear-gradient(160deg,color-mix(in srgb,var(--sc) 10%,transparent),rgba(15,23,42,.94) 50%);box-shadow:0 0 18px color-mix(in srgb,var(--sc) 10%,transparent)}
+.group::before{content:"";position:absolute;left:0;top:10px;bottom:10px;width:3px;border-radius:0 3px 3px 0;background:var(--sc);box-shadow:0 0 10px var(--sc)}
+.group h3,.group>summary,.group>summary *{color:color-mix(in srgb,var(--sc) 55%,#fff)!important}
+/* cards: a glowing top edge in the tab colour */
+.card{overflow:hidden}
+.card:not(.kw-card)::before{content:"";position:absolute;left:14px;right:14px;top:0;height:2px;border-radius:2px;
+  background:linear-gradient(90deg,var(--tc),transparent);opacity:.8;box-shadow:0 0 10px var(--tc)}
+/* list rows: each a colour of its own */
+.list .item:not([class*="sev-"]){position:relative;padding-left:12px;--ic:#00C2FF}
+.list .item:not([class*="sev-"])::before{content:"";position:absolute;left:0;top:14px;bottom:12px;width:3px;border-radius:3px;background:var(--ic);box-shadow:0 0 8px var(--ic)}
+.list .item:nth-child(8n+2){--ic:#7C6CFF}.list .item:nth-child(8n+3){--ic:#E024C3}.list .item:nth-child(8n+4){--ic:#FF8A3D}
+.list .item:nth-child(8n+5){--ic:#00E5A3}.list .item:nth-child(8n+6){--ic:#FFB020}.list .item:nth-child(8n+7){--ic:#F04B87}.list .item:nth-child(8n+8){--ic:#4BD5F0}
+.list .item:first-child:not([class*="sev-"])::before{top:4px}
+/* keyword cards: tinted by app, corner brackets, glowing top edge */
+.kw-card{--app:#00C2FF;border-color:color-mix(in srgb,var(--app) 35%,rgba(0,194,255,.2));
+  background:linear-gradient(160deg,color-mix(in srgb,var(--app) 12%,transparent),rgba(15,23,42,.95) 45%,rgba(224,36,195,.04));
+  box-shadow:0 0 24px color-mix(in srgb,var(--app) 10%,transparent),0 16px 36px rgba(0,0,0,.35)}
+.kw-card::before{content:"";position:absolute;left:14px;right:14px;top:0;height:2px;border-radius:2px;background:linear-gradient(90deg,var(--app),var(--mag));box-shadow:0 0 12px var(--app)}
+.kw-card .name{color:#fff}
+.kw-card .stats div{background:color-mix(in srgb,var(--app) 8%,rgba(19,29,53,.9));border:1px solid color-mix(in srgb,var(--app) 18%,transparent)}
+.kw-card .stats b{color:color-mix(in srgb,var(--app) 25%,#fff)}
+/* alive tiles: a light running round the border, breathing glow, staggered */
+.hx-tile::after,.kpis .kpi::after{content:"";position:absolute;inset:0;border-radius:inherit;padding:1.5px;pointer-events:none;
+  background:conic-gradient(from var(--sxang),transparent 0 62%,var(--hue,#00C2FF) 82%,transparent 100%);
+  -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;
+  animation:sxspin 5s linear infinite}
+.hx-tile,.kpis .kpi{animation:sxbreathe 3.2s ease-in-out infinite}
+.hx-grid>:nth-child(2),.kpis>:nth-child(2){animation-delay:.4s}.hx-grid>:nth-child(2)::after,.kpis>:nth-child(2)::after{animation-delay:-1.25s}
+.hx-grid>:nth-child(3),.kpis>:nth-child(3){animation-delay:.8s}.hx-grid>:nth-child(3)::after,.kpis>:nth-child(3)::after{animation-delay:-2.5s}
+.hx-grid>:nth-child(4),.kpis>:nth-child(4){animation-delay:1.2s}.hx-grid>:nth-child(4)::after,.kpis>:nth-child(4)::after{animation-delay:-3.75s}
+/* hero panels: a light sweep */
+.rev .hero .hero-txt{position:relative}
+.rev .hero{isolation:isolate}
+.rev .hero>.hero-txt::after{content:"";position:absolute;inset:-16px -200px -16px -16px;z-index:-1;pointer-events:none;
+  background:linear-gradient(90deg,transparent,color-mix(in srgb,var(--tc) 14%,transparent),transparent);transform:translateX(-100%);animation:hxscan 5s ease-in-out infinite}
+/* notices: plates with stripes */
+.banner{position:relative;overflow:hidden;background:repeating-linear-gradient(135deg,rgba(0,194,255,.10) 0 10px,rgba(0,194,255,.03) 10px 20px),linear-gradient(135deg,rgba(6,30,48,.92),rgba(12,18,36,.92));
+  border:1px solid rgba(0,194,255,.45);box-shadow:0 0 16px rgba(0,194,255,.12)}
+.banner.warn{color:#FDE7C2;background:repeating-linear-gradient(135deg,rgba(255,176,32,.16) 0 10px,rgba(255,176,32,.05) 10px 20px),linear-gradient(135deg,rgba(60,38,6,.92),rgba(30,20,8,.92));
+  border-color:rgba(255,176,32,.55);box-shadow:0 0 18px rgba(255,176,32,.15)}
+.banner.warn b{color:#FFB020;text-shadow:0 0 10px rgba(255,176,32,.5)}
+.banner.bad{color:#FFD5DD;background:repeating-linear-gradient(135deg,rgba(255,92,122,.16) 0 10px,rgba(255,92,122,.05) 10px 20px),linear-gradient(135deg,rgba(60,8,18,.92),rgba(30,8,14,.92));
+  border-color:rgba(255,92,122,.6);box-shadow:0 0 18px rgba(255,92,122,.18)}
+.banner.bad b{color:#FF8FA3}
+/* status chips glow in their own colour */
+.schip.ok,.schip.info,.schip.warn,.schip.bad,.schip.sim,.badge.good,.badge.bad,.badge.info{box-shadow:0 0 10px color-mix(in srgb,currentColor 30%,transparent)}
+.schip.info{animation:hxpulse 2.6s ease-out infinite}
