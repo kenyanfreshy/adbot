@@ -1132,12 +1132,12 @@
     const STL = {draft: "AWAITING REVIEW", approved: "APPROVED", rejected: "REJECTED"};
     // pipeline: research -> angles -> copy -> drafts / briefs
     const stages = [
-      {k: "research", label: "RESEARCH", n: revN + (sa.add_as_keyword || []).length + (sa.negative_candidates || []).length, sub: "signals"},
-      {k: "angle", label: "ANGLES", n: nAll("angle"), sub: nDraft("angle") + " to review"},
-      {k: "copy", label: "COPY", n: nAll("copy") + nAll("listing"), sub: (nDraft("copy") + nDraft("listing")) + " to review"},
-      {k: "draft", label: "DRAFTS", n: nAll("draft"), sub: nDraft("draft") + " to review"},
-      {k: "brief", label: "BRIEFS", n: nAll("brief"), sub: nDraft("brief") + " to review"}];
-    const pipe = stages.map((st, i) => `${i ? `<i class="sx-link ${st.n ? "on" : ""}" aria-hidden="true"></i>` : ""}<a class="sx-node ${st.n ? "on" : ""} ${/to review/.test(st.sub) && !st.sub.startsWith("0") ? "hot" : ""}" href="#sx-${st.k}"><b>${num(st.n)}</b><span>${st.label}</span><small>${esc(st.sub)}</small></a>`).join("");
+      {k: "research", c: "#00C2FF", label: "RESEARCH", n: revN + (sa.add_as_keyword || []).length + (sa.negative_candidates || []).length, sub: "signals"},
+      {k: "angle", c: "#7C6CFF", label: "ANGLES", n: nAll("angle"), sub: nDraft("angle") + " to review"},
+      {k: "copy", c: "#E024C3", label: "COPY", n: nAll("copy") + nAll("listing"), sub: (nDraft("copy") + nDraft("listing")) + " to review"},
+      {k: "draft", c: "#FF8A3D", label: "DRAFTS", n: nAll("draft"), sub: nDraft("draft") + " to review"},
+      {k: "brief", c: "#00E5A3", label: "BRIEFS", n: nAll("brief"), sub: nDraft("brief") + " to review"}];
+    const pipe = stages.map((st, i) => `${i ? `<i class="sx-link" style="--a:${stages[i - 1].c};--b:${st.c};--d:${i * .35}s" aria-hidden="true"></i>` : ""}<a class="sx-node ${st.n ? "on" : ""} ${/to review/.test(st.sub) && !st.sub.startsWith("0") ? "hot" : ""}" style="--pc:${st.c};--d:${i * .35}s" href="#sx-${st.k}"><b>${num(st.n)}</b><span>${st.label}</span><small>${esc(st.sub)}</small></a>`).join("");
     const card = it => `<article class="sx-card" data-sid="${esc(it.item_id)}" style="--app:${HEX[it.app] || "#00C2FF"}">
         <i class="sx-corner tl"></i><i class="sx-corner br"></i>
         <header class="sx-ch"><span class="sx-kind">${esc(({angle: "ANGLE", copy: "AD COPY", listing: "LISTING", draft: "LAUNCH DRAFT", brief: "CREATIVE BRIEF", voice: "CUSTOMER VOICE"})[it.kind] || it.kind)}</span><span class="sx-app">${esc(SHORT[it.app] || it.app || "ALL")}</span><span class="sx-st ${STC[it.status] || "nil"}">${STL[it.status] || esc(it.status)}</span></header>
@@ -1145,8 +1145,8 @@
         ${(it.flags || []).length ? `<div class="sx-flags"><b>⚠ VERIFY BEFORE USE</b><ul class="st-l">${li(it.flags)}</ul></div>` : ""}
         <footer class="sx-foot"><code>${esc(it.item_id)}</code><span class="sx-by" style="--ag:${AGC[it.agent] || "#64748B"}">${AGE[it.agent] || "🤖"} ${esc(String(it.agent || "").replace(/_/g, " "))}</span></footer>
         <div class="qbtns"><button class="btn" data-sdec="0" ${it.status === "rejected" ? "disabled" : ""}>Reject</button><button class="btn primary" data-sdec="1" ${it.status === "approved" ? "disabled" : ""}>Approve</button></div></article>`;
-    const rev = Object.entries(rm.last_30_days || {}).map(([app, st]) => `<div class="sx-sig" style="--app:${HEX[app] || "#00C2FF"}"><span>${esc(SHORT[app] || app)} · REVIEWS 30D</span><b>${Object.entries(st).map(([s, v]) => `${s === "google_play" ? "GP" : "AS"} ${v.avg_rating != null ? v.avg_rating.toFixed(1) + "★" : "—"} <em>(${num(v.reviews_30d)})</em>`).join(" &nbsp; ")}</b></div>`).join("");
-    const terms = (xs, label, tone) => (xs || []).length ? `<div class="sx-sig ${tone}"><span>${label}</span><b>${xs.map(t => `<em class="sx-term">${esc(t.term)}</em>`).join(" ")}</b><small>${xs.map(t => `${esc(t.term)}: ${num(t.taps)} taps, ${t.installs} installs`).join(" · ")}</small></div>` : "";
+    const rev = Object.entries(rm.last_30_days || {}).map(([app, st]) => `<div class="sx-sig" style="--app:${HEX[app] || "#00C2FF"}"><span>⭐ ${esc(SHORT[app] || app)} · REVIEWS 30D</span><b>${Object.entries(st).map(([s, v]) => `${s === "google_play" ? "GP" : "AS"} ${v.avg_rating != null ? v.avg_rating.toFixed(1) + "★" : "—"} <em>(${num(v.reviews_30d)})</em>`).join(" &nbsp; ")}</b></div>`).join("");
+    const terms = (xs, label, tone) => (xs || []).length ? `<div class="sx-sig ${tone}"><span>${tone === "good" ? "➕" : "⛔"} ${label}</span><b>${xs.map(t => `<em class="sx-term">${esc(t.term)}</em>`).join(" ")}</b><small>${xs.map(t => `${esc(t.term)}: ${num(t.taps)} taps, ${t.installs} installs`).join(" · ")}</small></div>` : "";
     const STAT = {ok: ["OK", "ok"], failed: ["FAILED", "bad"], skipped: ["SKIPPED", "nil"]};
     $("view").innerHTML = `<div class="sx">
       <section class="sx-hero">
@@ -1161,8 +1161,8 @@
       ${KORDER.filter(k => (by[k] || []).length).map(k => `<h3 class="h" id="sx-${k}">${SKIND[k]} <small>${nDraft(k)} to review</small></h3>${by[k].map(card).join("")}`).join("")}
       <h3 class="h" id="sx-research">Signals <small>latest run</small></h3>
       <div class="sx-sigs">${rev}${terms(sa.add_as_keyword, "TERMS TO ADD", "good")}${terms(sa.negative_candidates, "TERMS TO EXCLUDE", "bad")}
-        <div class="sx-sig"><span>COMPETITOR ADS</span><b>${ca.status === "ok" ? `${num(ca.ads_seen)} ads · ${Object.keys(ca.advertisers || {}).length} advertisers` : esc(ca.status === "off" ? "Off" : ca.status || "Not run yet")}</b>${ca.status !== "ok" && ca.detail ? `<small>${esc(ca.detail)}</small>` : ""}</div>
-        <div class="sx-sig"><span>TEST BUDGET / NEW TEST</span><b>${APPS.map(a => `${esc(SHORT[a])} ${tb[a] && tb[a].daily != null ? money(tb[a].daily) : "—"}`).join(" &nbsp; ")}</b>${APPS.some(a => !(tb[a] && tb[a].daily != null)) ? `<small>${esc(((tb[APPS.find(a => !(tb[a] && tb[a].daily != null))] || {}).why) || "Appears after the next run")}</small>` : ""}</div></div>
+        <div class="sx-sig comp"><span>🕵️ COMPETITOR ADS</span><b>${ca.status === "ok" ? `${num(ca.ads_seen)} ads · ${Object.keys(ca.advertisers || {}).length} advertisers` : esc(ca.status === "off" ? "Off" : ca.status || "Not run yet")}</b>${ca.status !== "ok" && ca.detail ? `<small>${esc(ca.detail)}</small>` : ""}</div>
+        <div class="sx-sig budget"><span>🧪 TEST BUDGET / NEW TEST</span><b>${APPS.map(a => `${esc(SHORT[a])} ${tb[a] && tb[a].daily != null ? money(tb[a].daily) : "—"}`).join(" &nbsp; ")}</b>${APPS.some(a => !(tb[a] && tb[a].daily != null)) ? `<small>${esc(((tb[APPS.find(a => !(tb[a] && tb[a].daily != null))] || {}).why) || "Appears after the next run")}</small>` : ""}</div></div>
       <details class="fold" id="stTeam" ${store.get("adbot-log-stTeam", false) ? "open" : ""}><summary class="h">Agent team <small>${d.team.length} nodes</small><i class="chev" aria-hidden="true"></i></summary>
         <div class="sx-team">${d.team.map(a => { const [sl, sc] = STAT[a.status] || ["NOT RUN", "nil"];
           return `<div class="sx-agent" style="--ag:${AGC[a.key] || "#64748B"}" title="${esc(a.does)}"><i class="sx-emo" aria-hidden="true">${AGE[a.key] || "🤖"}</i><b>${esc(a.name)}</b><span>${esc(a.module)}</span><em class="sx-ast ${sc}">${sl}</em>${a.error ? `<small>${esc(a.error)}</small>` : ""}</div>`; }).join("")}</div></details>
