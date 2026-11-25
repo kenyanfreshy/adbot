@@ -75,7 +75,7 @@
 
   let tradingTimer = null;
   function go(tab) {
-    S.tab = TITLES[tab] ? tab : "ads"; save();
+    S.tab = TITLES[tab] ? tab : "ads"; save(); document.body.dataset.tab = S.tab;
     document.querySelectorAll(".tabs button").forEach(b => { if (b.dataset.tab === S.tab) b.setAttribute("aria-current", "page"); else b.removeAttribute("aria-current"); });
     $("title").textContent = TITLES[S.tab];
     $("filters").hidden = !(S.tab === "ads" || S.tab === "keywords");
@@ -339,7 +339,7 @@
     $("view").innerHTML = `
       <label class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><span class="sr">Search</span><input id="kwq" type="search" placeholder="Search keywords or campaigns" value="${esc(S.q || "")}"></label>
       <div class="chips static">${[["all", "All"], ["pause", "Has a proposal"], ["paused", "Paused"], ["protected", "Protected"]].map(([v, l]) => `<button class="chip" data-f="${v}" aria-pressed="${S.kwFilter === v}">${l} · ${counts[v]}</button>`).join("")}</div>
-      ${items.length ? items.map(i => `<div class="card" data-key="${esc(i.key)}">
+      ${items.length ? items.map(i => `<div class="card kw-card" data-key="${esc(i.key)}" style="--app:${HEX[i.app] || "#00C2FF"}"><i class="sx-corner tl"></i><i class="sx-corner br"></i>
         <div style="display:flex;gap:10px;align-items:flex-start"><div style="flex:1;min-width:0"><div class="name" style="font-weight:700">${esc(i.keyword || "—")}</div>
           <div class="sub"><span class="dot" style="display:inline-block;background:${COLOR[i.app] || "#666"};width:7px;height:7px;margin-right:4px"></span>${esc(SHORT[i.app] || i.app || "Other")} · ${esc(i.channel)}${i.country ? " · " + flag(i.country) : (i.countries || []).length > 1 ? ` · <span title="${esc(i.countries.join(", "))}">${i.countries.length} countries</span>` : ""}</div>
           ${i.campaign && i.entity_type !== "campaign" ? `<div class="sub kw-camp">${esc(i.campaign)}</div>` : ""}</div>${status(i)}</div>
