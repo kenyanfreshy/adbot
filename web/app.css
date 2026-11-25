@@ -741,3 +741,13 @@ html,body{height:100%;overflow:hidden}
 .tc-add input::placeholder{text-transform:none;color:var(--ink-4)}
 .tc-add button{height:36px;border:0;border-radius:10px;padding:0 14px;font:700 12.5px var(--body);color:#fff;background:var(--grad,var(--purple));cursor:pointer}
 .tc-rm{margin-left:2px;padding:0 2px;font-size:15px;line-height:1;opacity:.7}
+/* Studio tab */
+.st-card{margin-top:10px}
+.st-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.st-app{font-size:12px;font-weight:700;letter-spacing:.02em}
+.st-h{margin-top:10px;font-size:12px;font-weight:700;color:var(--ink-3);text-transform:uppercase;letter-spacing:.04em}
+.st-p{margin:4px 0 0;font-size:14px;line-height:1.45;overflow-wrap:anywhere}
+.st-l{margin:4px 0 0;padding-left:18px;font-size:14px;line-height:1.45;overflow-wrap:anywhere}
+.st-flags{margin-top:10px;padding:8px 10px;border-radius:10px;background:rgba(255,176,32,.08);border:1px solid rgba(255,176,32,.3);font-size:13px}
+.st-b{margin:8px 0}
+.st-sizes{margin-top:8px;font-size:13px;color:var(--ink-3)}

@@ -474,7 +474,7 @@ RULE_FIELDS = {  # name: (type, min, max)
 }
 NULLABLE_MONEY = {"monthly_budget": (0, 1_000_000), "campaign_daily_max": (1, 100_000)}
 AUTO_ACTIONS = ("pause_keyword", "pause_ad_set", "pause_campaign", "set_budget_decrease", "set_budget_increase", "safeguard_pause")
-ALERT_KEYS = ("daily_summary", "kill_switch", "rebalance", "high_cpt", "import_failure", "stale_data", "unmapped", "budget")
+ALERT_KEYS = ("daily_summary", "morning_page", "kill_switch", "rebalance", "high_cpt", "import_failure", "stale_data", "unmapped", "budget")
 
 
 @guarded
@@ -887,6 +887,53 @@ async def proposal_decide(request: Request):
     return J({"ok": True, **res})
 
 
+STUDIO_ID_RE = re.compile(r"^(voice|angle|copy|listing|draft|brief)_[0-9a-f]{12}$")
+
+
+@guarded
+async def studio_get(request: Request):
+    """The agents' studio: angles, copy, listing text, launch drafts and creative briefs, plus research and agent runs."""
+    from agents import brain as abrain
+    from agents import llm as allm
+    from agents import studio as astudio
+    with _db_lock:
+        try:
+            items = astudio.items(con(), status=("draft", "approved", "rejected"), limit=150)
+        except Exception:  # noqa: BLE001 - tables not created yet (the hourly job creates them)
+            items = []
+        runs = abrain.last_runs(con(), 5)
+        latest = {}
+        if runs:
+            try:
+                for a, st, out, err in con().execute("SELECT agent, status, output, error FROM control.agent_outputs WHERE run_id = ?",
+                                                     [runs[0]["run_id"]]).fetchall():
+                    latest[a] = {"status": st, "error": err, "output": json.loads(out) if out else None}
+            except Exception:  # noqa: BLE001
+                latest = {}
+        usage = allm.usage_today(con())
+    team = [{"key": a.key, "name": a.name, "module": a.module, "does": a.does, "status": (latest.get(a.key) or {}).get("status"),
+             "error": (latest.get(a.key) or {}).get("error")} for a in abrain.team()]
+    research = {k: (latest.get(k) or {}).get("output") for k in ("review_miner", "search_ad_watch", "competitor_ad_spy", "test_budget")}
+    return J({"items": items, "team": team, "runs": runs, "research": research, "claude_today": usage,
+              "launch": "Drafts only: nothing in the studio is sent to an ad platform or a store."})
+
+
+@guarded(bucket="control")
+async def studio_decide(request: Request):
+    from agents import studio as astudio
+    body = await _body(request)
+    iid = str(body.get("item_id", ""))
+    if not STUDIO_ID_RE.match(iid) or not isinstance(body.get("approve"), bool):
+        return J({"error": "item_id and approve (true/false) are required"}, 400)
+    try:
+        with _db_lock:
+            res = astudio.decide(con(), iid, body["approve"], "admin")
+            rev_registry.audit(con(), "admin", "studio.decided", iid, res, dry_run=dry_run())
+    except ValueError as e:
+        return J({"error": str(e)}, 409)
+    return J({"ok": True, **res})
+
+
 @guarded(bucket="control")
 async def campaign_map(request: Request):
     body = await _body(request)
@@ -1052,6 +1099,8 @@ routes = [
     Route("/api/control/emergency-clear", control_emergency_clear, methods=["POST"]),
     Route("/api/proposals/decide", proposal_decide, methods=["POST"]),
     Route("/api/campaigns/map", campaign_map, methods=["POST"]),
+    Route("/api/studio", studio_get),
+    Route("/api/studio/decide", studio_decide, methods=["POST"]),
     Route("/api/revenue", revenue_get),
     Route("/api/revenue/listing", revenue_listing, methods=["POST"]),
     Route("/api/revenue/check-ids", revenue_check_ids, methods=["POST"]),

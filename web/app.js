@@ -5,7 +5,7 @@
   const SHORT = {"Rapid Nursing Review": "RNR", "CCRN Adult": "CCRN", "NurseBound": "NurseBound", "Unassigned": "Other"};
   const COLOR = {"Rapid Nursing Review": "var(--rnr)", "CCRN Adult": "var(--ccrn)", "NurseBound": "var(--nb)", "Unassigned": "var(--ink-4)"};
   const HEX = {"Rapid Nursing Review": "#ff6a2b", "CCRN Adult": "#2dd4bf", "NurseBound": "#8b5cf6", "Unassigned": "#5f5770"};
-  const TITLES = {ads: "Ads", revenue: "Revenue", keywords: "Keywords", rules: "Bot rules", trading: "Trading", log: "Bot log"};
+  const TITLES = {ads: "Ads", revenue: "Revenue", keywords: "Keywords", studio: "Studio", rules: "Bot rules", trading: "Trading", log: "Bot log"};
 
   const $ = id => document.getElementById(id);
   const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
@@ -60,7 +60,7 @@
     const visible = !!ME.trading_live || !!ME.trading_demo;
     const btn = document.querySelector('.tabs button[data-tab="trading"]');
     if (btn) btn.hidden = !visible;
-    document.querySelector(".tabs").style.setProperty("--tabcount", visible ? 6 : 5);
+    document.querySelector(".tabs").style.setProperty("--tabcount", visible ? 7 : 6);
     if (!visible && S.tab === "trading") S.tab = "ads";
   }
   function renderChips() {
@@ -92,7 +92,7 @@
     if (!quiet) v.innerHTML = `<div class="skel"></div><div class="skel" style="margin-top:10px"></div><div class="skel" style="margin-top:10px;height:200px"></div>`;
     if (manual) $("refresh").classList.add("spin");
     try {
-      const fn = {ads: viewAds, revenue: viewRevenue, keywords: viewKeywords, rules: viewRules, trading: viewTrading, log: viewLog}[S.tab];
+      const fn = {ads: viewAds, revenue: viewRevenue, keywords: viewKeywords, studio: viewStudio, rules: viewRules, trading: viewTrading, log: viewLog}[S.tab];
       await fn(my);
     } catch (e) {
       if (e.message !== "signin" && my === seq) v.innerHTML = `<div class="banner bad"><b>Couldn't load.</b> ${esc(e.message)}</div>`;
@@ -409,7 +409,7 @@
         ${geo.map((g, i) => `<div class="field"><label for="gw${i}"><span class="flag">${flag(g.code)}</span> ${esc(regionName(g.code))}${g.flag === "who_safeguards" ? "<small>On WHO's 2023 safeguards list: advertise the study app, not recruitment</small>" : g.flag === "china_reach" ? "<small>Meta and Google ads don't serve in mainland China</small>" : ""}</label><input id="gw${i}" type="number" inputmode="decimal" step="1" min="0" value="${g.weight}" style="width:70px"><span class="switch"><input id="ge${i}" type="checkbox" ${g.enabled !== false ? "checked" : ""} aria-label="${esc(regionName(g.code))} on"><i></i></span></div>`).join("")}</details>
       <div class="group"><h3>Telegram alerts</h3><p class="hint">The bot token stays on Render (TELEGRAM_BOT_TOKEN), never in the app.</p>
         <div class="field"><label for="telegram_chat_id">Chat ID</label><input id="telegram_chat_id" type="text" inputmode="numeric" value="${esc(R.telegram_chat_id || "")}" placeholder="123456789"></div>
-        ${sw("al_daily_summary", R.alerts.daily_summary, "Daily summary")}${sw("al_kill_switch", R.alerts.kill_switch !== false, "Proposed and applied changes")}${sw("al_import_failure", R.alerts.import_failure !== false, "Import failures")}${sw("al_stale_data", R.alerts.stale_data !== false, "Stale data")}${sw("al_unmapped", R.alerts.unmapped !== false, "Unmapped campaigns")}${sw("al_budget", R.alerts.budget !== false, "Budget warnings")}
+        ${sw("al_daily_summary", R.alerts.daily_summary, "Daily summary")}${sw("al_morning_page", R.alerts.morning_page !== false, "Morning page")}${sw("al_kill_switch", R.alerts.kill_switch !== false, "Proposed and applied changes")}${sw("al_import_failure", R.alerts.import_failure !== false, "Import failures")}${sw("al_stale_data", R.alerts.stale_data !== false, "Stale data")}${sw("al_unmapped", R.alerts.unmapped !== false, "Unmapped campaigns")}${sw("al_budget", R.alerts.budget !== false, "Budget warnings")}
         <p class="hint">Emergency and execution-failure alerts are always on. Repeats are held back (critical 1 h, warning 6 h, info 24 h).</p></div>
       <div class="actions">
         <button class="btn primary block" id="saveRules">Save rules</button>
@@ -452,7 +452,7 @@
         min_share: v("min_share") / 100, max_share: v("max_share") / 100, max_budget_step: v("max_budget_step") / 100, telegram_chat_id: $("telegram_chat_id").value.trim(),
         app_caps: Object.fromEntries(APPS.map((a, i) => [a, v("cap" + i)])), app_priority: Object.fromEntries(APPS.map((a, i) => [a, v("pri" + i)])),
         value_per_install: Object.fromEntries(APPS.map((a, i) => [a, v("vpi" + i)])),
-        alerts: {daily_summary: $("al_daily_summary").checked, kill_switch: $("al_kill_switch").checked, import_failure: $("al_import_failure").checked,
+        alerts: {daily_summary: $("al_daily_summary").checked, morning_page: $("al_morning_page").checked, kill_switch: $("al_kill_switch").checked, import_failure: $("al_import_failure").checked,
           stale_data: $("al_stale_data").checked, unmapped: $("al_unmapped").checked, budget: $("al_budget").checked},
         monthly_budget: opt("monthly_budget"), campaign_daily_max: opt("campaign_daily_max"), reserve_pct: v("reserve_pct") / 100,
         app_monthly: Object.fromEntries(APPS.map((a, i) => [a, opt("am" + i)]).filter(x => x[1] != null)),
@@ -1069,6 +1069,72 @@
       ${sec("lgAu", "Audit trail", d.audit.length, `<div class="card list">${d.audit.length ? d.audit.map(a => `<div class="item"><div class="main"><div class="name">${esc(a.action)}</div><div class="meta">${esc(a.actor)}${a.target ? " · " + esc(a.target) : ""}${a.detail ? " · " + esc(String(a.detail).slice(0, 180)) : ""}</div></div><div class="right"><small>${t(a.ts)}</small></div></div>`).join("") : `<div class="empty">No audit entries.</div>`}</div>`)}
       ${d.actions.length ? sec("lgOld", "Earlier bot log", d.actions.length, `<div class="card list">${d.actions.map(x => `<div class="item"><span class="badge ${x.kind === "pause" ? "warn" : "info"}" style="margin-top:2px">${esc(x.kind)}</span><div class="main"><div class="name">${esc(x.keyword || x.entity_key || "")}</div><div class="meta">${esc(SHORT[x.app] || x.app || "")} · ${esc(x.channel || "")} · ${esc(x.detail || "")}${x.error ? ` · <span style="color:var(--red)">${esc(x.error)}</span>` : ""}</div></div><div class="right"><small>${t(x.ts)}</small>${x.applied ? "done" : x.dry_run ? "would" : "—"}</div></div>`).join("")}</div>`) : ""}`;
     document.querySelectorAll("#view details.fold").forEach(f => f.addEventListener("toggle", () => store.set("adbot-log-" + f.id, f.open)));
+  }
+
+  /* ---------- Studio (agent team) ---------- */
+  const SKIND = {angle: "Angles", copy: "Ad copy", listing: "Listing text", draft: "Launch drafts", brief: "Creative briefs", voice: "Customer voice"};
+  const KORDER = ["angle", "copy", "draft", "brief", "listing", "voice"];
+  const li = xs => (xs || []).map(x => `<li>${esc(x)}</li>`).join("");
+  function studioBody(it) {
+    const c = it.content || {};
+    if (it.kind === "angle") return `<p class="st-p">${esc(c.promise)}</p><div class="meta">For: ${esc(c.audience || "—")} · evidence: ${esc((c.evidence || []).join(", "))}</div>`;
+    if (it.kind === "voice") return ["likes", "complaints", "words_people_use"].map(k => (c[k] || []).length ? `<div class="st-h">${{likes: "Likes", complaints: "Complaints", words_people_use: "Words people use"}[k]}</div><ul class="st-l">${li(c[k].map(p => p.point))}</ul>` : "").join("");
+    if (it.kind === "copy") {
+      const m = c.meta || {}, g = c.google_app || {}, a = c.apple_ads || {};
+      return `${m.primary_text ? `<div class="st-h">Meta</div><ul class="st-l">${li(m.primary_text)}${li((m.headline || []).map(h => "Headline: " + h))}${li((m.description || []).map(h => "Description: " + h))}</ul>` : ""}
+        ${g.headline ? `<div class="st-h">Google App campaign</div><ul class="st-l">${li(g.headline.map(h => "Headline: " + h))}${li((g.description || []).map(h => "Description: " + h))}</ul>` : ""}
+        ${a.keywords ? `<div class="st-h">Apple Ads keywords</div><p class="st-p">${esc(a.keywords.join(", "))}</p>` : ""}
+        ${(c.dropped || []).length ? `<div class="meta">Dropped by the length check: ${esc(c.dropped.length)}</div>` : ""}`;
+    }
+    if (it.kind === "listing") return `<ul class="st-l">${c.app_store_promotional_text ? `<li>App Store promotional text: ${esc(c.app_store_promotional_text)}</li>` : ""}${c.play_short_description ? `<li>Google Play short description: ${esc(c.play_short_description)}</li>` : ""}</ul>`;
+    if (it.kind === "draft") {
+      const a = c.apple_ads || {}, m = c.meta || {}, g = c.google_app || {};
+      return `<div class="banner warn st-b">${esc(c.launch)}</div>
+        <div class="meta">Test budget: ${c.test_budget_daily != null ? money(c.test_budget_daily) + "/day" : "not set"}</div>
+        <div class="st-h">Apple Ads${a.campaign ? " · " + esc(a.campaign.campaign) : ""}</div><p class="st-p">Add: ${esc((a.add_keywords || []).map(k => k.text).join(", ") || "—")}<br>Exclude: ${esc((a.add_negative_keywords || []).join(", ") || "—")}</p>
+        <div class="st-h">Meta · ${esc((m.countries || []).join(", "))}</div><p class="st-p">${esc(m.primary_text || "—")}<br><b>${esc(m.headline || "")}</b></p>
+        <div class="st-h">Google App campaign · ${esc((g.countries || []).join(", "))}</div><ul class="st-l">${li(g.headlines)}</ul>`;
+    }
+    if (it.kind === "brief") {
+      const v = c.video || {};
+      return `<div class="st-h">Images</div><ul class="st-l">${li((c.images || []).map(i => `${i.scene} · text: “${i.overlay}”`))}</ul>
+        <div class="st-h">Video · ${esc(v.length_seconds || 15)} s</div><ul class="st-l">${li((v.scenes || []).map(s => `${s.seconds || ""}: ${s.shows || ""}${s.on_screen_text ? " · “" + s.on_screen_text + "”" : ""}`))}</ul>
+        ${c.voiceover ? `<div class="st-h">Voiceover</div><p class="st-p">${esc(c.voiceover)}</p>` : ""}
+        <div class="meta">${esc(c.generation || "")}</div>
+        <details class="st-sizes"><summary>Sizes per placement</summary><ul class="st-l">${li((c.sizes || []).map(s => `${s.platform} · ${s.placement}: ${s.size} (${s.ratio})`))}</ul></details>`;
+    }
+    return "";
+  }
+  async function viewStudio(my) {
+    const d = await api("/api/studio"); if (my !== seq) return;
+    const by = {}; d.items.forEach(it => (by[it.kind] = by[it.kind] || []).push(it));
+    const STC = {draft: "info", approved: "ok", rejected: "nil"};
+    const card = it => `<div class="card st-card" data-sid="${esc(it.item_id)}">
+        <div class="st-top"><span class="st-app" style="color:${COLOR[it.app] || "var(--ink-3)"}">${esc(SHORT[it.app] || it.app || "All apps")}</span><span class="schip ${STC[it.status] || "nil"}">${esc(it.status === "draft" ? "needs review" : it.status)}</span></div>
+        <div class="name">${esc(it.title)}</div>${studioBody(it)}
+        ${(it.flags || []).length ? `<div class="st-flags"><b>Check before using</b><ul class="st-l">${li(it.flags)}</ul></div>` : ""}
+        <div class="qbtns"><button class="btn" data-sdec="0" ${it.status === "rejected" ? "disabled" : ""}>Reject</button><button class="btn primary" data-sdec="1" ${it.status === "approved" ? "disabled" : ""}>Approve</button></div></div>`;
+    const waiting = d.items.filter(i => i.status === "draft").length;
+    const r = d.research || {}, rm = r.review_miner || {}, sa = r.search_ad_watch || {}, ca = r.competitor_ad_spy || {}, tb = (r.test_budget || {}).apps || {};
+    const rev = Object.entries(rm.last_30_days || {}).map(([app, st]) => `<div class="item"><div class="main"><div class="name">${esc(SHORT[app] || app)} reviews · 30 days</div><div class="meta">${Object.entries(st).map(([s, v]) => `${s === "google_play" ? "Google Play" : "App Store"} ${v.avg_rating != null ? v.avg_rating.toFixed(1) + "★" : "—"} (${num(v.reviews_30d)})`).join(" · ")}</div></div></div>`).join("");
+    const terms = (xs, label) => (xs || []).length ? `<div class="item"><div class="main"><div class="name">${label}</div><div class="meta">${xs.map(t => `${esc(t.term)} (${esc(SHORT[t.app] || t.app)}, ${num(t.taps)} taps, ${t.installs} installs)`).join(" · ")}</div></div></div>` : "";
+    $("view").innerHTML = `
+      <div class="banner info"><b>Drafts only.</b> Nothing in the studio is sent to an ad platform or a store. Approving lets the next agent build on it (angle → copy → launch draft and creative brief).</div>
+      ${waiting ? "" : `<div class="empty" style="margin:14px 0">${d.items.length ? "Nothing waiting for your review." : "No drafts yet. The agents write angles once a week from your reviews and Apple Ads search terms (needs ANTHROPIC_API_KEY on the hourly job)."}</div>`}
+      ${KORDER.filter(k => (by[k] || []).length).map(k => `<h3 class="h">${SKIND[k]} <small>${by[k].filter(i => i.status === "draft").length} to review</small></h3>${by[k].map(card).join("")}`).join("")}
+      <h3 class="h">Research <small>latest run</small></h3>
+      <div class="card list">${rev}${terms(sa.add_as_keyword, "Search terms to add as keywords")}${terms(sa.negative_candidates, "Search terms to exclude (no installs)")}
+        <div class="item"><div class="main"><div class="name">Competitor ads</div><div class="meta">${ca.status === "ok" ? `${num(ca.ads_seen)} ads from ${Object.keys(ca.advertisers || {}).length} advertiser(s)` : esc((ca.detail || ca.status || "not run yet"))}</div></div></div>
+        <div class="item"><div class="main"><div class="name">Test budget per new test</div><div class="meta">${APPS.map(a => `${esc(SHORT[a])}: ${tb[a] && tb[a].daily != null ? money(tb[a].daily) + "/day" : esc((tb[a] || {}).why || "—")}`).join(" · ")}</div></div></div>
+        ${!rev && !(sa.add_as_keyword || []).length ? `<div class="empty">Research appears after the next scheduled run.</div>` : ""}</div>
+      <details class="fold" id="stTeam"><summary class="h">Agent team <small>${d.team.length} agents · Claude today ${money(d.claude_today.usd)}</small><i class="chev" aria-hidden="true"></i></summary>
+        <div class="card list">${d.team.map(a => `<div class="item"><div class="main"><div class="name">${esc(a.name)}</div><div class="meta">${esc(a.module)} · ${esc(a.does)}${a.error ? ` · <span style="color:var(--red)">${esc(a.error)}</span>` : ""}</div></div><div class="right"><span class="schip ${{ok: "ok", failed: "bad", skipped: "nil"}[a.status] || "nil"}">${esc(a.status || "not run")}</span></div></div>`).join("")}</div></details>`;
+    document.querySelectorAll("[data-sdec]").forEach(b => b.onclick = async () => {
+      const id = b.closest("[data-sid]").dataset.sid; b.disabled = true;
+      try { await api("/api/studio/decide", {method: "POST", body: JSON.stringify({item_id: id, approve: b.dataset.sdec === "1"})});
+            toast(b.dataset.sdec === "1" ? "Approved. The next agent builds on it at the next scheduled run." : "Rejected."); load(false, true); }
+      catch (err) { if (err.message !== "signin") toast(err.message); b.disabled = false; }
+    });
   }
 
   /* ---------- go ---------- */
