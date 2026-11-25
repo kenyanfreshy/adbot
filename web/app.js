@@ -1077,6 +1077,10 @@
     review_miner: "#E8F04B", search_ad_watch: "#704BF0", competitor_ad_spy: "#AEF04B", customer_voice: "#AB4BF0", angle_writer: "#74F04B",
     ad_copy: "#E54BF0", listing_writer: "#4BF05D", test_budget: "#F04BC1", launch_drafter: "#4BF097", resizer: "#F04B87",
     creative_briefs: "#4BF0D1", morning_page: "#F04B4D"};
+  const AGE = {department_check: "🧠", spend_watch: "💸", real_return: "📈", winner_spotter: "🏆", change_review: "✅",
+    review_miner: "⭐", search_ad_watch: "🔎", competitor_ad_spy: "🕵️", customer_voice: "🗣️", angle_writer: "🎯",
+    ad_copy: "✍️", listing_writer: "🏷️", test_budget: "🧪", launch_drafter: "🚀", resizer: "📐",
+    creative_briefs: "🎬", morning_page: "☀️"};
   const SKIND = {angle: "Angles", copy: "Ad copy", listing: "Listing text", draft: "Launch drafts", brief: "Creative briefs", voice: "Customer voice"};
   const KORDER = ["angle", "copy", "draft", "brief", "listing", "voice"];
   const li = xs => (xs || []).map(x => `<li>${esc(x)}</li>`).join("");
@@ -1139,7 +1143,7 @@
         <header class="sx-ch"><span class="sx-kind">${esc(({angle: "ANGLE", copy: "AD COPY", listing: "LISTING", draft: "LAUNCH DRAFT", brief: "CREATIVE BRIEF", voice: "CUSTOMER VOICE"})[it.kind] || it.kind)}</span><span class="sx-app">${esc(SHORT[it.app] || it.app || "ALL")}</span><span class="sx-st ${STC[it.status] || "nil"}">${STL[it.status] || esc(it.status)}</span></header>
         <div class="sx-title">${esc(it.title)}</div>${studioBody(it)}
         ${(it.flags || []).length ? `<div class="sx-flags"><b>⚠ VERIFY BEFORE USE</b><ul class="st-l">${li(it.flags)}</ul></div>` : ""}
-        <footer class="sx-foot"><code>${esc(it.item_id)}</code><span class="sx-by" style="--ag:${AGC[it.agent] || "#64748B"}">${esc(String(it.agent || "").replace(/_/g, " "))}</span></footer>
+        <footer class="sx-foot"><code>${esc(it.item_id)}</code><span class="sx-by" style="--ag:${AGC[it.agent] || "#64748B"}">${AGE[it.agent] || "🤖"} ${esc(String(it.agent || "").replace(/_/g, " "))}</span></footer>
         <div class="qbtns"><button class="btn" data-sdec="0" ${it.status === "rejected" ? "disabled" : ""}>Reject</button><button class="btn primary" data-sdec="1" ${it.status === "approved" ? "disabled" : ""}>Approve</button></div></article>`;
     const rev = Object.entries(rm.last_30_days || {}).map(([app, st]) => `<div class="sx-sig" style="--app:${HEX[app] || "#00C2FF"}"><span>${esc(SHORT[app] || app)} · REVIEWS 30D</span><b>${Object.entries(st).map(([s, v]) => `${s === "google_play" ? "GP" : "AS"} ${v.avg_rating != null ? v.avg_rating.toFixed(1) + "★" : "—"} <em>(${num(v.reviews_30d)})</em>`).join(" &nbsp; ")}</b></div>`).join("");
     const terms = (xs, label, tone) => (xs || []).length ? `<div class="sx-sig ${tone}"><span>${label}</span><b>${xs.map(t => `<em class="sx-term">${esc(t.term)}</em>`).join(" ")}</b><small>${xs.map(t => `${esc(t.term)}: ${num(t.taps)} taps, ${t.installs} installs`).join(" · ")}</small></div>` : "";
@@ -1161,7 +1165,7 @@
         <div class="sx-sig"><span>TEST BUDGET / NEW TEST</span><b>${APPS.map(a => `${esc(SHORT[a])} ${tb[a] && tb[a].daily != null ? money(tb[a].daily) : "—"}`).join(" &nbsp; ")}</b>${APPS.some(a => !(tb[a] && tb[a].daily != null)) ? `<small>${esc(((tb[APPS.find(a => !(tb[a] && tb[a].daily != null))] || {}).why) || "Appears after the next run")}</small>` : ""}</div></div>
       <details class="fold" id="stTeam" ${store.get("adbot-log-stTeam", false) ? "open" : ""}><summary class="h">Agent team <small>${d.team.length} nodes</small><i class="chev" aria-hidden="true"></i></summary>
         <div class="sx-team">${d.team.map(a => { const [sl, sc] = STAT[a.status] || ["NOT RUN", "nil"];
-          return `<div class="sx-agent" style="--ag:${AGC[a.key] || "#64748B"}" title="${esc(a.does)}"><i class="sx-orb" aria-hidden="true"></i><b>${esc(a.name)}</b><span>${esc(a.module)}</span><em class="sx-ast ${sc}">${sl}</em>${a.error ? `<small>${esc(a.error)}</small>` : ""}</div>`; }).join("")}</div></details>
+          return `<div class="sx-agent" style="--ag:${AGC[a.key] || "#64748B"}" title="${esc(a.does)}"><i class="sx-emo" aria-hidden="true">${AGE[a.key] || "🤖"}</i><b>${esc(a.name)}</b><span>${esc(a.module)}</span><em class="sx-ast ${sc}">${sl}</em>${a.error ? `<small>${esc(a.error)}</small>` : ""}</div>`; }).join("")}</div></details>
     </div>`;
     $("stTeam").addEventListener("toggle", e => store.set("adbot-log-stTeam", e.target.open));
     document.querySelectorAll(".sx-node").forEach(n => n.onclick = e => { const t = document.querySelector(n.getAttribute("href")); if (t) { e.preventDefault(); t.scrollIntoView({behavior: "smooth", block: "start"}); } });
