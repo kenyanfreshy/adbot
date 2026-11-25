@@ -293,7 +293,7 @@ MIGRATIONS.append((5, "agents: runs, per-agent outputs, Claude API usage and mor
         PRIMARY KEY (run_id, agent))""",
     f"""CREATE TABLE IF NOT EXISTS {SCHEMA}.llm_usage (
         call_id        VARCHAR PRIMARY KEY,
-        at             TIMESTAMP NOT NULL,
+        called_at      TIMESTAMP NOT NULL,
         agent          VARCHAR NOT NULL,
         model          VARCHAR NOT NULL,
         input_tokens   INTEGER,

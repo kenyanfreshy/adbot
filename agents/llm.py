@@ -56,7 +56,7 @@ class Claude:
 
     def spent_today(self) -> float:
         start = self.clock().replace(hour=0, minute=0, second=0, microsecond=0)
-        v = self.con.execute(f"SELECT coalesce(sum(cost_usd), 0) FROM {SCHEMA}.llm_usage WHERE at >= ?", [start]).fetchone()[0]
+        v = self.con.execute(f"SELECT coalesce(sum(cost_usd), 0) FROM {SCHEMA}.llm_usage WHERE called_at >= ?", [start]).fetchone()[0]
         return float(v or 0)
 
     def _log(self, agent: str, status: str, tin: Optional[int] = None, tout: Optional[int] = None,
@@ -138,7 +138,7 @@ def usage_today(con, clock: Callable[[], dt.datetime] = _now) -> dict:
     try:
         calls, usd, refused = con.execute(
             f"SELECT count(*) FILTER (WHERE status = 'ok'), coalesce(sum(cost_usd), 0), count(*) FILTER (WHERE status = 'refused_cap') "
-            f"FROM {SCHEMA}.llm_usage WHERE at >= ?", [start]).fetchone()
+            f"FROM {SCHEMA}.llm_usage WHERE called_at >= ?", [start]).fetchone()
     except Exception:  # noqa: BLE001 - table not created yet
         return {"calls": 0, "usd": 0.0, "refused": 0}
     return {"calls": int(calls or 0), "usd": round(float(usd or 0), 4), "refused": int(refused or 0)}
