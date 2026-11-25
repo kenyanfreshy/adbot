@@ -474,7 +474,7 @@ RULE_FIELDS = {  # name: (type, min, max)
 }
 NULLABLE_MONEY = {"monthly_budget": (0, 1_000_000), "campaign_daily_max": (1, 100_000)}
 AUTO_ACTIONS = ("pause_keyword", "pause_ad_set", "pause_campaign", "set_budget_decrease", "set_budget_increase", "safeguard_pause")
-ALERT_KEYS = ("daily_summary", "kill_switch", "rebalance", "high_cpt", "import_failure", "stale_data", "unmapped", "budget")
+ALERT_KEYS = ("daily_summary", "morning_page", "kill_switch", "rebalance", "high_cpt", "import_failure", "stale_data", "unmapped", "budget")
 
 
 @guarded

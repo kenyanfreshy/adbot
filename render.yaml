@@ -43,6 +43,18 @@ services:
         sync: false
       - key: TELEGRAM_CHAT_ID
         sync: false
+      # Agent team (agents/): read-only reports such as the morning page. Without ANTHROPIC_API_KEY the agents still
+      # run and the morning page is sent without its AI-written summary.
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: AGENTS_DAILY_USD_CAP      # Claude API spend cap per UTC day, all agents together
+        value: "1.00"
+      - key: AGENTS_MODEL
+        value: claude-sonnet-5-5
+      - key: AGENTS_TZ                 # the morning page goes out on the first run after AGENTS_MORNING_HOUR here
+        value: America/Los_Angeles
+      - key: AGENTS_MORNING_HOUR
+        value: "8"
       # Apple Search Ads (Settings > API in Apple Search Ads)
       - key: ASA_CLIENT_ID
         sync: false

@@ -409,7 +409,7 @@
         ${geo.map((g, i) => `<div class="field"><label for="gw${i}"><span class="flag">${flag(g.code)}</span> ${esc(regionName(g.code))}${g.flag === "who_safeguards" ? "<small>On WHO's 2023 safeguards list: advertise the study app, not recruitment</small>" : g.flag === "china_reach" ? "<small>Meta and Google ads don't serve in mainland China</small>" : ""}</label><input id="gw${i}" type="number" inputmode="decimal" step="1" min="0" value="${g.weight}" style="width:70px"><span class="switch"><input id="ge${i}" type="checkbox" ${g.enabled !== false ? "checked" : ""} aria-label="${esc(regionName(g.code))} on"><i></i></span></div>`).join("")}</details>
       <div class="group"><h3>Telegram alerts</h3><p class="hint">The bot token stays on Render (TELEGRAM_BOT_TOKEN), never in the app.</p>
         <div class="field"><label for="telegram_chat_id">Chat ID</label><input id="telegram_chat_id" type="text" inputmode="numeric" value="${esc(R.telegram_chat_id || "")}" placeholder="123456789"></div>
-        ${sw("al_daily_summary", R.alerts.daily_summary, "Daily summary")}${sw("al_kill_switch", R.alerts.kill_switch !== false, "Proposed and applied changes")}${sw("al_import_failure", R.alerts.import_failure !== false, "Import failures")}${sw("al_stale_data", R.alerts.stale_data !== false, "Stale data")}${sw("al_unmapped", R.alerts.unmapped !== false, "Unmapped campaigns")}${sw("al_budget", R.alerts.budget !== false, "Budget warnings")}
+        ${sw("al_daily_summary", R.alerts.daily_summary, "Daily summary")}${sw("al_morning_page", R.alerts.morning_page !== false, "Morning page")}${sw("al_kill_switch", R.alerts.kill_switch !== false, "Proposed and applied changes")}${sw("al_import_failure", R.alerts.import_failure !== false, "Import failures")}${sw("al_stale_data", R.alerts.stale_data !== false, "Stale data")}${sw("al_unmapped", R.alerts.unmapped !== false, "Unmapped campaigns")}${sw("al_budget", R.alerts.budget !== false, "Budget warnings")}
         <p class="hint">Emergency and execution-failure alerts are always on. Repeats are held back (critical 1 h, warning 6 h, info 24 h).</p></div>
       <div class="actions">
         <button class="btn primary block" id="saveRules">Save rules</button>
@@ -452,7 +452,7 @@
         min_share: v("min_share") / 100, max_share: v("max_share") / 100, max_budget_step: v("max_budget_step") / 100, telegram_chat_id: $("telegram_chat_id").value.trim(),
         app_caps: Object.fromEntries(APPS.map((a, i) => [a, v("cap" + i)])), app_priority: Object.fromEntries(APPS.map((a, i) => [a, v("pri" + i)])),
         value_per_install: Object.fromEntries(APPS.map((a, i) => [a, v("vpi" + i)])),
-        alerts: {daily_summary: $("al_daily_summary").checked, kill_switch: $("al_kill_switch").checked, import_failure: $("al_import_failure").checked,
+        alerts: {daily_summary: $("al_daily_summary").checked, morning_page: $("al_morning_page").checked, kill_switch: $("al_kill_switch").checked, import_failure: $("al_import_failure").checked,
           stale_data: $("al_stale_data").checked, unmapped: $("al_unmapped").checked, budget: $("al_budget").checked},
         monthly_budget: opt("monthly_budget"), campaign_daily_max: opt("campaign_daily_max"), reserve_pct: v("reserve_pct") / 100,
         app_monthly: Object.fromEntries(APPS.map((a, i) => [a, opt("am" + i)]).filter(x => x[1] != null)),

@@ -273,6 +273,43 @@ MIGRATIONS.append((4, "ad_entities: campaigns, ad groups and keywords listed by 
         PRIMARY KEY (channel, entity_type, entity_id))""",
 ]))
 
+MIGRATIONS.append((5, "agents: runs, per-agent outputs, Claude API usage and morning pages", [
+    # The agent team (agents/) reads the same data as the phone app and writes only here. Nothing in these tables is
+    # read by the decision engine, and no agent can change spend, bids, budgets or campaigns.
+    f"""CREATE TABLE IF NOT EXISTS {SCHEMA}.agent_runs (
+        run_id       VARCHAR PRIMARY KEY,
+        started_at   TIMESTAMP NOT NULL,
+        finished_at  TIMESTAMP,
+        status       VARCHAR NOT NULL,       -- running | succeeded | partial | failed
+        summary      VARCHAR)""",            # JSON: agent -> status
+    f"""CREATE TABLE IF NOT EXISTS {SCHEMA}.agent_outputs (
+        run_id       VARCHAR NOT NULL,
+        agent        VARCHAR NOT NULL,
+        started_at   TIMESTAMP NOT NULL,
+        finished_at  TIMESTAMP,
+        status       VARCHAR NOT NULL,       -- ok | skipped | failed
+        output       VARCHAR,                -- JSON handed to the agents after it
+        error        VARCHAR,
+        PRIMARY KEY (run_id, agent))""",
+    f"""CREATE TABLE IF NOT EXISTS {SCHEMA}.llm_usage (
+        call_id        VARCHAR PRIMARY KEY,
+        at             TIMESTAMP NOT NULL,
+        agent          VARCHAR NOT NULL,
+        model          VARCHAR NOT NULL,
+        input_tokens   INTEGER,
+        output_tokens  INTEGER,
+        cost_usd       DOUBLE,
+        status         VARCHAR NOT NULL,     -- ok | failed | refused_cap
+        error          VARCHAR)""",
+    f"""CREATE TABLE IF NOT EXISTS {SCHEMA}.morning_pages (
+        page_date        DATE PRIMARY KEY,   -- the owner's local date
+        created_at       TIMESTAMP NOT NULL,
+        delivery_status  VARCHAR,            -- delivered | logged | failed | disabled
+        used_llm         BOOLEAN NOT NULL,
+        text             VARCHAR NOT NULL,
+        facts            VARCHAR)""",        # JSON the page was written from
+]))
+
 LATEST = max(v for v, _, _ in MIGRATIONS)
 
 

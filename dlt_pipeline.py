@@ -1115,6 +1115,13 @@ def main(argv: list[str] | None = None) -> int:
         log.exception("Google Play sync failed")
     log.info("Decision cycle (mode %s, dry_run=%s): proposals %s, executions %s", result["mode"], result["dry_run"],
              result["proposals"], result["executions"])
+    # The agent team (read-only: reports, never changes spend, bids or campaigns). Never stops the ad bot.
+    try:
+        from agents import brain
+        res = brain.run(con, rules)
+        log.info("Agents (%s): %s", res["status"], {k: v["status"] for k, v in res["agents"].items()})
+    except Exception:  # noqa: BLE001
+        log.exception("Agent run failed")
     return 0
 
 

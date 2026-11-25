@@ -48,6 +48,15 @@ python scripts/staging_check.py --motherduck adbot_staging   # + two processes, 
 
 **Before going live** (each needs your decision): set DRY_RUN=false on adbot-hourly; choose Approval or Bounded automatic; list `auto_actions` if automatic; set budgets; run one supervised live smoke test per channel (the live adapters have only been tested against fakes).
 
+## Agent team and morning page (read-only)
+
+At the end of every scheduled run, a small team of agents (`agents/`) checks every data source, works out what you
+spent, what sold, which keywords and ad sets are winning and what needs your OK, and once a day (first run after
+8:00 Los Angeles time) sends one **morning page** on Telegram. The agents never change campaigns, bids or budgets.
+With `ANTHROPIC_API_KEY` set on `adbot-hourly`, Claude writes a short summary at the top (capped by
+`AGENTS_DAILY_USD_CAP`, default $1/day; every number on the page still comes from code). Preview it with
+`python -m agents.brain --preview`. Details and the roadmap: [docs/AGENTS.md](docs/AGENTS.md).
+
 ## Trading bot monitoring (read-only)
 
 The phone app's **Trading** tab shows what the trading bot reports: equity and P&L, open positions, today's trades and signals (taken / skipped / blocked), the daily loss limit, exposure and the kill switch. It never places, changes or closes trades and never sees broker keys.

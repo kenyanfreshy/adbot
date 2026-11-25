@@ -30,6 +30,7 @@ CATEGORIES = {   # category -> (rules.alerts toggle, default on)
     "proposals": ("kill_switch", True),        # proposed changes (old toggle name kept)
     "applied": ("kill_switch", True),
     "daily_summary": ("daily_summary", True),
+    "morning_page": ("morning_page", True),    # the agents' one-page morning report (agents/morning.py)
 }
 ALWAYS_ON = {"emergency", "execution_failure"}
 
