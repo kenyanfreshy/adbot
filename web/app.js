@@ -1108,27 +1108,57 @@
   async function viewStudio(my) {
     const d = await api("/api/studio"); if (my !== seq) return;
     const by = {}; d.items.forEach(it => (by[it.kind] = by[it.kind] || []).push(it));
-    const STC = {draft: "info", approved: "ok", rejected: "nil"};
-    const card = it => `<div class="card st-card" data-sid="${esc(it.item_id)}">
-        <div class="st-top"><span class="st-app" style="color:${COLOR[it.app] || "var(--ink-3)"}">${esc(SHORT[it.app] || it.app || "All apps")}</span><span class="schip ${STC[it.status] || "nil"}">${esc(it.status === "draft" ? "needs review" : it.status)}</span></div>
-        <div class="name">${esc(it.title)}</div>${studioBody(it)}
-        ${(it.flags || []).length ? `<div class="st-flags"><b>Check before using</b><ul class="st-l">${li(it.flags)}</ul></div>` : ""}
-        <div class="qbtns"><button class="btn" data-sdec="0" ${it.status === "rejected" ? "disabled" : ""}>Reject</button><button class="btn primary" data-sdec="1" ${it.status === "approved" ? "disabled" : ""}>Approve</button></div></div>`;
+    const nDraft = k => (by[k] || []).filter(i => i.status === "draft").length;
+    const nAll = k => (by[k] || []).length;
     const waiting = d.items.filter(i => i.status === "draft").length;
+    const approved = d.items.filter(i => i.status === "approved").length;
+    const okAgents = d.team.filter(a => a.status === "ok").length, ran = d.team.some(a => a.status);
+    const failed = d.team.filter(a => a.status === "failed").length;
+    const last = (d.runs || [])[0];
+    const ago = last ? Math.max(0, Math.round((Date.now() - new Date(String(last.started_at).replace(" ", "T") + "Z")) / 60000)) : null;
+    const agoTxt = ago == null ? "never" : ago < 60 ? ago + "m ago" : ago < 2880 ? Math.round(ago / 60) + "h ago" : Math.round(ago / 1440) + "d ago";
     const r = d.research || {}, rm = r.review_miner || {}, sa = r.search_ad_watch || {}, ca = r.competitor_ad_spy || {}, tb = (r.test_budget || {}).apps || {};
-    const rev = Object.entries(rm.last_30_days || {}).map(([app, st]) => `<div class="item"><div class="main"><div class="name">${esc(SHORT[app] || app)} reviews · 30 days</div><div class="meta">${Object.entries(st).map(([s, v]) => `${s === "google_play" ? "Google Play" : "App Store"} ${v.avg_rating != null ? v.avg_rating.toFixed(1) + "★" : "—"} (${num(v.reviews_30d)})`).join(" · ")}</div></div></div>`).join("");
-    const terms = (xs, label) => (xs || []).length ? `<div class="item"><div class="main"><div class="name">${label}</div><div class="meta">${xs.map(t => `${esc(t.term)} (${esc(SHORT[t.app] || t.app)}, ${num(t.taps)} taps, ${t.installs} installs)`).join(" · ")}</div></div></div>` : "";
-    $("view").innerHTML = `
-      <div class="banner info"><b>Drafts only.</b> Nothing in the studio is sent to an ad platform or a store. Approving lets the next agent build on it (angle → copy → launch draft and creative brief).</div>
-      ${waiting ? "" : `<div class="empty" style="margin:14px 0">${d.items.length ? "Nothing waiting for your review." : "No drafts yet. The agents write angles once a week from your reviews and Apple Ads search terms (needs ANTHROPIC_API_KEY on the hourly job)."}</div>`}
-      ${KORDER.filter(k => (by[k] || []).length).map(k => `<h3 class="h">${SKIND[k]} <small>${by[k].filter(i => i.status === "draft").length} to review</small></h3>${by[k].map(card).join("")}`).join("")}
-      <h3 class="h">Research <small>latest run</small></h3>
-      <div class="card list">${rev}${terms(sa.add_as_keyword, "Search terms to add as keywords")}${terms(sa.negative_candidates, "Search terms to exclude (no installs)")}
-        <div class="item"><div class="main"><div class="name">Competitor ads</div><div class="meta">${ca.status === "ok" ? `${num(ca.ads_seen)} ads from ${Object.keys(ca.advertisers || {}).length} advertiser(s)` : esc((ca.detail || ca.status || "not run yet"))}</div></div></div>
-        <div class="item"><div class="main"><div class="name">Test budget per new test</div><div class="meta">${APPS.map(a => `${esc(SHORT[a])}: ${tb[a] && tb[a].daily != null ? money(tb[a].daily) + "/day" : esc((tb[a] || {}).why || "—")}`).join(" · ")}</div></div></div>
-        ${!rev && !(sa.add_as_keyword || []).length ? `<div class="empty">Research appears after the next scheduled run.</div>` : ""}</div>
-      <details class="fold" id="stTeam"><summary class="h">Agent team <small>${d.team.length} agents · Claude today ${money(d.claude_today.usd)}</small><i class="chev" aria-hidden="true"></i></summary>
-        <div class="card list">${d.team.map(a => `<div class="item"><div class="main"><div class="name">${esc(a.name)}</div><div class="meta">${esc(a.module)} · ${esc(a.does)}${a.error ? ` · <span style="color:var(--red)">${esc(a.error)}</span>` : ""}</div></div><div class="right"><span class="schip ${{ok: "ok", failed: "bad", skipped: "nil"}[a.status] || "nil"}">${esc(a.status || "not run")}</span></div></div>`).join("")}</div></details>`;
+    const revN = Object.values(rm.last_30_days || {}).reduce((s, st) => s + Object.values(st).reduce((a, v) => a + (v.reviews_30d || 0), 0), 0);
+    const STC = {draft: "info", approved: "ok", rejected: "nil"};
+    const STL = {draft: "AWAITING REVIEW", approved: "APPROVED", rejected: "REJECTED"};
+    // pipeline: research -> angles -> copy -> drafts / briefs
+    const stages = [
+      {k: "research", label: "RESEARCH", n: revN + (sa.add_as_keyword || []).length + (sa.negative_candidates || []).length, sub: "signals"},
+      {k: "angle", label: "ANGLES", n: nAll("angle"), sub: nDraft("angle") + " to review"},
+      {k: "copy", label: "COPY", n: nAll("copy") + nAll("listing"), sub: (nDraft("copy") + nDraft("listing")) + " to review"},
+      {k: "draft", label: "DRAFTS", n: nAll("draft"), sub: nDraft("draft") + " to review"},
+      {k: "brief", label: "BRIEFS", n: nAll("brief"), sub: nDraft("brief") + " to review"}];
+    const pipe = stages.map((st, i) => `${i ? `<i class="sx-link ${st.n ? "on" : ""}" aria-hidden="true"></i>` : ""}<a class="sx-node ${st.n ? "on" : ""} ${/to review/.test(st.sub) && !st.sub.startsWith("0") ? "hot" : ""}" href="#sx-${st.k}"><b>${num(st.n)}</b><span>${st.label}</span><small>${esc(st.sub)}</small></a>`).join("");
+    const card = it => `<article class="sx-card" data-sid="${esc(it.item_id)}" style="--app:${HEX[it.app] || "#00C2FF"}">
+        <i class="sx-corner tl"></i><i class="sx-corner br"></i>
+        <header class="sx-ch"><span class="sx-kind">${esc(({angle: "ANGLE", copy: "AD COPY", listing: "LISTING", draft: "LAUNCH DRAFT", brief: "CREATIVE BRIEF", voice: "CUSTOMER VOICE"})[it.kind] || it.kind)}</span><span class="sx-app">${esc(SHORT[it.app] || it.app || "ALL")}</span><span class="sx-st ${STC[it.status] || "nil"}">${STL[it.status] || esc(it.status)}</span></header>
+        <div class="sx-title">${esc(it.title)}</div>${studioBody(it)}
+        ${(it.flags || []).length ? `<div class="sx-flags"><b>⚠ VERIFY BEFORE USE</b><ul class="st-l">${li(it.flags)}</ul></div>` : ""}
+        <footer class="sx-foot"><code>${esc(it.item_id)}</code><span class="sx-by">${esc(String(it.agent || "").replace(/_/g, " "))}</span></footer>
+        <div class="qbtns"><button class="btn" data-sdec="0" ${it.status === "rejected" ? "disabled" : ""}>Reject</button><button class="btn primary" data-sdec="1" ${it.status === "approved" ? "disabled" : ""}>Approve</button></div></article>`;
+    const rev = Object.entries(rm.last_30_days || {}).map(([app, st]) => `<div class="sx-sig" style="--app:${HEX[app] || "#00C2FF"}"><span>${esc(SHORT[app] || app)} · REVIEWS 30D</span><b>${Object.entries(st).map(([s, v]) => `${s === "google_play" ? "GP" : "AS"} ${v.avg_rating != null ? v.avg_rating.toFixed(1) + "★" : "—"} <em>(${num(v.reviews_30d)})</em>`).join(" &nbsp; ")}</b></div>`).join("");
+    const terms = (xs, label, tone) => (xs || []).length ? `<div class="sx-sig ${tone}"><span>${label}</span><b>${xs.map(t => `<em class="sx-term">${esc(t.term)}</em>`).join(" ")}</b><small>${xs.map(t => `${esc(t.term)}: ${num(t.taps)} taps, ${t.installs} installs`).join(" · ")}</small></div>` : "";
+    const LED = {ok: "ok", failed: "bad", skipped: "nil"};
+    $("view").innerHTML = `<div class="sx">
+      <section class="sx-hero">
+        <div class="sx-core" aria-hidden="true"><i></i><i></i><i></i><b>${d.team.length}</b></div>
+        <div class="sx-hero-t"><div class="sx-eyebrow">AGENT CORE · ${ran ? (failed ? `${okAgents}/${d.team.length} NOMINAL` : "ALL SYSTEMS NOMINAL") : "STANDING BY"}</div>
+          <div class="sx-big">${waiting ? `${num(waiting)} awaiting your call` : d.items.length ? "Queue clear" : "No drafts yet"}</div>
+          <div class="sx-meta"><span>LAST RUN ${esc(agoTxt.toUpperCase())}</span><span>CLAUDE ${money(d.claude_today.usd)} TODAY</span><span>${num(approved)} APPROVED</span></div></div>
+      </section>
+      <div class="sx-safe"><b>DRAFTS ONLY</b> Nothing here is sent to an ad platform or store. Approval lets the next agent build on it.</div>
+      <nav class="sx-pipe" aria-label="Pipeline">${pipe}</nav>
+      ${d.items.length ? "" : `<div class="sx-empty"><b>STANDING BY</b>The agents write angles once a week from your reviews and Apple Ads search terms. Needs ANTHROPIC_API_KEY on the hourly job.</div>`}
+      ${KORDER.filter(k => (by[k] || []).length).map(k => `<h3 class="h" id="sx-${k}">${SKIND[k]} <small>${nDraft(k)} to review</small></h3>${by[k].map(card).join("")}`).join("")}
+      <h3 class="h" id="sx-research">Signals <small>latest run</small></h3>
+      <div class="sx-sigs">${rev}${terms(sa.add_as_keyword, "TERMS TO ADD", "good")}${terms(sa.negative_candidates, "TERMS TO EXCLUDE", "bad")}
+        <div class="sx-sig"><span>COMPETITOR ADS</span><b>${ca.status === "ok" ? `${num(ca.ads_seen)} ads · ${Object.keys(ca.advertisers || {}).length} advertisers` : esc(ca.status === "off" ? "Off" : ca.status || "Not run yet")}</b>${ca.status !== "ok" && ca.detail ? `<small>${esc(ca.detail)}</small>` : ""}</div>
+        <div class="sx-sig"><span>TEST BUDGET / NEW TEST</span><b>${APPS.map(a => `${esc(SHORT[a])} ${tb[a] && tb[a].daily != null ? money(tb[a].daily) : "—"}`).join(" &nbsp; ")}</b>${APPS.some(a => !(tb[a] && tb[a].daily != null)) ? `<small>${esc(((tb[APPS.find(a => !(tb[a] && tb[a].daily != null))] || {}).why) || "Appears after the next run")}</small>` : ""}</div></div>
+      <details class="fold" id="stTeam" ${store.get("adbot-log-stTeam", false) ? "open" : ""}><summary class="h">Agent team <small>${d.team.length} nodes</small><i class="chev" aria-hidden="true"></i></summary>
+        <div class="sx-team">${d.team.map(a => `<div class="sx-agent" title="${esc(a.does)}"><i class="sx-led ${LED[a.status] || "nil"}"></i><b>${esc(a.name)}</b><span>${esc(a.module)}</span>${a.error ? `<small>${esc(a.error)}</small>` : ""}</div>`).join("")}</div></details>
+    </div>`;
+    $("stTeam").addEventListener("toggle", e => store.set("adbot-log-stTeam", e.target.open));
+    document.querySelectorAll(".sx-node").forEach(n => n.onclick = e => { const t = document.querySelector(n.getAttribute("href")); if (t) { e.preventDefault(); t.scrollIntoView({behavior: "smooth", block: "start"}); } });
     document.querySelectorAll("[data-sdec]").forEach(b => b.onclick = async () => {
       const id = b.closest("[data-sid]").dataset.sid; b.disabled = true;
       try { await api("/api/studio/decide", {method: "POST", body: JSON.stringify({item_id: id, approve: b.dataset.sdec === "1"})});
