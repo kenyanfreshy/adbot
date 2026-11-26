@@ -58,7 +58,8 @@ STORE = {"apple_app_store": "App Store", "google_play": "Google Play"}
 
 
 FACT_KEYS = ("department_check", "spend_watch", "real_return", "winner_spotter", "change_review",
-             "review_miner", "search_ad_watch", "competitor_ad_spy", "test_budget")
+             "review_miner", "search_ad_watch", "competitor_ad_spy", "test_budget",
+             "profit_tracker", "outcome_tracker", "book_ads", "watchdog")
 
 
 def facts(ctx) -> dict:
@@ -107,6 +108,24 @@ def render(f: dict, local: dt.datetime, dry_run: bool, summary: str | None) -> s
         names = {"apple_app_store": "App Store", "google_play": "Google Play"}
         L.append("<i>Store data through " + ", ".join(f"{names.get(k, k)} {v}" for k, v in sorted(thru.items())) + "</i>")
 
+    pt = f.get("profit_tracker") or {}
+    vals = [(a, v) for a, v in (pt.get("apps") or {}).items() if v.get("value_per_download") is not None]
+    if vals or pt.get("sync_gaps"):
+        L += ["", "<b>Profit</b> · estimates, organic included"]
+        if vals:
+            L.append("Worth per download (90 days): " + " · ".join(
+                f"{e(SHORT.get(a, a))} {_m(v['value_per_download'], cur)}{' (early)' if v.get('confidence') == 'early' else ''}" for a, v in vals))
+        t = pt.get("totals_28d") or {}
+        if t.get("est_return") is not None:
+            L.append(f"Ads, 28 days: {_m(t.get('spend'), cur)} spent → about {_m(t.get('est_value'), cur)} earned ({t['est_return']:.2f}x)")
+        for x in (pt.get("losing") or [])[:2]:
+            L.append(f"• Losing: {e(str(x['name']))} ({e(SHORT.get(x['app'], x['app'] or '?'))}) {_m(x['spend'], cur)} → {x['est_return']:.2f}x")
+        if pt.get("suggest_value_per_install"):
+            L.append("Rules tab value per install is 0; measured: " + " · ".join(
+                f"{e(SHORT.get(a, a))} {_m(v, cur)}" for a, v in pt["suggest_value_per_install"].items()))
+        for g in (pt.get("sync_gaps") or [])[:2]:
+            L.append(f"⚠️ {e(g['text'])}")
+
     L += ["", "<b>Winners</b>" + (f" · {ws['window']['start']} to {ws['window']['end']}" if ws.get("window") else "")]
     if ws.get("winners"):
         for w in ws["winners"][:3]:
@@ -152,9 +171,33 @@ def render(f: dict, local: dt.datetime, dry_run: bool, summary: str | None) -> s
         L += ["", "<b>Research</b>"] + [f"• {x}" for x in research]
     waiting = f.get("studio_waiting") or {}
     if any(waiting.values()):
-        names = {"angle": "angle", "copy": "ad copy", "listing": "listing text", "draft": "launch draft", "brief": "creative brief", "voice": "customer voice"}
+        names = {"angle": "angle", "copy": "ad copy", "listing": "listing text", "draft": "launch draft", "brief": "creative brief",
+                 "voice": "customer voice", "book": "books draft"}
         L += ["", "<b>Studio</b> · waiting for your review"]
         L.append(" · ".join(f"{n} {names.get(k, k)}{'s' if n > 1 and not k.endswith('y') else ''}" for k, n in sorted(waiting.items())))
+
+    ot = f.get("outcome_tracker") or {}
+    if ot.get("recent"):
+        vv = ot.get("verdicts") or {}
+        L += ["", "<b>Your decisions, measured</b>"]
+        L.append(" · ".join(f"{n} {k.replace('_', ' ')}" for k, n in sorted(vv.items())))
+        for x in ot["recent"][:2]:
+            L.append(f"• {e(str(x.get('note') or ''))} ({x['days']} days)")
+    bk = f.get("book_ads") or {}
+    if bk.get("status") == "on":
+        y, w = bk.get("yesterday") or {}, bk.get("7d") or {}
+        bc = w.get("currency") or "USD"
+        L += ["", "<b>Books</b> · Amazon Ads"]
+        L.append(f"7 days: {_m(w.get('spend'), bc)} spent · {_m(w.get('sales'), bc)} sales · {w.get('orders', 0)} orders"
+                 + (f" · ACoS {w['acos'] * 100:.0f}%" if w.get("acos") is not None else ""))
+        n_add, n_neg = sum(map(len, (bk.get("harvest") or {}).values())), sum(map(len, (bk.get("negatives") or {}).values()))
+        if n_add or n_neg:
+            L.append(f"{n_add} search term(s) to add as keywords, {n_neg} to exclude (Studio)")
+    wd = f.get("watchdog") or {}
+    if wd.get("issues"):
+        L += ["", f"<b>Watchdog</b> · {len(wd['issues'])} open"]
+        for i in wd["issues"][:4]:
+            L.append(f"{ {'critical': '🛑', 'warning': '⚠️'}.get(i['severity'], 'ℹ️') } {e(i['text'])}")
 
     srcs = dc.get("sources") or []
     L += ["", f"<b>Departments</b> · {dc.get('healthy', 0)} of {len(srcs)} sources up to date"]

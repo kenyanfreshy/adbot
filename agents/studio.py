@@ -15,7 +15,7 @@ from typing import Optional
 
 from control.schema import SCHEMA
 
-KINDS = ("voice", "angle", "copy", "listing", "draft", "brief")
+KINDS = ("voice", "angle", "copy", "listing", "draft", "brief", "book")
 OPEN = ("draft", "approved")
 
 # words that make an ad claim a person must be able to back up (store policies and advertising rules)

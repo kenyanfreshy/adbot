@@ -24,7 +24,9 @@ LISTING_LIMITS = {"app_store_promotional_text": 170, "play_short_description": 8
 ANGLE_SYSTEM = ("You are a performance marketer for small nursing exam-prep apps. From the customer voice, reviews and "
                 "search terms given, write exactly 3 ad angles for the app: {\"angles\": [{\"title\": 3-6 words, "
                 "\"promise\": one sentence of why to download, \"audience\": who it is for, \"evidence\": [ids]}]}. "
-                "Evidence ids must be copied exactly from the input. No made-up statistics, pass rates or awards.")
+                "Evidence ids must be copied exactly from the input. No made-up statistics, pass rates or awards. "
+                "your_past_decisions lists angle titles the owner approved and rejected: lean towards what was approved, "
+                "don't repeat a rejected angle.")
 COPY_SYSTEM = ("Write ad copy for one angle of a nursing exam-prep app. Return {\"meta\": {\"primary_text\": [3], "
                "\"headline\": [3], \"description\": [2]}, \"google_app\": {\"headline\": [5], \"description\": [5]}, "
                "\"apple_ads\": {\"keywords\": [up to 10 search keywords]}}. Hard limits in characters: Meta primary text 125, "
@@ -45,7 +47,16 @@ def _evidence(con, app: str) -> tuple[dict, set]:
     ids = {r[0] for r in revs} | {f"term:{t[0]}" for t in terms}
     return ({"app": app, "customer_voice": voice[0]["content"] if voice else None,
              "reviews": [{"id": a, "rating": b, "text": (c or "").strip()[:400]} for a, b, c in revs],
-             "search_terms": [{"id": f"term:{t}", "taps": tp, "installs": ins} for t, tp, ins in terms]}, ids)
+             "search_terms": [{"id": f"term:{t}", "taps": tp, "installs": ins} for t, tp, ins in terms],
+             "your_past_decisions": _past(con, app)}, ids)
+
+
+def _past(con, app: str) -> dict:
+    try:
+        from .outcomes import past_decisions
+        return past_decisions(con, app)
+    except Exception:  # noqa: BLE001 - outcomes table not there yet: nothing learned
+        return {"approved": [], "rejected": []}
 
 
 def angle_writer(ctx) -> dict:

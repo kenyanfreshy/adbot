@@ -932,3 +932,39 @@ details.fold>summary .chev,.rev .hx-fold .chev{color:var(--sc)}
 /* status chips glow in their own colour */
 .schip.ok,.schip.info,.schip.warn,.schip.bad,.schip.sim,.badge.good,.badge.bad,.badge.info{box-shadow:0 0 10px color-mix(in srgb,currentColor 30%,transparent)}
 .schip.info{animation:hxpulse 2.6s ease-out infinite}
+
+/* ===== Phases 5-10: profit, outcomes, books, watchdog, checklists, mockups ===== */
+.sx-term.good{--app:#00E5A3}.sx-term.bad{--app:#FF5C7A}
+.sx-pls{list-style:none;margin:8px 0 4px;padding:0;display:grid;gap:6px}
+.sx-pl{--pc:#00C2FF;position:relative;padding:9px 12px 9px 14px;border-radius:12px;border:1px solid rgba(148,163,184,.16);background:rgba(11,17,32,.85)}
+.sx-pl::before{content:"";position:absolute;left:0;top:9px;bottom:9px;width:3px;border-radius:3px;background:var(--pc);box-shadow:0 0 8px var(--pc)}
+.sx-pl.good{--pc:#00E5A3}.sx-pl.bad{--pc:#FF5C7A}
+.sx-pl b{display:block;font-size:13.5px;color:#F1F5F9;overflow-wrap:anywhere}
+.sx-pl span{display:block;font:600 9px var(--hud);letter-spacing:.12em;color:#7D8BA6;margin-top:3px;text-transform:uppercase}
+.sx-pl em{display:block;font:500 12px var(--mono);font-style:normal;color:color-mix(in srgb,var(--pc) 45%,#fff);margin-top:3px}
+.sx-check-note{margin:6px 2px 2px;font-size:12px;color:#7D8BA6}
+.sx-outs{margin:6px 0 2px;display:flex;flex-wrap:wrap;gap:6px}
+.sx-check{margin-top:12px;border-radius:14px;border:1px solid rgba(0,194,255,.35);background:linear-gradient(160deg,rgba(0,194,255,.09),rgba(11,17,32,.92) 55%);overflow:hidden}
+.sx-check>summary{list-style:none;cursor:pointer;padding:10px 12px;font:700 9.5px var(--hud);letter-spacing:.16em;color:#7FE3FF;display:flex;justify-content:space-between;gap:8px}
+.sx-check>summary::-webkit-details-marker{display:none}
+.sx-check>summary small{font:600 10px var(--mono);letter-spacing:0;color:#7D8BA6}
+.sx-check ol{margin:0;padding:0 12px 4px 12px;list-style:none;counter-reset:st}
+.sx-check li{counter-increment:st;position:relative;padding:9px 0 9px 30px;border-top:1px solid rgba(148,163,184,.12)}
+.sx-check li::before{content:counter(st);position:absolute;left:0;top:10px;width:20px;height:20px;border-radius:50%;display:grid;place-items:center;
+  font:700 10.5px var(--mono);color:#05070d;background:var(--cy);box-shadow:0 0 10px rgba(0,194,255,.6)}
+.sx-check li.done::before{content:"✓";background:var(--mint);box-shadow:0 0 10px rgba(0,229,163,.6)}
+.sx-check li.done b{text-decoration:line-through;color:#7D8BA6}
+.sx-check label{display:flex;gap:8px;align-items:flex-start;cursor:pointer}
+.sx-check label input{margin-top:3px;accent-color:#00E5A3}
+.sx-check li b{font-size:13.5px;color:#F1F5F9}
+.sx-check li p{margin:4px 0 0;font-size:12px;color:#8494B2}
+.sx-plat{flex:none;padding:1px 7px;border-radius:999px;font:700 8.5px var(--hud);letter-spacing:.12em;color:#FFB020;border:1px solid rgba(255,176,32,.45);background:rgba(255,176,32,.08);margin-top:1px}
+.sx-copy{margin-top:7px;padding:6px 12px;font-size:12px}
+.sx-check .sx-check-note{padding:0 12px 10px}
+.sx-mocks{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:6px 0 8px}
+.sx-mock{display:block;border-radius:10px;overflow:hidden;border:1px solid color-mix(in srgb,var(--app) 40%,transparent);background:#05070d;text-decoration:none;
+  box-shadow:0 0 14px color-mix(in srgb,var(--app) 14%,transparent)}
+.sx-mock img{display:block;width:100%;aspect-ratio:1/1;object-fit:cover}
+.sx-mock.s4x5 img{aspect-ratio:4/5}.sx-mock.s9x16 img{aspect-ratio:9/16}
+.sx-mock small{display:block;padding:4px 6px;font:600 9px var(--mono);color:#8494B2}
+.sx-pl b .schip{display:inline-block;width:auto}

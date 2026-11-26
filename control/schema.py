@@ -358,6 +358,45 @@ MIGRATIONS.append((6, "studio: reviews, search terms, competitor ads and the stu
         decided_at  TIMESTAMP)""",
 ]))
 
+MIGRATIONS.append((7, "outcomes of your decisions, and Amazon Ads (KDP books) read-only report rows", [
+    # Outcome Tracker: what happened after each decision you made (measured, never claimed as cause)
+    f"""CREATE TABLE IF NOT EXISTS {SCHEMA}.outcomes (
+        outcome_id   VARCHAR PRIMARY KEY,       -- '<source>:<id>:<days>'
+        source       VARCHAR NOT NULL,          -- studio | proposal
+        ref_id       VARCHAR NOT NULL,          -- studio item_id or proposal_id
+        app          VARCHAR,
+        decision     VARCHAR NOT NULL,          -- approved | rejected | applied | ...
+        decided_at   TIMESTAMP NOT NULL,
+        days         INTEGER NOT NULL,          -- 7 or 14
+        measured_at  TIMESTAMP NOT NULL,
+        verdict      VARCHAR NOT NULL,          -- better | worse | flat | not_used | no_data
+        before       VARCHAR,                   -- JSON metrics for the days before
+        after        VARCHAR,                   -- JSON metrics for the days after
+        note         VARCHAR)""",
+    # Amazon Ads (books): copies of Amazon's own daily reports. Kept apart from ads.ad_performance on purpose,
+    # so book spend never enters the app budgets or the decision engine.
+    f"""CREATE TABLE IF NOT EXISTS {SCHEMA}.book_ads (
+        date          DATE NOT NULL,
+        profile_id    VARCHAR NOT NULL,
+        campaign_id   VARCHAR NOT NULL,
+        campaign_name VARCHAR,
+        impressions   DOUBLE, clicks DOUBLE, cost DOUBLE, purchases DOUBLE, sales DOUBLE, units DOUBLE, kenp_pages DOUBLE,
+        currency      VARCHAR,
+        fetched_at    TIMESTAMP NOT NULL,
+        PRIMARY KEY (date, profile_id, campaign_id))""",
+    f"""CREATE TABLE IF NOT EXISTS {SCHEMA}.book_search_terms (
+        date          DATE NOT NULL,
+        profile_id    VARCHAR NOT NULL,
+        campaign_id   VARCHAR NOT NULL,
+        ad_group_id   VARCHAR NOT NULL,
+        keyword       VARCHAR NOT NULL,         -- the keyword or target it matched ('' for auto)
+        search_term   VARCHAR NOT NULL,
+        campaign_name VARCHAR,
+        impressions   DOUBLE, clicks DOUBLE, cost DOUBLE, purchases DOUBLE, sales DOUBLE,
+        fetched_at    TIMESTAMP NOT NULL,
+        PRIMARY KEY (date, profile_id, campaign_id, ad_group_id, keyword, search_term))""",
+]))
+
 LATEST = max(v for v, _, _ in MIGRATIONS)
 
 

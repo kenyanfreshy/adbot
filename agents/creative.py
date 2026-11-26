@@ -5,14 +5,14 @@ Creative Studio (phase 4): briefs for image ads, a short video, its voiceover, a
                    video script in scenes and a voiceover script. Code checks lengths and flags claims.
   Resizer          the exact sizes / aspect ratios each placement needs (no AI; fixed platform specs)
 
-Generating the actual images, video and voice needs an outside tool. CREATIVE_PROVIDER names one when it is set up;
-until then (the default, "none") the briefs are what you hand to a designer or tool, and the Studio tab says so.
+Every brief image also gets layout mockups (agents/mockups.py: SVG drawn by code, no photos, no cost) in 1:1, 4:5 and
+9:16. Finished images, video and voice need an outside tool; CREATIVE_PROVIDER names one when it is set up.
 """
 from __future__ import annotations
 
 import json
 
-from . import studio
+from . import mockups, studio
 
 SIZES = [   # placement -> pixels, aspect ratio
     {"platform": "Meta", "placement": "Feed (square)", "size": "1080×1080", "ratio": "1:1"},
@@ -77,10 +77,11 @@ def creative_briefs(ctx) -> dict:
         if not images and not scenes:
             continue
         brief = {"images": images, "video": {"length_seconds": 15, "scenes": scenes}, "voiceover": vo,
-                 "sizes": SIZES, "provider": prov, "notes": notes,
-                 "generation": ("Not generated: set CREATIVE_PROVIDER once an image/video/voice tool is connected. "
-                                "Until then, hand this brief to a designer or your own tool.") if prov == "none"
-                 else f"CREATIVE_PROVIDER is '{prov}', but AdBot has no integration for it yet; nothing was generated."}
+                 "sizes": SIZES, "provider": prov, "notes": notes, "mockups": mockups.for_brief({"images": images}),
+                 "generation": ("Layout mockups made by AdBot (text, colour and a marked photo area; no photos). "
+                                "Finished artwork, video and voice still need a designer or your own tool.") if prov == "none"
+                 else f"Layout mockups made by AdBot. CREATIVE_PROVIDER is '{prov}', but AdBot has no integration for it yet; "
+                      "no finished artwork was generated."}
         studio.add(con, "brief", c["app"], "creative_briefs", f"Creative brief · {c['title'].removeprefix('Copy · ')}", brief,
                    parent_id=c["item_id"], flags=studio.claim_flags(*texts) + notes, now=ctx.now)
         made += 1

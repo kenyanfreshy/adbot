@@ -67,9 +67,22 @@ What still needs you (or a later change):
   service account. If access is refused, Review Miner says so in the Studio tab; nothing else is affected.
 * **Competitor ads** need `AGENTS_COMPETITOR_TERMS` and a Meta token with Ad Library API access. The Ad Library
   only covers some countries for non-political ads (`AGENTS_COMPETITOR_COUNTRIES`, default GB).
-* **Generating images, video and voice** needs an outside tool. `CREATIVE_PROVIDER` is reserved for it; AdBot has no
-  integration yet, so briefs are what you hand to a designer or tool.
+* **Finished images, video and voice** need an outside tool. `CREATIVE_PROVIDER` is reserved for it; AdBot draws
+  layout mockups itself (phase 9), and briefs are what you hand to a designer or tool.
 * **Launching** from AdBot is off. Create approved drafts in each platform's own tool.
+
+## Phases 5–10 (built): profit, watchdog, outcomes, apply checklists, mockups, books
+
+All read-only or drafts-only. DRY_RUN, the decision engine, budgets and bids are untouched.
+
+| Agent | What it does | Where you see it |
+| --- | --- | --- |
+| 💰 Profit Tracker (`profit.py`) | Value per download per app (90 days of store proceeds ÷ store downloads, organic included); estimated return per keyword / ad set over 28 days; store sync gaps. Suggests a Rules-tab value per install when it's 0, never sets it | Studio › Profit, morning page |
+| 🐕 Watchdog (`watchdog.py`) | Campaigns a platform stopped listing, store proceeds lagging, failed store syncs, a stale trading heartbeat, Claude spend near the cap, failed agents. Each issue once, and once more when it clears. Toggle: `watchdog` alert | Telegram, Studio › Watchdog |
+| 📊 Outcome Tracker (`outcomes.py`) | 7 and 14 days after each approved launch draft, listing text or Ads-tab change: before vs after (better / worse / flat / not added yet). The Angle Writer sees what you approved and rejected | Studio › Your decisions, chips on each card, morning page |
+| 🧭 Apply checklist (`checklist.py`) | Step-by-step instructions for each launch / books draft in the platform's own tool, with copy buttons. Ticks are kept on your phone | Inside each draft card |
+| 🖼️ Mockups (`mockups.py`) | Every creative brief image as an SVG layout mockup in 1:1, 4:5 and 9:16. Drawn by code: no photos, no image model, no cost | Inside each brief card (`/api/studio/mockup`) |
+| 📚 Book Ads (`books.py`) | Amazon Ads (Sponsored Products) for KDP books: daily campaign and search-term reports (asked for once a day, downloaded on a later run), ACoS, terms to add and exclude, a weekly "book" draft. Stored in `control.book_ads` / `book_search_terms`, never in `ads.ad_performance`, so book spend never touches app budgets. Off until `AMAZON_ADS_CLIENT_ID`, `AMAZON_ADS_CLIENT_SECRET`, `AMAZON_ADS_REFRESH_TOKEN` are set | Studio › Books, morning page |
 
 ## How the reference "32-agent" design maps onto AdBot
 
@@ -85,5 +98,5 @@ What still needs you (or a later change):
 ## Not built (needs a decision or an outside account)
 
 * Launching drafts on the platforms (would need write access, DRY_RUN and the existing safeguards).
-* Image / video / voice generation (pick a tool; then add a provider for `CREATIVE_PROVIDER`).
+* Finished image / video / voice generation (pick a tool; then add a provider for `CREATIVE_PROVIDER`). Layout mockups exist.
 * Customer cost per paying user and lead-to-sale (need install attribution; AdBot has no CRM).
