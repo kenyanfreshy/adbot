@@ -488,14 +488,16 @@
     const limitUsed = r && r.daily_loss_limit ? Math.min(1, (r.daily_loss_used || 0) / r.daily_loss_limit) : null;
     $("view").innerHTML = `
       ${r && r.kill_switch ? `<div class="banner bad" style="margin-top:10px"><b>Trading is halted.</b> ${esc(r.notes || "")}</div>` : ""}
-      <div class="kpis" style="margin-top:10px">
+      <details class="fold" id="trAcct" ${store.get("adbot-tr-trAcct", true) ? "open" : ""}><summary class="h">Account <small>${money(a.equity)} · ${smoney(a.day_pnl)} today</small><i class="chev" aria-hidden="true"></i></summary>
+      <div class="kpis">
         <div class="kpi"><div class="k">Equity</div><div class="v">${money(a.equity)}</div><div class="d">${dayChange != null ? smoney(dayChange) + " today" : "&nbsp;"}</div></div>
         <div class="kpi"><div class="k">Today's P&amp;L</div><div class="v" style="color:${(a.day_pnl || 0) < 0 ? "var(--red)" : (a.day_pnl || 0) > 0 ? "var(--green)" : "inherit"}">${smoney(a.day_pnl)}</div><div class="d">realised</div></div>
         <div class="kpi"><div class="k">Total P&amp;L</div><div class="v">${smoney(a.total_pnl)}</div><div class="d">realised, all time</div></div>
         <div class="kpi"><div class="k">Margin used</div><div class="v">${money(a.margin_used)}</div><div class="d">balance ${money(a.balance)}</div></div>
       </div>
       ${r ? `<div class="card" style="margin-top:10px">${limitUsed != null ? `<div class="lrow" style="padding-top:0">Daily loss limit<b>${money(r.daily_loss_used)} of ${money(r.daily_loss_limit)}</b></div><div class="bar"><i style="width:${limitUsed * 100}%;background:${limitUsed > .8 ? "var(--red)" : limitUsed > .5 ? "var(--amber)" : "var(--green)"}"></i></div>` : ""}<div class="sub" style="margin-top:8px">${esc(r.notes || "")}</div></div>` : ""}
-      ${d.equity.length > 1 ? `<div class="h">Equity <small>30 days</small></div><div class="card"><div class="chart">${lineChart(d.equity.map(e => ({date: e.ts, equity: e.equity})), ["equity"], ["#00E5A3"], null, {fit: true, money: true})}</div></div>` : ""}
+      </details>
+      ${d.equity.length > 1 ? `<details class="fold" id="trEq" ${store.get("adbot-tr-trEq", true) ? "open" : ""}><summary class="h">Equity <small>30 days</small><i class="chev" aria-hidden="true"></i></summary><div class="card"><div class="chart">${lineChart(d.equity.map(e => ({date: e.ts, equity: e.equity})), ["equity"], ["#00E5A3"], null, {fit: true, money: true})}</div></div></details>` : ""}
       <div class="h">Charts <small>moving averages &amp; oscillators</small></div><div class="card tc" id="tchart"></div>
       <div class="h">Open positions <small>${d.positions.length}</small></div>
       <div class="card list">${d.positions.length ? d.positions.map(p => `<div class="item"><div class="main"><div class="name">${esc(p.symbol)} <span class="badge ${p.side === "buy" || p.side === "long" ? "good" : "bad"}">${esc(String(p.side || "").toUpperCase())}</span> ${p.strategy ? `<span class="badge warn">${esc(p.strategy)}</span>` : ""}</div><div class="meta">${p.qty} lots · in ${p.entry} · now ${p.price ?? "—"} · SL ${p.stop ?? "—"} · TP ${p.target ?? "—"}</div></div><div class="right" style="color:${(p.unrealized_pnl || 0) < 0 ? "var(--red)" : "var(--green)"}">${smoney(p.unrealized_pnl)}</div></div>`).join("") : `<div class="empty" style="padding:12px">Flat: no open positions.</div>`}</div>
@@ -504,6 +506,7 @@
       <div class="h">Signals <small>24 hours</small></div>
       <div class="card list">${d.signals.length ? d.signals.map(s => `<div class="item"><div class="main"><div class="name">${esc(s.symbol)} ${s.direction ? esc(String(s.direction).toUpperCase()) : ""} <span class="badge ${s.decision === "taken" ? "good" : s.decision === "blocked" ? "bad" : "mute"}">${esc(s.decision)}</span></div><div class="meta">${esc(s.reason || "")}</div></div><div class="right">${s.confidence != null ? pct(s.confidence, 0) : ""}<small>${new Date(s.ts + "Z").toLocaleTimeString("en-US", {hour: "numeric", minute: "2-digit"})}</small></div></div>`).join("") : `<div class="empty" style="padding:12px">No signals in the last 24 hours.</div>`}</div>
       <p class="sub" style="text-align:center;margin-top:14px">Read-only. AdBot never places, changes or closes trades.</p>`;
+    ["trAcct", "trEq"].forEach(id => { const f = $(id); if (f) f.addEventListener("toggle", () => store.set("adbot-tr-" + id, f.open)); });
     tradeChart(d, my);
   }
 
