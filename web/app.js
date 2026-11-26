@@ -1137,6 +1137,21 @@
     }
     return "";
   }
+  function emptyReason(aw, claude) {
+    const box = (t, m) => `<div class="sx-empty"><b>${t}</b>${m}</div>`;
+    if (!aw) return box("WAITING FOR THE FIRST RUN", "The agents run with the scheduled job every 4 hours.");
+    if (aw.status === "no Claude key") return box("NO CLAUDE KEY", "Add ANTHROPIC_API_KEY on the adbot-hourly job. Everything else keeps running without it.");
+    const made = Object.entries(aw.made || {});
+    if (made.length && made.every(([, v]) => typeof v === "string")) {
+      const none = made.filter(([, v]) => /no reviews or search terms/.test(v)).length === made.length;
+      return box(none ? "NOTHING TO WRITE FROM YET" : "NO ANGLE PASSED THE CHECKS",
+        none ? `Claude is connected${claude && claude.calls ? ` (${num(claude.calls)} call${claude.calls === 1 ? "" : "s"} today)` : ""}. Angles are written from your store reviews and Apple Ads search terms, and none of your apps has either yet. Search terms appear once Apple Ads campaigns get taps; the writer runs weekly.`
+             : made.map(([a, v]) => `${esc(SHORT[a] || a)}: ${esc(v)}`).join(" · "));
+    }
+    if (aw.status === "weekly") return box("NEXT ANGLES THIS WEEK", "The writer runs once a week; drafts appear here after its next run.");
+    return box("NO DRAFTS YET", "Drafts appear here after the next scheduled run.");
+  }
+
   function insights(r) {
     const pt = r.profit_tracker || {}, ot = r.outcome_tracker || {}, bk = r.book_ads || {}, wd = r.watchdog || {};
     const apps = Object.entries(pt.apps || {});
@@ -1211,7 +1226,7 @@
       </section>
       <div class="sx-safe"><b>DRAFTS ONLY</b> Nothing here is sent to an ad platform or store. Approval lets the next agent build on it.</div>
       <nav class="sx-pipe" aria-label="Pipeline">${pipe}</nav>
-      ${d.items.length ? "" : `<div class="sx-empty"><b>STANDING BY</b>The agents write angles once a week from your reviews and Apple Ads search terms. Needs ANTHROPIC_API_KEY on the hourly job.</div>`}
+      ${d.items.length ? "" : emptyReason(r.angle_writer, d.claude_today)}
       ${KORDER.filter(k => (by[k] || []).length).map(k => `<h3 class="h" id="sx-${k}">${SKIND[k]} <small>${nDraft(k)} to review</small></h3>${by[k].map(card).join("")}`).join("")}
       <h3 class="h" id="sx-research">Signals <small>latest run</small></h3>
       <div class="sx-sigs">${rev}${terms(sa.add_as_keyword, "TERMS TO ADD", "good")}${terms(sa.negative_candidates, "TERMS TO EXCLUDE", "bad")}
