@@ -914,7 +914,8 @@ async def studio_get(request: Request):
     team = [{"key": a.key, "name": a.name, "module": a.module, "does": a.does, "status": (latest.get(a.key) or {}).get("status"),
              "error": (latest.get(a.key) or {}).get("error")} for a in abrain.team()]
     research = {k: (latest.get(k) or {}).get("output") for k in ("review_miner", "search_ad_watch", "competitor_ad_spy", "test_budget",
-                                                                   "profit_tracker", "outcome_tracker", "book_ads", "watchdog")}
+                                                                   "profit_tracker", "outcome_tracker", "book_ads", "watchdog",
+                                                                   "angle_writer")}
     from agents import checklist as achecklist
     from agents import mockups as amockups
     with _db_lock:
