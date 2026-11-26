@@ -347,7 +347,7 @@ class AuthAuditTests(unittest.TestCase):
                 st = call(m, r.path, body, origin="https://test")[0]          # valid header + same origin, NO cookie
                 checked.append((m, r.path, st))
         self.assertTrue(all(st == 401 for _, _, st in checked), [c for c in checked if c[2] != 401])
-        self.assertEqual(len(checked), 25)      # every /api route + method except login/logout (update when routes change)
+        self.assertEqual(len(checked), 26)      # every /api route + method except login/logout (update when routes change)
 
     def test_expired_and_tampered_sessions(self):
         import time as _t

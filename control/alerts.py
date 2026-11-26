@@ -31,6 +31,7 @@ CATEGORIES = {   # category -> (rules.alerts toggle, default on)
     "applied": ("kill_switch", True),
     "daily_summary": ("daily_summary", True),
     "morning_page": ("morning_page", True),    # the agents' one-page morning report (agents/morning.py)
+    "watchdog": ("watchdog", True),            # Health Watchdog: things going stale or disappearing (agents/watchdog.py)
 }
 ALWAYS_ON = {"emergency", "execution_failure"}
 

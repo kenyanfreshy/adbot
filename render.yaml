@@ -57,8 +57,20 @@ services:
         value: "8"
       - key: AGENTS_COMPETITOR_TERMS   # optional, comma-separated: competitor ads to watch in the Meta Ad Library
         sync: false
-      - key: CREATIVE_PROVIDER         # reserved for an image/video/voice tool; "none" = briefs only
+      - key: CREATIVE_PROVIDER         # reserved for an image/video/voice tool; "none" = briefs + AdBot's layout mockups
         value: none
+      # Book Ads (agents/books.py): Amazon Ads for KDP books, read-only. Off until all three keys are set; needs an
+      # approved Amazon Ads API app (Login with Amazon client + a refresh token for your advertiser login).
+      - key: AMAZON_ADS_CLIENT_ID
+        sync: false
+      - key: AMAZON_ADS_CLIENT_SECRET
+        sync: false
+      - key: AMAZON_ADS_REFRESH_TOKEN
+        sync: false
+      - key: AMAZON_ADS_PROFILE_ID      # optional: which advertiser profile (the first one if blank)
+        sync: false
+      - key: AMAZON_ADS_REGION         # na (US, CA, MX, BR) | eu (UK, DE, ...) | fe (JP, AU)
+        value: na
       # Apple Search Ads (Settings > API in Apple Search Ads)
       - key: ASA_CLIENT_ID
         sync: false

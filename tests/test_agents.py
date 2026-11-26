@@ -74,8 +74,10 @@ class BrainTests(unittest.TestCase):
     def test_team_is_read_only_by_construction(self):
         # every agent module: no adapter, no execution, no platform client imported
         import inspect
-        from agents import changes, creative, departments, launch, money, research, studio, winners, writing
-        for m in (brain, changes, creative, departments, launch, money, morning, research, studio, winners, writing, llm):
+        from agents import (books, changes, checklist, creative, departments, launch, mockups, money, outcomes, profit, research,
+                            studio, watchdog, winners, writing)
+        for m in (brain, changes, creative, departments, launch, money, morning, research, studio, winners, writing, llm,
+                  books, checklist, mockups, outcomes, profit, watchdog):
             src = inspect.getsource(m)
             for bad in ("adapters", "execute_", "pause_keyword", "set_campaign_budget", "set_adset_budget", "run_bot("):
                 self.assertNotIn(bad, src, f"{m.__name__} mentions {bad}")
@@ -378,7 +380,8 @@ class StudioChainTests(_OnData):
         self.assertEqual(draft["apple_ads"]["campaign"]["campaign_id"], "2145125761")
         brief = studio.items(self.con, kind="brief")[0]
         self.assertTrue(any("number" in f for f in brief["flags"]))               # "5 minutes free?" is flagged
-        self.assertIn("Not generated", brief["content"]["generation"])
+        self.assertIn("Layout mockups", brief["content"]["generation"])
+        self.assertEqual([m["shape"] for m in brief["content"]["mockups"]], ["1x1", "4x5", "9x16"])
         self.assertEqual(len(brief["content"]["sizes"]), 8)
 
     def test_unconfigured_sources_are_reported_not_hidden(self):
@@ -396,3 +399,227 @@ class StudioChainTests(_OnData):
         self.con.execute("UPDATE control.studio_items SET status = 'superseded' WHERE item_id = ?", [iid])
         with self.assertRaises(ValueError):
             studio.decide(self.con, iid, True)
+
+
+
+# --------------------------------------------------------------------------- #
+# Phases 5-10: profit, watchdog, outcomes, checklist, mockups, books
+# --------------------------------------------------------------------------- #
+class PhasesPureTests(unittest.TestCase):
+    APPS = ["Rapid Nursing Review", "CCRN Adult", "NurseBound"]
+
+    def test_value_per_download_and_scores(self):
+        from agents import profit
+        rows = [("rnr", "USD", "download", 40, None), ("rnr", "USD", "subscription", 2, 30.0), ("rnr", "USD", "refund", -1, -10.0),
+                ("rnr", "EUR", "subscription", 1, 9.0), ("ccrn", None, "download", 5, None), ("other", "USD", "download", 99, 99.0)]
+        v = profit.value_per_download(rows, {"rnr": "Rapid Nursing Review", "ccrn": "CCRN Adult"}, self.APPS, "USD")
+        self.assertEqual(v["Rapid Nursing Review"]["value_per_download"], 0.5)        # (30 - 10) / 40
+        self.assertEqual(v["Rapid Nursing Review"]["other_currency_lines"], 1)
+        self.assertEqual(v["Rapid Nursing Review"]["confidence"], "ok")
+        self.assertEqual((v["CCRN Adult"]["value_per_download"], v["CCRN Adult"]["confidence"]), (0.0, "early"))
+        self.assertIsNone(v["NurseBound"]["value_per_download"])
+        ads = profit.score_ads([{"channel": "Apple Search Ads", "entity_id": "k1", "keyword": "nclex", "spend": 4.0, "installs": 10, "taps": 20},
+                                {"channel": "Apple Search Ads", "entity_id": "k1", "keyword": "nclex", "spend": 1.0, "installs": 0, "taps": 2},
+                                {"channel": "Meta Ads", "entity_id": "a", "spend": 3.0, "installs": 1, "taps": 9, "currency": "EUR"}],
+                               v, lambda r: "Rapid Nursing Review", "USD")
+        self.assertEqual(len(ads), 1)                                                   # the EUR row is not mixed in
+        self.assertEqual((ads[0]["spend"], ads[0]["est_value"], ads[0]["est_return"]), (5.0, 5.0, 1.0))
+
+    def test_watchdog_diff_and_message(self):
+        from agents import watchdog
+        prev = {"a": "old A", "b": "old B"}
+        new, cleared = watchdog.diff(prev, [{"key": "b", "severity": "warning", "text": "B"}, {"key": "c", "severity": "info", "text": "C"}])
+        self.assertEqual([i["key"] for i in new], ["c"])
+        self.assertEqual(cleared, ["old A"])
+        sev, title, body = watchdog.message(new, cleared)
+        self.assertEqual(sev, "info")
+        self.assertIn("1 new", title)
+        self.assertIn("✅ Cleared: old A", body)
+
+    def test_outcome_verdicts(self):
+        from agents.outcomes import verdict
+        self.assertEqual(verdict(6.5, 2.5, lower_is_better=True), "better")
+        self.assertEqual(verdict(2.0, 2.2, lower_is_better=True), "flat")
+        self.assertEqual(verdict(2.0, 3.0, lower_is_better=True), "worse")
+        self.assertEqual(verdict(10, 14, lower_is_better=False), "better")
+        self.assertEqual(verdict(None, 3, lower_is_better=True), "no_data")
+
+    def test_checklist(self):
+        from agents import checklist
+        it = {"kind": "draft", "flags": ["Contains a number"], "content": {
+            "currency": "USD", "errors": [], "test_budget_daily": 5.0,
+            "apple_ads": {"campaign": {"campaign": "RNR – US – Search Results"}, "add_keywords": [
+                {"text": "nclex quiz", "suggested_max_cpt": 1.25}, {"text": "nclex prep", "suggested_max_cpt": 1.25}],
+                "add_negative_keywords": ["nursing jobs"]},
+            "meta": {"primary_text": "Quiz on your break", "headline": "NCLEX prep", "countries": ["US"], "daily_budget": 5.0},
+            "google_app": {"headlines": ["A", "B"], "descriptions": ["D"], "countries": ["US"], "daily_budget": 5.0}}}
+        steps = checklist.build(it)
+        self.assertEqual(steps[0]["platform"], "First")
+        kw = next(s for s in steps if s["copy"] == "nclex quiz\nnclex prep")
+        self.assertIn("$1.25", kw["detail"])
+        self.assertTrue(any(s["copy"] == "nursing jobs" for s in steps))
+        self.assertEqual({s["platform"] for s in steps}, {"First", "Apple Ads", "Meta", "Google Ads", "After"})
+        self.assertEqual(checklist.build({"kind": "angle", "content": {}}), [])
+        b = checklist.build({"kind": "book", "content": {"harvest": {"Book 1 auto": ["icu nurse book"]}, "negatives": {}}})
+        self.assertEqual(b[0]["copy"], "icu nurse book")
+
+    def test_mockups_are_safe_svg(self):
+        import xml.etree.ElementTree as ET
+        from agents import mockups
+        for shape in mockups.SHAPES:
+            svg = mockups.render("NurseBound", 'Study <script>alert(1)</script> & "pass"', "A nurse on a break", shape)
+            root = ET.fromstring(svg)                                       # well-formed
+            self.assertTrue(root.tag.endswith("svg"))
+            self.assertNotIn("<script", svg)
+        self.assertEqual(len(mockups.for_brief({"images": [{}, {}]})), 6)
+
+
+class FakeHTTP:
+    """Records calls; answers like Login with Amazon and the Amazon Ads API."""
+    def __init__(self, dup=False):
+        self.calls, self.dup = [], dup
+
+    def post(self, url, data=None, json=None, headers=None, timeout=None):
+        self.calls.append(("POST", url, data or json, headers))
+        if "o2/token" in url:
+            return Resp({"access_token": "tok"})
+        if self.dup:
+            return Resp({"detail": "The Request is a duplicate of : rep-9"}, 425)
+        return Resp({"reportId": "rep-1", "status": "PENDING"})
+
+    def get(self, url, headers=None, timeout=None):
+        self.calls.append(("GET", url, None, headers))
+        return Resp([{"profileId": 77, "countryCode": "US"}])
+
+
+class AmazonClientTests(unittest.TestCase):
+    ENV = {"AMAZON_ADS_CLIENT_ID": "cid", "AMAZON_ADS_CLIENT_SECRET": "sec", "AMAZON_ADS_REFRESH_TOKEN": "ref"}
+
+    def test_configured_token_headers_and_duplicates(self):
+        from agents import books
+        self.assertFalse(books.configured({}))
+        self.assertTrue(books.configured(self.ENV))
+        http = FakeHTTP()
+        c = books.AmazonAds(self.ENV, http=http)
+        self.assertEqual(c.profiles()[0]["profileId"], 77)
+        c.profile_id = "77"
+        rid = c.request_report("x", TODAY - dt.timedelta(days=14), TODAY, "spCampaigns", ["campaign"], books.CAMPAIGN_COLS)
+        self.assertEqual(rid, "rep-1")
+        _, url, body, headers = http.calls[-1]
+        self.assertEqual(url, "https://advertising-api.amazon.com/reporting/reports")
+        self.assertEqual((headers["Amazon-Advertising-API-Scope"], headers["Authorization"]), ("77", "Bearer tok"))
+        self.assertEqual(body["configuration"]["reportTypeId"], "spCampaigns")
+        self.assertEqual(sum(1 for m, u, *_ in http.calls if "o2/token" in u), 1)       # token fetched once
+        dup = books.AmazonAds({**self.ENV, "AMAZON_ADS_REGION": "eu"}, http=FakeHTTP(dup=True))
+        dup.profile_id = "1"
+        self.assertEqual(dup.request_report("x", TODAY, TODAY, "spSearchTerm", ["searchTerm"], books.TERM_COLS), "rep-9")
+        self.assertTrue(dup.host.endswith("-eu.amazon.com"))
+
+
+class FakeAmazon:
+    profile_id = "77"
+
+    def __init__(self):
+        self.asked = []
+
+    def profiles(self):
+        return [{"profileId": 77}]
+
+    def request_report(self, name, start, end, rtype, group_by, columns):
+        self.asked.append(rtype)
+        return "id-" + rtype
+
+    def report(self, rid):
+        return {"status": "COMPLETED", "url": "https://s3/" + rid}
+
+    def download(self, url):
+        d = (TODAY - dt.timedelta(days=2)).isoformat()
+        if url.endswith("spCampaigns"):
+            return [{"date": d, "campaignId": 5, "campaignName": "Book 1 auto", "impressions": 900, "clicks": 40, "cost": 20.0,
+                     "purchases7d": 3, "sales7d": 29.97, "unitsSoldClicks7d": 3, "kindleEditionNormalizedPagesRead14d": 410}]
+        return [{"date": d, "campaignId": 5, "campaignName": "Book 1 auto", "adGroupId": 6, "keyword": "", "searchTerm": "ICU nurse book",
+                 "impressions": 100, "clicks": 6, "cost": 3.0, "purchases7d": 2, "sales7d": 19.98},
+                {"date": d, "campaignId": 5, "campaignName": "Book 1 auto", "adGroupId": 6, "keyword": "", "searchTerm": "free nursing pdf",
+                 "impressions": 300, "clicks": 22, "cost": 9.0, "purchases7d": 0, "sales7d": 0},
+                {"date": d, "campaignId": 5, "campaignName": "Book 1 auto", "adGroupId": 6, "keyword": "", "searchTerm": "b0abc12345",
+                 "impressions": 50, "clicks": 2, "cost": 1.0, "purchases7d": 1, "sales7d": 9.99}]
+
+
+class PhasesOnDataTests(_OnData):
+    def _run(self, agents, env=None, clients=None, now=NOW, transport=None):
+        from unittest import mock
+        t = transport or alerts.FakeTransport()
+        team = {a.key: a for a in brain.team()}
+        with mock.patch.object(brain, "_build_client", lambda name, env: (clients or {}).get(name)):
+            res = brain.run(self.con, self.rules, environ={**ENV, **(env or {})}, llm=False, transport=t, clock=lambda: now,
+                            agents=[team[k] for k in agents])
+        return res, t
+
+    def test_new_agents_in_the_full_run(self):
+        res, t = self.run_team()
+        out = {k: v["output"] for k, v in res["agents"].items()}
+        pt = out["profit_tracker"]
+        rnr = pt["apps"]["Rapid Nursing Review"]
+        self.assertEqual((rnr["downloads"], rnr["proceeds"], rnr["value_per_download"]), (40, 21.0, 0.53))
+        self.assertTrue(any(x["name"] == "kw k1" for x in pt["earning"] + pt["losing"]) or pt["totals_28d"]["spend"] > 0)
+        self.assertEqual(out["book_ads"]["status"], "off")
+        self.assertEqual(out["watchdog"]["issues"], [])
+        self.assertEqual(out["outcome_tracker"]["measured_now"], 0)
+
+    def test_watchdog_announces_once_and_when_cleared(self):
+        for cid, seen in (("1", NOW), ("2", NOW - dt.timedelta(days=3))):
+            self.con.execute("INSERT INTO control.ad_entities VALUES ('Apple Search Ads', 'campaign', ?, 'org', ?, ?, NULL, ?, 'RUNNING', "
+                             "NULL, 'US', NULL, ?, ?)", [f"campaign:{cid}", cid, f"Camp {cid}", f"Camp {cid}", seen, seen])
+        res, t = self._run(["watchdog"])
+        self.assertEqual(len(t.sent), 1)
+        self.assertIn("Camp 2", t.sent[0])
+        res, t = self._run(["watchdog"], now=NOW + dt.timedelta(hours=4))
+        self.assertEqual(t.sent, [])                                               # same issue: not repeated
+        self.con.execute("UPDATE control.ad_entities SET last_seen = ? WHERE campaign_id = '2'", [NOW + dt.timedelta(hours=8)])
+        res, t = self._run(["watchdog"], now=NOW + dt.timedelta(hours=8))
+        self.assertIn("Cleared", t.sent[0])
+        self.rules.alerts = {**self.rules.alerts, "watchdog": False}
+        self.con.execute("UPDATE control.ad_entities SET last_seen = ? WHERE campaign_id = '2'", [NOW - dt.timedelta(days=3)])
+        res, t = self._run(["watchdog"], now=NOW + dt.timedelta(hours=12))
+        self.assertEqual(res["agents"]["watchdog"]["output"]["delivery"], "disabled")
+        self.assertEqual(t.sent, [])
+
+    def test_outcome_of_an_approved_draft(self):
+        from agents import studio, outcomes
+        iid = studio.add(self.con, "draft", "Rapid Nursing Review", "launch_drafter", "Launch draft · x",
+                         {"apple_ads": {"add_keywords": [{"text": "kw k1"}], "add_negative_keywords": []}}, now=NOW)
+        studio.decide(self.con, iid, True, now=NOW - dt.timedelta(days=10))
+        res, _ = self._run(["outcome_tracker"])
+        ot = res["agents"]["outcome_tracker"]["output"]
+        self.assertEqual(ot["measured_now"], 1)                                    # 7 days due, 14 not yet
+        v, before, after = self.con.execute("SELECT verdict, before, after FROM control.outcomes").fetchone()
+        self.assertEqual(v, "better")                                              # $2.50 per install vs the app's $6.50 before
+        self.assertEqual(json.loads(after)["cpi"], 2.5)
+        self.assertEqual(json.loads(before)["cpi"], 6.5)
+        res, _ = self._run(["outcome_tracker"])
+        self.assertEqual(res["agents"]["outcome_tracker"]["output"]["measured_now"], 0)   # written once
+        self.assertEqual(ot["decisions"]["draft"]["approved"], 1)
+        rej = studio.add(self.con, "angle", "Rapid Nursing Review", "angle_writer", "Pass guaranteed", {}, now=NOW)
+        studio.decide(self.con, rej, False)
+        self.assertEqual(outcomes.past_decisions(self.con, "Rapid Nursing Review")["rejected"], ["Pass guaranteed"])
+
+    def test_books_request_then_download_then_draft(self):
+        from agents import studio
+        env = {"AMAZON_ADS_CLIENT_ID": "c", "AMAZON_ADS_CLIENT_SECRET": "s", "AMAZON_ADS_REFRESH_TOKEN": "r"}
+        fake = FakeAmazon()
+        res, _ = self._run(["book_ads"], env=env, clients={"amazon_ads": fake})
+        out = res["agents"]["book_ads"]["output"]
+        self.assertEqual(out["fetch"]["requested"], ["campaigns", "terms"])
+        self.assertEqual(sorted(fake.asked), ["spCampaigns", "spSearchTerm"])
+        res, _ = self._run(["book_ads"], env=env, clients={"amazon_ads": fake}, now=NOW + dt.timedelta(hours=4))
+        out = res["agents"]["book_ads"]["output"]
+        self.assertEqual(out["fetch"]["downloaded"], {"campaigns": 1, "terms": 3})
+        self.assertEqual((out["7d"]["spend"], out["7d"]["orders"], out["7d"]["kenp_pages"]), (20.0, 3, 410))
+        self.assertAlmostEqual(out["7d"]["acos"], round(20 / 29.97, 3))
+        self.assertEqual(out["harvest"], {"Book 1 auto": ["icu nurse book"]})       # the ASIN row is not a phrase
+        self.assertEqual(out["negatives"], {"Book 1 auto": ["free nursing pdf"]})
+        book = studio.items(self.con, kind="book")
+        self.assertEqual(len(book), 1)
+        self.assertIn("nothing is sent to Amazon", book[0]["content"]["launch"])
+        # book spend never reaches the app ads table the budgets and engine read
+        self.assertEqual(self.con.execute("SELECT count(*) FROM ads.ad_performance WHERE channel ILIKE '%amazon%'").fetchone()[0], 0)

@@ -64,7 +64,7 @@ class Context:
     _rows: Optional[list] = None
 
     def client(self, name: str):
-        """A read-only client: apple_store (App Store Connect), google_play, apple_ads, meta_get. None if not configured."""
+        """A read-only client: apple_store (App Store Connect), google_play, apple_ads, meta_get, amazon_ads. None if not configured."""
         if name not in self.clients:
             self.clients[name] = _build_client(name, self.environ)
         return self.clients[name]
@@ -109,6 +109,9 @@ def _build_client(name: str, env: dict):
             import dlt_pipeline as bot
             a = bot.AppleSearchAds()
             return a if a.configured else None
+        if name == "amazon_ads":
+            from . import books
+            return books.AmazonAds(env) if books.configured(env) else None
         if name == "meta_get":
             token = (env.get("META_ACCESS_TOKEN") or "").strip()
             if not token:
@@ -128,7 +131,7 @@ def _build_client(name: str, env: dict):
 
 
 def team() -> list[Agent]:
-    from . import changes, creative, departments, launch, money, morning, research, winners, writing
+    from . import books, changes, creative, departments, launch, money, morning, outcomes, profit, research, watchdog, winners, writing
     return [
         Agent("department_check", "Department Check", "Brain", "Checks every data source and what needs attention",
               departments.department_check),
@@ -138,14 +141,20 @@ def team() -> list[Agent]:
               money.real_return),
         Agent("winner_spotter", "Winner Spotter", "Profit Tracking", "Cheapest installs, and spend with nothing to show",
               winners.winner_spotter),
+        Agent("profit_tracker", "Profit Tracker", "Profit Tracking", "What an install is worth, and which ads earn more than they cost",
+              profit.profit_tracker),
         Agent("change_review", "Change Review", "Launch & Optimize", "Changes AdBot proposed that need your OK",
               changes.change_review),
+        Agent("outcome_tracker", "Outcome Tracker", "Brain", "What happened 7 and 14 days after each decision you made",
+              outcomes.outcome_tracker),
         # Research (phase 2)
         Agent("review_miner", "Review Miner", "Research", "Your App Store and Google Play reviews", research.review_miner),
         Agent("search_ad_watch", "Search Ad Watch", "Research", "Search terms behind your Apple Ads: add or exclude",
               research.search_ad_watch),
         Agent("competitor_ad_spy", "Competitor Ad Spy", "Research", "Competitors' active ads (Meta Ad Library)",
               research.competitor_ad_spy),
+        Agent("book_ads", "Book Ads", "Research", "Amazon Ads for your KDP books: ACoS, terms to add and exclude",
+              books.book_ads),
         Agent("customer_voice", "Customer Voice", "Research", "What customers like, dislike and the words they use",
               research.customer_voice),
         Agent("angle_writer", "Angle Writer", "Research", "Three reasons to download, backed by evidence", writing.angle_writer),
@@ -158,6 +167,7 @@ def team() -> list[Agent]:
         Agent("resizer", "Resizer", "Creative Studio", "Sizes each placement needs", creative.resizer),
         Agent("creative_briefs", "Creative Briefs", "Creative Studio", "Image, video and voiceover briefs for approved copy",
               creative.creative_briefs),
+        Agent("watchdog", "Watchdog", "Brain", "Telegram alert when something goes stale or disappears", watchdog.watchdog),
         Agent("morning_page", "Morning Page", "Brain", "One page every morning on Telegram",
               morning.morning_page, needs=("department_check", "spend_watch", "real_return", "winner_spotter", "change_review")),
     ]

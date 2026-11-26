@@ -409,7 +409,7 @@
         ${geo.map((g, i) => `<div class="field"><label for="gw${i}"><span class="flag">${flag(g.code)}</span> ${esc(regionName(g.code))}${g.flag === "who_safeguards" ? "<small>On WHO's 2023 safeguards list: advertise the study app, not recruitment</small>" : g.flag === "china_reach" ? "<small>Meta and Google ads don't serve in mainland China</small>" : ""}</label><input id="gw${i}" type="number" inputmode="decimal" step="1" min="0" value="${g.weight}" style="width:70px"><span class="switch"><input id="ge${i}" type="checkbox" ${g.enabled !== false ? "checked" : ""} aria-label="${esc(regionName(g.code))} on"><i></i></span></div>`).join("")}</details>
       <div class="group"><h3>Telegram alerts</h3><p class="hint">The bot token stays on Render (TELEGRAM_BOT_TOKEN), never in the app.</p>
         <div class="field"><label for="telegram_chat_id">Chat ID</label><input id="telegram_chat_id" type="text" inputmode="numeric" value="${esc(R.telegram_chat_id || "")}" placeholder="123456789"></div>
-        ${sw("al_daily_summary", R.alerts.daily_summary, "Daily summary")}${sw("al_morning_page", R.alerts.morning_page !== false, "Morning page")}${sw("al_kill_switch", R.alerts.kill_switch !== false, "Proposed and applied changes")}${sw("al_import_failure", R.alerts.import_failure !== false, "Import failures")}${sw("al_stale_data", R.alerts.stale_data !== false, "Stale data")}${sw("al_unmapped", R.alerts.unmapped !== false, "Unmapped campaigns")}${sw("al_budget", R.alerts.budget !== false, "Budget warnings")}
+        ${sw("al_daily_summary", R.alerts.daily_summary, "Daily summary")}${sw("al_morning_page", R.alerts.morning_page !== false, "Morning page")}${sw("al_watchdog", R.alerts.watchdog !== false, "Watchdog")}${sw("al_kill_switch", R.alerts.kill_switch !== false, "Proposed and applied changes")}${sw("al_import_failure", R.alerts.import_failure !== false, "Import failures")}${sw("al_stale_data", R.alerts.stale_data !== false, "Stale data")}${sw("al_unmapped", R.alerts.unmapped !== false, "Unmapped campaigns")}${sw("al_budget", R.alerts.budget !== false, "Budget warnings")}
         <p class="hint">Emergency and execution-failure alerts are always on. Repeats are held back (critical 1 h, warning 6 h, info 24 h).</p></div>
       <div class="actions">
         <button class="btn primary block" id="saveRules">Save rules</button>
@@ -452,7 +452,7 @@
         min_share: v("min_share") / 100, max_share: v("max_share") / 100, max_budget_step: v("max_budget_step") / 100, telegram_chat_id: $("telegram_chat_id").value.trim(),
         app_caps: Object.fromEntries(APPS.map((a, i) => [a, v("cap" + i)])), app_priority: Object.fromEntries(APPS.map((a, i) => [a, v("pri" + i)])),
         value_per_install: Object.fromEntries(APPS.map((a, i) => [a, v("vpi" + i)])),
-        alerts: {daily_summary: $("al_daily_summary").checked, morning_page: $("al_morning_page").checked, kill_switch: $("al_kill_switch").checked, import_failure: $("al_import_failure").checked,
+        alerts: {daily_summary: $("al_daily_summary").checked, morning_page: $("al_morning_page").checked, watchdog: $("al_watchdog").checked, kill_switch: $("al_kill_switch").checked, import_failure: $("al_import_failure").checked,
           stale_data: $("al_stale_data").checked, unmapped: $("al_unmapped").checked, budget: $("al_budget").checked},
         monthly_budget: opt("monthly_budget"), campaign_daily_max: opt("campaign_daily_max"), reserve_pct: v("reserve_pct") / 100,
         app_monthly: Object.fromEntries(APPS.map((a, i) => [a, opt("am" + i)]).filter(x => x[1] != null)),
@@ -1076,13 +1076,27 @@
   const AGC = {department_check: "#4BD5F0", spend_watch: "#F0844B", real_return: "#4B9AF0", winner_spotter: "#F0BE4B", change_review: "#4B60F0",
     review_miner: "#E8F04B", search_ad_watch: "#704BF0", competitor_ad_spy: "#AEF04B", customer_voice: "#AB4BF0", angle_writer: "#74F04B",
     ad_copy: "#E54BF0", listing_writer: "#4BF05D", test_budget: "#F04BC1", launch_drafter: "#4BF097", resizer: "#F04B87",
-    creative_briefs: "#4BF0D1", morning_page: "#F04B4D"};
+    creative_briefs: "#4BF0D1", morning_page: "#F04B4D", profit_tracker: "#F0D84B", outcome_tracker: "#4BB8F0", book_ads: "#F06A4B",
+    watchdog: "#CC4BF0"};
   const AGE = {department_check: "🧠", spend_watch: "💸", real_return: "📈", winner_spotter: "🏆", change_review: "✅",
     review_miner: "⭐", search_ad_watch: "🔎", competitor_ad_spy: "🕵️", customer_voice: "🗣️", angle_writer: "🎯",
     ad_copy: "✍️", listing_writer: "🏷️", test_budget: "🧪", launch_drafter: "🚀", resizer: "📐",
-    creative_briefs: "🎬", morning_page: "☀️"};
-  const SKIND = {angle: "Angles", copy: "Ad copy", listing: "Listing text", draft: "Launch drafts", brief: "Creative briefs", voice: "Customer voice"};
-  const KORDER = ["angle", "copy", "draft", "brief", "listing", "voice"];
+    creative_briefs: "🎬", morning_page: "☀️", profit_tracker: "💰", outcome_tracker: "📊", book_ads: "📚", watchdog: "🐕"};
+  const SKIND = {angle: "Angles", copy: "Ad copy", listing: "Listing text", draft: "Launch drafts", brief: "Creative briefs", voice: "Customer voice", book: "Books drafts"};
+  const KORDER = ["angle", "copy", "draft", "brief", "book", "listing", "voice"];
+  const VERD = {better: ["BETTER", "ok"], worse: ["WORSE", "bad"], flat: ["FLAT", "nil"], not_used: ["NOT ADDED YET", "warn"], no_data: ["NO DATA", "nil"]};
+  function checklistHtml(it) {
+    const steps = it.checklist || [];
+    if (!steps.length) return "";
+    const done = store.get("adbot-chk-" + it.item_id, []);
+    return `<details class="sx-check" ${it.status === "approved" ? "open" : ""}><summary>🧭 APPLY IT YOURSELF · ${steps.length} STEPS <small>${done.length}/${steps.length} done</small></summary>
+      <ol>${steps.map((st, i) => `<li class="${done.includes(i) ? "done" : ""}"><label><input type="checkbox" data-chk="${i}" ${done.includes(i) ? "checked" : ""}>
+        <span class="sx-plat">${esc(st.platform)}</span> <b>${esc(st.step)}</b></label>${st.detail ? `<p>${esc(st.detail)}</p>` : ""}
+        ${st.copy ? `<button class="btn sx-copy" data-copy="${esc(st.copy)}">Copy ${esc(String(st.copy).split("\n").filter(Boolean).length)} line(s)</button>` : ""}</li>`).join("")}</ol>
+      <p class="sx-check-note">AdBot sends nothing. You do these steps in each platform's own tool.</p></details>`;
+  }
+  const outcomeChips = it => (it.outcomes || []).map(o => { const [l, c] = VERD[o.verdict] || [o.verdict, "nil"];
+    return `<span class="schip ${c}" title="${esc(o.note || "")}">${o.days}D · ${esc(l)}</span>`; }).join(" ");
   const li = xs => (xs || []).map(x => `<li>${esc(x)}</li>`).join("");
   function studioBody(it) {
     const c = it.content || {};
@@ -1110,10 +1124,50 @@
         <div class="st-h">Video · ${esc(v.length_seconds || 15)} s</div><ul class="st-l">${li((v.scenes || []).map(s => `${s.seconds || ""}: ${s.shows || ""}${s.on_screen_text ? " · “" + s.on_screen_text + "”" : ""}`))}</ul>
         ${c.voiceover ? `<div class="st-h">Voiceover</div><p class="st-p">${esc(c.voiceover)}</p>` : ""}
         <div class="meta">${esc(c.generation || "")}</div>
+        ${(it.mockups || []).length ? `<div class="st-h">Layout mockups <small>tap to open</small></div><div class="sx-mocks">${it.mockups.filter(m => m.shape === "1x1" || m.image === 0).map(m => {
+          const u = `/api/studio/mockup?id=${encodeURIComponent(it.item_id)}&i=${m.image}&shape=${m.shape}`;
+          return `<a href="${u}" target="_blank" rel="noopener" class="sx-mock s${m.shape}"><img src="${u}" alt="Mockup ${m.image + 1}, ${esc(m.label)}" loading="lazy"><small>#${m.image + 1} · ${esc(m.shape.replace("x", ":"))}</small></a>`; }).join("")}</div>` : ""}
         <details class="st-sizes"><summary>Sizes per placement</summary><ul class="st-l">${li((c.sizes || []).map(s => `${s.platform} · ${s.placement}: ${s.size} (${s.ratio})`))}</ul></details>`;
+    }
+    if (it.kind === "book") {
+      const list = (o, tone) => Object.entries(o || {}).map(([camp, ts]) => `<div class="st-h">${esc(camp)}</div><p class="st-p">${ts.map(t => `<em class="sx-term ${tone}">${esc(t)}</em>`).join(" ")}</p>`).join("");
+      return `<div class="banner warn st-b">${esc(c.launch || "Draft only")}</div>
+        ${Object.keys(c.harvest || {}).length ? `<div class="st-h">➕ Add as exact keywords (sold a book)</div>${list(c.harvest, "good")}` : ""}
+        ${Object.keys(c.negatives || {}).length ? `<div class="st-h">⛔ Add as negatives (many clicks, no sale)</div>${list(c.negatives, "bad")}` : ""}`;
     }
     return "";
   }
+  function insights(r) {
+    const pt = r.profit_tracker || {}, ot = r.outcome_tracker || {}, bk = r.book_ads || {}, wd = r.watchdog || {};
+    const apps = Object.entries(pt.apps || {});
+    const t = pt.totals_28d || {};
+    const row = (x, tone) => `<li class="sx-pl ${tone}"><b>${esc(x.name)}</b><span>${esc(SHORT[x.app] || x.app || "?")} · ${esc(x.channel)}</span><em>${money(x.spend)} → ${x.est_value != null ? money(x.est_value) : "—"} · ${x.est_return != null ? x.est_return.toFixed(2) + "x" : "—"}</em></li>`;
+    const profit = `<h3 class="h" id="sx-profit">💰 Profit <small>estimates · organic included</small></h3>
+      <div class="sx-sigs">${apps.map(([a, v]) => `<div class="sx-sig" style="--app:${HEX[a] || "#00C2FF"}"><span>💵 ${esc(SHORT[a] || a)} · WORTH PER DOWNLOAD</span><b>${v.value_per_download != null ? money(v.value_per_download) : "—"}</b><small>${num(v.downloads)} downloads · ${money(v.proceeds)} proceeds · 90 days${v.confidence === "early" ? " · early" : ""}</small></div>`).join("")}
+        <div class="sx-sig ${t.est_return != null && t.est_return >= 1 ? "good" : "bad"}"><span>📈 ADS · 28 DAYS</span><b>${t.est_return != null ? t.est_return.toFixed(2) + "x return" : "—"}</b><small>${money(t.spend || 0)} spent → about ${money(t.est_value || 0)} earned</small></div>
+        ${Object.keys(pt.suggest_value_per_install || {}).length ? `<div class="sx-sig budget"><span>🧮 SUGGESTED VALUE PER INSTALL</span><b>${Object.entries(pt.suggest_value_per_install).map(([a, v]) => `${esc(SHORT[a] || a)} ${money(v)}`).join(" &nbsp; ")}</b><small>The Rules tab has 0. Type it in yourself if you agree; AdBot won't.</small></div>` : ""}
+        ${(pt.sync_gaps || []).map(g => `<div class="sx-sig bad"><span>⏳ SYNC GAP</span><b>${esc(g.store)}</b><small>${esc(g.text)}</small></div>`).join("")}</div>
+      ${(pt.earning || []).length || (pt.losing || []).length ? `<ul class="sx-pls">${(pt.earning || []).map(x => row(x, "good")).join("")}${(pt.losing || []).map(x => row(x, "bad")).join("")}</ul>` : ""}
+      ${pt.note ? `<p class="sx-check-note">${esc(pt.note)}</p>` : ""}`;
+    const vv = ot.verdicts || {}, dec = ot.decisions || {};
+    const decided = Object.values(dec).reduce((s, d) => s + d.approved + d.rejected, 0);
+    const outcomes = `<h3 class="h" id="sx-outcomes">📊 Your decisions, measured <small>7 and 14 days later</small></h3>
+      <div class="sx-sigs"><div class="sx-sig"><span>🗳️ DECISIONS</span><b>${num(decided)}</b><small>${Object.entries(dec).map(([k, d]) => `${esc(SKIND[k] || k)} ${d.approved}✓ ${d.rejected}✗`).join(" · ") || "Approve or reject drafts and they show here"}</small></div>
+        <div class="sx-sig good"><span>✅ BETTER</span><b>${num(vv.better || 0)}</b><small>${num(vv.flat || 0)} flat · ${num(vv.worse || 0)} worse · ${num(vv.not_used || 0)} not added yet</small></div></div>
+      ${(ot.recent || []).length ? `<ul class="sx-pls">${ot.recent.map(x => { const [l, c] = VERD[x.verdict] || [x.verdict, "nil"]; return `<li class="sx-pl"><b><span class="schip ${c}">${x.days}D · ${esc(l)}</span></b><span>${esc(x.source === "proposal" ? "Ads tab change" : "Studio")} · ${esc(SHORT[x.app] || x.app || "")}</span><em>${esc(x.note || "")}</em></li>`; }).join("")}</ul>` : `<p class="sx-check-note">Measurements start 9 days after your first approval. Results are around a date, not proof of cause.</p>`}`;
+    const b7 = bk["7d"] || {};
+    const books = `<h3 class="h" id="sx-books">📚 Books <small>Amazon Ads · read-only</small></h3>
+      ${bk.status === "on" ? `<div class="sx-sigs"><div class="sx-sig"><span>💸 7 DAYS</span><b>${money(b7.spend || 0)} → ${money(b7.sales || 0)}</b><small>${num(b7.orders || 0)} orders${b7.acos != null ? ` · ACoS ${(b7.acos * 100).toFixed(0)}%` : ""}${b7.kenp_pages != null ? ` · ${num(b7.kenp_pages)} KENP pages` : ""}</small></div>
+        <div class="sx-sig ${(bk.fetch || {}).waiting && bk.fetch.waiting.length ? "budget" : "good"}"><span>📥 REPORTS</span><b>${(bk.fetch || {}).waiting && bk.fetch.waiting.length ? "Amazon is preparing them" : "Up to date"}</b><small>Sales are what readers paid, not your royalty</small></div></div>
+        ${(bk.campaigns || []).length ? `<ul class="sx-pls">${bk.campaigns.map(x => `<li class="sx-pl ${x.acos != null && x.acos > .7 ? "bad" : ""}"><b>${esc(x.campaign)}</b><span>${num(x.orders)} orders · 30 days</span><em>${money(x.spend)} → ${money(x.sales)}${x.acos != null ? " · ACoS " + (x.acos * 100).toFixed(0) + "%" : ""}</em></li>`).join("")}</ul>` : ""}`
+        : `<div class="sx-empty"><b>OFF</b>${esc(bk.setup || "Add Amazon Ads API keys on the adbot-hourly job to switch this on.")}</div>`}`;
+    const wi = wd.issues || [];
+    const watch = `<h3 class="h" id="sx-watch">🐕 Watchdog <small>${wi.length ? wi.length + " open" : "all clear"}</small></h3>
+      ${wi.length ? `<ul class="sx-pls">${wi.map(i => `<li class="sx-pl ${i.severity === "info" ? "" : "bad"}"><b>${{critical: "🛑", warning: "⚠️"}[i.severity] || "ℹ️"} ${esc(i.text)}</b></li>`).join("")}</ul>`
+        : `<p class="sx-check-note">Nothing stale or missing. New issues go to Telegram the moment a run sees them.</p>`}`;
+    return profit + outcomes + books + watch;
+  }
+
   async function viewStudio(my) {
     const d = await api("/api/studio"); if (my !== seq) return;
     const by = {}; d.items.forEach(it => (by[it.kind] = by[it.kind] || []).push(it));
@@ -1140,8 +1194,8 @@
     const pipe = stages.map((st, i) => `${i ? `<i class="sx-link" style="--a:${stages[i - 1].c};--b:${st.c};--d:${i * .35}s" aria-hidden="true"></i>` : ""}<a class="sx-node ${st.n ? "on" : ""} ${/to review/.test(st.sub) && !st.sub.startsWith("0") ? "hot" : ""}" style="--pc:${st.c};--d:${i * .35}s" href="#sx-${st.k}"><b>${num(st.n)}</b><span>${st.label}</span><small>${esc(st.sub)}</small></a>`).join("");
     const card = it => `<article class="sx-card" data-sid="${esc(it.item_id)}" style="--app:${HEX[it.app] || "#00C2FF"}">
         <i class="sx-corner tl"></i><i class="sx-corner br"></i>
-        <header class="sx-ch"><span class="sx-kind">${esc(({angle: "ANGLE", copy: "AD COPY", listing: "LISTING", draft: "LAUNCH DRAFT", brief: "CREATIVE BRIEF", voice: "CUSTOMER VOICE"})[it.kind] || it.kind)}</span><span class="sx-app">${esc(SHORT[it.app] || it.app || "ALL")}</span><span class="sx-st ${STC[it.status] || "nil"}">${STL[it.status] || esc(it.status)}</span></header>
-        <div class="sx-title">${esc(it.title)}</div>${studioBody(it)}
+        <header class="sx-ch"><span class="sx-kind">${esc(({angle: "ANGLE", copy: "AD COPY", listing: "LISTING", draft: "LAUNCH DRAFT", brief: "CREATIVE BRIEF", voice: "CUSTOMER VOICE", book: "BOOKS · AMAZON ADS"})[it.kind] || it.kind)}</span><span class="sx-app">${esc(SHORT[it.app] || it.app || "ALL")}</span><span class="sx-st ${STC[it.status] || "nil"}">${STL[it.status] || esc(it.status)}</span></header>
+        <div class="sx-title">${esc(it.title)}</div>${(it.outcomes || []).length ? `<div class="sx-outs">${outcomeChips(it)}</div>` : ""}${studioBody(it)}${checklistHtml(it)}
         ${(it.flags || []).length ? `<div class="sx-flags"><b>⚠ VERIFY BEFORE USE</b><ul class="st-l">${li(it.flags)}</ul></div>` : ""}
         <footer class="sx-foot"><code>${esc(it.item_id)}</code><span class="sx-by" style="--ag:${AGC[it.agent] || "#64748B"}">${AGE[it.agent] || "🤖"} ${esc(String(it.agent || "").replace(/_/g, " "))}</span></footer>
         <div class="qbtns"><button class="btn" data-sdec="0" ${it.status === "rejected" ? "disabled" : ""}>Reject</button><button class="btn primary" data-sdec="1" ${it.status === "approved" ? "disabled" : ""}>Approve</button></div></article>`;
@@ -1163,12 +1217,23 @@
       <div class="sx-sigs">${rev}${terms(sa.add_as_keyword, "TERMS TO ADD", "good")}${terms(sa.negative_candidates, "TERMS TO EXCLUDE", "bad")}
         <div class="sx-sig comp"><span>🕵️ COMPETITOR ADS</span><b>${ca.status === "ok" ? `${num(ca.ads_seen)} ads · ${Object.keys(ca.advertisers || {}).length} advertisers` : esc(ca.status === "off" ? "Off" : ca.status || "Not run yet")}</b>${ca.status !== "ok" && ca.detail ? `<small>${esc(ca.detail)}</small>` : ""}</div>
         <div class="sx-sig budget"><span>🧪 TEST BUDGET / NEW TEST</span><b>${APPS.map(a => `${esc(SHORT[a])} ${tb[a] && tb[a].daily != null ? money(tb[a].daily) : "—"}`).join(" &nbsp; ")}</b>${APPS.some(a => !(tb[a] && tb[a].daily != null)) ? `<small>${esc(((tb[APPS.find(a => !(tb[a] && tb[a].daily != null))] || {}).why) || "Appears after the next run")}</small>` : ""}</div></div>
+      ${insights(r)}
       <details class="fold" id="stTeam" ${store.get("adbot-log-stTeam", false) ? "open" : ""}><summary class="h">Agent team <small>${d.team.length} nodes</small><i class="chev" aria-hidden="true"></i></summary>
         <div class="sx-team">${d.team.map(a => { const [sl, sc] = STAT[a.status] || ["NOT RUN", "nil"];
           return `<div class="sx-agent" style="--ag:${AGC[a.key] || "#64748B"}" title="${esc(a.does)}"><i class="sx-emo" aria-hidden="true">${AGE[a.key] || "🤖"}</i><b>${esc(a.name)}</b><span>${esc(a.module)}</span><em class="sx-ast ${sc}">${sl}</em>${a.error ? `<small>${esc(a.error)}</small>` : ""}</div>`; }).join("")}</div></details>
     </div>`;
     $("stTeam").addEventListener("toggle", e => store.set("adbot-log-stTeam", e.target.open));
     document.querySelectorAll(".sx-node").forEach(n => n.onclick = e => { const t = document.querySelector(n.getAttribute("href")); if (t) { e.preventDefault(); t.scrollIntoView({behavior: "smooth", block: "start"}); } });
+    document.querySelectorAll("[data-chk]").forEach(cb => cb.onchange = () => {
+      const id = cb.closest("[data-sid]").dataset.sid, k = "adbot-chk-" + id, i = +cb.dataset.chk;
+      const done = store.get(k, []).filter(x => x !== i); if (cb.checked) done.push(i); store.set(k, done);
+      cb.closest("li").classList.toggle("done", cb.checked);
+      const sm = cb.closest("details").querySelector("summary small"); if (sm) sm.textContent = `${done.length}/${cb.closest("ol").children.length} done`;
+    });
+    document.querySelectorAll("[data-copy]").forEach(b => b.onclick = async () => {
+      try { await navigator.clipboard.writeText(b.dataset.copy); toast("Copied. Paste it in the platform's own tool."); }
+      catch (e) { toast("Couldn't copy here; select the text in the draft instead."); }
+    });
     document.querySelectorAll("[data-sdec]").forEach(b => b.onclick = async () => {
       const id = b.closest("[data-sid]").dataset.sid; b.disabled = true;
       try { await api("/api/studio/decide", {method: "POST", body: JSON.stringify({item_id: id, approve: b.dataset.sdec === "1"})});

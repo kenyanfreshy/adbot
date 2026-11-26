@@ -474,7 +474,7 @@ RULE_FIELDS = {  # name: (type, min, max)
 }
 NULLABLE_MONEY = {"monthly_budget": (0, 1_000_000), "campaign_daily_max": (1, 100_000)}
 AUTO_ACTIONS = ("pause_keyword", "pause_ad_set", "pause_campaign", "set_budget_decrease", "set_budget_increase", "safeguard_pause")
-ALERT_KEYS = ("daily_summary", "morning_page", "kill_switch", "rebalance", "high_cpt", "import_failure", "stale_data", "unmapped", "budget")
+ALERT_KEYS = ("daily_summary", "morning_page", "watchdog", "kill_switch", "rebalance", "high_cpt", "import_failure", "stale_data", "unmapped", "budget")
 
 
 @guarded
@@ -887,7 +887,7 @@ async def proposal_decide(request: Request):
     return J({"ok": True, **res})
 
 
-STUDIO_ID_RE = re.compile(r"^(voice|angle|copy|listing|draft|brief)_[0-9a-f]{12}$")
+STUDIO_ID_RE = re.compile(r"^(voice|angle|copy|listing|draft|brief|book)_[0-9a-f]{12}$")
 
 
 @guarded
@@ -913,9 +913,51 @@ async def studio_get(request: Request):
         usage = allm.usage_today(con())
     team = [{"key": a.key, "name": a.name, "module": a.module, "does": a.does, "status": (latest.get(a.key) or {}).get("status"),
              "error": (latest.get(a.key) or {}).get("error")} for a in abrain.team()]
-    research = {k: (latest.get(k) or {}).get("output") for k in ("review_miner", "search_ad_watch", "competitor_ad_spy", "test_budget")}
+    research = {k: (latest.get(k) or {}).get("output") for k in ("review_miner", "search_ad_watch", "competitor_ad_spy", "test_budget",
+                                                                   "profit_tracker", "outcome_tracker", "book_ads", "watchdog")}
+    from agents import checklist as achecklist
+    from agents import mockups as amockups
+    with _db_lock:
+        try:
+            measured = {}
+            for ref, days, verdict, note in con().execute("SELECT ref_id, days, verdict, note FROM control.outcomes ORDER BY days").fetchall():
+                measured.setdefault(ref, []).append({"days": days, "verdict": verdict, "note": note})
+        except Exception:  # noqa: BLE001 - table not created yet
+            measured = {}
+    for it in items:
+        if it["kind"] in ("draft", "book"):
+            it["checklist"] = achecklist.build(it)
+        if it["kind"] == "brief":
+            it["mockups"] = amockups.for_brief(it["content"])
+        if it["item_id"] in measured:
+            it["outcomes"] = measured[it["item_id"]]
     return J({"items": items, "team": team, "runs": runs, "research": research, "claude_today": usage,
               "launch": "Drafts only: nothing in the studio is sent to an ad platform or a store."})
+
+
+MOCK_SHAPE_RE = re.compile(r"^(1x1|4x5|9x16)$")
+
+
+@guarded
+async def studio_mockup(request: Request):
+    """A creative brief image as an SVG layout mockup (drawn by code from the brief; nothing is generated elsewhere)."""
+    from agents import mockups as amockups
+    from agents import studio as astudio
+    iid, shape = request.query_params.get("id", ""), request.query_params.get("shape", "1x1")
+    try:
+        n = int(request.query_params.get("i", "0"))
+    except ValueError:
+        n = -1
+    if not STUDIO_ID_RE.match(iid) or not MOCK_SHAPE_RE.match(shape) or n < 0:
+        return J({"error": "id, i and shape are required"}, 400)
+    with _db_lock:
+        it = astudio.get(con(), iid)
+    images = ((it or {}).get("content") or {}).get("images") or []
+    if not it or it["kind"] != "brief" or n >= len(images):
+        return J({"error": "no such mockup"}, 404)
+    svg = amockups.render(it.get("app"), images[n].get("overlay", ""), images[n].get("scene", ""), shape)
+    return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "private, max-age=3600",
+                                                              "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'"})
 
 
 @guarded(bucket="control")
@@ -1101,6 +1143,7 @@ routes = [
     Route("/api/campaigns/map", campaign_map, methods=["POST"]),
     Route("/api/studio", studio_get),
     Route("/api/studio/decide", studio_decide, methods=["POST"]),
+    Route("/api/studio/mockup", studio_mockup),
     Route("/api/revenue", revenue_get),
     Route("/api/revenue/listing", revenue_listing, methods=["POST"]),
     Route("/api/revenue/check-ids", revenue_check_ids, methods=["POST"]),
